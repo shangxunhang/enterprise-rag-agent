@@ -1,0 +1,2 @@
+此 Prompt 已由分章节生成 Prompt 替代。
+请使用 scheme_section_generation_v1，并显式传入 ProjectInput、章节标题、知识库证据和引用目录。

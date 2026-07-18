@@ -1,0 +1,204 @@
+"""Application config.
+
+Config v1 keeps the project configurable without introducing external dependencies.
+
+Priority:
+1. Environment variables
+2. .env file in project root
+3. Default values
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Optional
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _read_dotenv(dotenv_path: Path) -> Dict[str, str]:
+    """Read a simple .env file without python-dotenv dependency."""
+
+    values: Dict[str, str] = {}
+
+    if not dotenv_path.exists():
+        return values
+
+    for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+
+        if key:
+            values[key] = value
+
+    return values
+
+
+_DOTENV_VALUES = _read_dotenv(PROJECT_ROOT / ".env")
+
+
+def _get_env(key: str, default: str) -> str:
+    return os.getenv(key) or _DOTENV_VALUES.get(key) or default
+
+
+def _to_bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _to_int(value: str | int) -> int:
+    if isinstance(value, int):
+        return value
+
+    return int(value)
+
+
+def _resolve_path(value: str | Path) -> Path:
+    path = Path(value)
+
+    if path.is_absolute():
+        return path
+
+    return PROJECT_ROOT / path
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    """Application settings."""
+
+    app_name: str
+    app_env: str
+
+    project_root: Path
+    data_root: Path
+    run_trace_dir: Path
+    data_capture_dir: Path
+    eval_output_dir: Path
+    task_state_dir: Path
+    prompt_root: Path
+
+    default_model_name: str
+    default_scheme_prompt_id: str
+
+    trace_enabled: bool
+    data_capture_enabled: bool
+
+    min_eval_output_chars: int
+
+    # Supervisor LLM routing
+    enable_llm_routing: bool
+    supervisor_model_name: str
+
+    # Local Qwen
+    local_qwen_model_name: str
+    local_qwen_model_path: Path
+    local_qwen_device: str
+    local_qwen_max_new_tokens: int
+
+    def as_dict(self) -> dict:
+        return {
+            "app_name": self.app_name,
+            "app_env": self.app_env,
+            "project_root": str(self.project_root),
+            "data_root": str(self.data_root),
+            "run_trace_dir": str(self.run_trace_dir),
+            "data_capture_dir": str(self.data_capture_dir),
+            "eval_output_dir": str(self.eval_output_dir),
+            "task_state_dir": str(self.task_state_dir),
+            "prompt_root": str(self.prompt_root),
+            "default_model_name": self.default_model_name,
+            "default_scheme_prompt_id": self.default_scheme_prompt_id,
+            "trace_enabled": self.trace_enabled,
+            "data_capture_enabled": self.data_capture_enabled,
+            "min_eval_output_chars": self.min_eval_output_chars,
+            "enable_llm_routing": self.enable_llm_routing,
+            "supervisor_model_name": self.supervisor_model_name,
+            "local_qwen_model_name": self.local_qwen_model_name,
+            "local_qwen_model_path": str(self.local_qwen_model_path),
+            "local_qwen_device": self.local_qwen_device,
+            "local_qwen_max_new_tokens": self.local_qwen_max_new_tokens,
+        }
+
+
+_SETTINGS: Optional[AppSettings] = None
+
+
+def get_settings(reload: bool = False) -> AppSettings:
+    """Get application settings.
+
+    Args:
+        reload: Rebuild settings from env and .env.
+    """
+
+    global _SETTINGS
+
+    if _SETTINGS is not None and not reload:
+        return _SETTINGS
+
+    data_root = _resolve_path(_get_env("DATA_ROOT", "data"))
+
+    settings = AppSettings(
+        app_name=_get_env("APP_NAME", "agent-rag-system"),
+        app_env=_get_env("APP_ENV", "dev"),
+        project_root=PROJECT_ROOT,
+        data_root=data_root,
+        run_trace_dir=_resolve_path(_get_env("RUN_TRACE_DIR", str(data_root / "runs"))),
+        data_capture_dir=_resolve_path(
+            _get_env("DATA_CAPTURE_DIR", str(data_root / "captures"))
+        ),
+        eval_output_dir=_resolve_path(
+            _get_env("EVAL_OUTPUT_DIR", str(data_root / "eval_outputs"))
+        ),
+        task_state_dir=_resolve_path(
+            _get_env("TASK_STATE_DIR", str(data_root / "tasks"))
+        ),
+        prompt_root=_resolve_path(_get_env("PROMPT_ROOT", "prompts")),
+
+        default_model_name=_get_env("DEFAULT_MODEL_NAME", "fake_llm"),
+        default_scheme_prompt_id=_get_env(
+            "DEFAULT_SCHEME_PROMPT_ID",
+            "scheme_generation_v1",
+        ),
+
+        trace_enabled=_to_bool(_get_env("TRACE_ENABLED", "true")),
+        data_capture_enabled=_to_bool(_get_env("DATA_CAPTURE_ENABLED", "true")),
+        min_eval_output_chars=_to_int(_get_env("MIN_EVAL_OUTPUT_CHARS", "100")),
+
+        enable_llm_routing=_to_bool(_get_env("ENABLE_LLM_ROUTING", "true")),
+        supervisor_model_name=_get_env(
+            "SUPERVISOR_MODEL_NAME",
+            "local_qwen2_5_1_5b",
+        ),
+
+        local_qwen_model_name=_get_env(
+            "LOCAL_QWEN_MODEL_NAME",
+            "local_qwen2_5_1_5b",
+        ),
+        local_qwen_model_path=Path(
+            _get_env(
+                "LOCAL_QWEN_MODEL_PATH",
+                r"D:\models\huggingface\llm\Qwen2.5-1.5B-Instruct",
+            )
+        ),
+        local_qwen_device=_get_env("LOCAL_QWEN_DEVICE", "cuda"),
+        local_qwen_max_new_tokens=_to_int(
+            _get_env("LOCAL_QWEN_MAX_NEW_TOKENS", "256")
+        ),
+    )
+
+    _SETTINGS = settings
+    return settings

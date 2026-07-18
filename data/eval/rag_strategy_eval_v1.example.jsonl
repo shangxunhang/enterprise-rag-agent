@@ -1,0 +1,1 @@
+{"schema_version":"rag_strategy_eval_sample_v1","sample_id":"replace-me-001","query":"替换为真实评测问题","expected_doc_ids":["replace-with-real-doc-id"],"expected_parent_chunk_ids":[],"expected_child_chunk_ids":[],"expected_keywords":["替换为真实关键词"],"answer_keywords":[],"metadata":{"note":"示例文件不能直接作为正式评测集"}}

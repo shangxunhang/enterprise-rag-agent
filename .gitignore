@@ -1,0 +1,89 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Logs and runtime files
+*.log
+logs/
+tmp/
+temp/
+
+# Runtime outputs
+data/runs/
+data/tasks/
+data/captures/
+data/eval_outputs/
+data/cache/
+
+# Local raw/processed data
+data/raw/
+data/processed/
+data/chunks/
+
+# Vector indexes and databases
+data/vector_index/
+*.db
+*.sqlite
+*.sqlite3
+*.milvus
+
+# Model weights
+models/
+checkpoints/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Large archives
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated acceptance/runtime artifacts
+data/mainline_closure_acceptance/
+data/section_aware_retrieval_acceptance/
+data/step_*_acceptance/
+
+# Generated runtime directories at any depth
+data/**/runs/
+data/**/tasks/
+data/**/captures/
+data/**/eval_outputs/
+data/**/cache/
+
+# Backup and temporary source files
+*_back.py
+*.bak
+*.tmp

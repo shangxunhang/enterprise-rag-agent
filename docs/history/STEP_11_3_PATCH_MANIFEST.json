@@ -1,0 +1,65 @@
+{
+  "schema_version": "step_11_3_patch_manifest_v1",
+  "files": [
+    {
+      "path": "STEP_11_3_INDEX_LIFECYCLE_V1.md",
+      "size": 2464,
+      "sha256": "018c89d23a1745e0cb842072127696ed4b4e73bf04ef015fd4c0a7f712f778b5"
+    },
+    {
+      "path": "backend/rag/offline/__init__.py",
+      "size": 903,
+      "sha256": "b2626ddf011b151989c73ad604b4ecf753aba2327e4eac32a8dc4612ee5d2f24"
+    },
+    {
+      "path": "backend/rag/offline/lifecycle.py",
+      "size": 20429,
+      "sha256": "59f64f76d595b69e306f8096ea15269a09f331c5a866fafbe44bde68c9dbfa42"
+    },
+    {
+      "path": "backend/rag/offline/manifest.py",
+      "size": 5700,
+      "sha256": "b86fd329f31b29372749002114053552384e75474087a3f21f2114528ba83ed4"
+    },
+    {
+      "path": "backend/rag/offline/resolver.py",
+      "size": 4285,
+      "sha256": "c829e71d3c1524b1e2daae8faea86714efd1b20b4a9222ef39cc9c58e86de26c"
+    },
+    {
+      "path": "backend/rag/plugins/retrievers/plugin.py",
+      "size": 2630,
+      "sha256": "84804c2077f2f979aa5ebd9d3d59501f6c25a5ce85a78ea5512132d43553d0f7"
+    },
+    {
+      "path": "backend/rag/rag_engine/parent_child_rag_engine.py",
+      "size": 12779,
+      "sha256": "fce57b5ceca0537e2c270ac177a5eefc82d0abdcfc4f29dde2ce3f82b4e89a89"
+    },
+    {
+      "path": "backend/rag/retriever/milvus_child_retriever.py",
+      "size": 7043,
+      "sha256": "c883c1f3f8e9b7ca8c3af2b3358298e972212c399806669a6e873dfd6eca5a95"
+    },
+    {
+      "path": "backend/rag/tools/rag_tool.py",
+      "size": 16995,
+      "sha256": "f0807377232e5285bd3bbb0c6c6cc3b082c0e885d28087b85b2d228f2efeadce"
+    },
+    {
+      "path": "backend/tests/test_step_11_3_index_lifecycle.py",
+      "size": 12051,
+      "sha256": "87f83b033639800cfcc9c3767f975a4520b35a3f9a8f1c365c92a6d3c6344881"
+    },
+    {
+      "path": "scripts/manage_index_lifecycle.py",
+      "size": 4318,
+      "sha256": "955da0cea8a41c690f409fd186fcfa9d0dc9b41752c591db2fa6e5b437482666"
+    },
+    {
+      "path": "scripts/run_step_11_3_acceptance.py",
+      "size": 8083,
+      "sha256": "bef06e711de4f83adbd00006e8f658705981301ca4a33f3da0ad6784449d9582"
+    }
+  ]
+}

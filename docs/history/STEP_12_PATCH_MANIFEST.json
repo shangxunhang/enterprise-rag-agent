@@ -1,0 +1,23 @@
+{
+  "stage": "step_12_evidence_context_contract_v1",
+  "schema_version": "step_12_patch_manifest_v1",
+  "files": [
+    "STEP_12_EVIDENCE_CONTEXT_CONTRACT_V1.md",
+    "backend/agent/runtime/state_access.py",
+    "backend/apps/enterprise_document/services/scheme_writer/evidence_service.py",
+    "backend/apps/enterprise_document/services/scheme_writer/use_case.py",
+    "backend/rag/adapters/legacy/result_mapper.py",
+    "backend/rag/context/context_packer.py",
+    "backend/rag/evidence/__init__.py",
+    "backend/rag/evidence/contract.py",
+    "backend/schemas/context.py",
+    "backend/schemas/rag.py",
+    "backend/tests/test_step_12_evidence_contract.py",
+    "backend/tools/fake_rag_tool.py",
+    "scripts/run_step_12_acceptance.py"
+  ],
+  "acceptance": {
+    "specialized_tests": "backend/tests/test_step_12_evidence_contract.py",
+    "real_acceptance_script": "scripts/run_step_12_acceptance.py"
+  }
+}

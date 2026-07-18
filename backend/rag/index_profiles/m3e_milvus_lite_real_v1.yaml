@@ -1,0 +1,40 @@
+schema_version: offline_index_build_config_v1
+build_id: m3e_milvus_lite_real_v1
+dataset_version: cleaned_text_units_real_v1
+source:
+  path: data/processed/cleaned_text_units.jsonl
+  format: jsonl
+chunker:
+  name: fixed_parent_child
+  version: v1
+  params:
+    parent_chunk_size: 1500
+    parent_chunk_overlap: 150
+    child_chunk_size: 500
+    child_chunk_overlap: 50
+    unit: token
+    tokenizer_model_name: D:/models/huggingface/embedding/m3e-base
+    tokenizer_local_files_only: true
+    parent_chunk_version: parent_chunk_v1.0
+    child_chunk_version: child_chunk_v1.0
+embedding:
+  mode: model
+  name: m3e_base
+  version: local_m3e_base_v1
+  model_name: D:/models/huggingface/embedding/m3e-base
+  device: cuda
+  batch_size: 32
+  dim: 768
+index:
+  backend: milvus_lite
+  metric_type: COSINE
+  collection_name: rag_child_chunks
+  recreate: true
+  insert_batch_size: 128
+  max_text_chars: 8192
+outputs:
+  root_dir: data/processed/indexes
+  active_pointer: data/processed/indexes/active_index.json
+  update_active_pointer: false
+deterministic_created_at: "2026-07-17T00:00:00+08:00"
+notes: Step 11.2 real-data build. It intentionally does not activate active_index.

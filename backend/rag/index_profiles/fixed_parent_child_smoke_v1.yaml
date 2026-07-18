@@ -1,0 +1,35 @@
+schema_version: offline_index_build_config_v1
+build_id: fixed_parent_child_smoke_v1
+dataset_version: offline_smoke_dataset_v1
+source:
+  path: data/eval/offline_index_smoke/cleaned_text_units.jsonl
+  format: jsonl
+chunker:
+  name: fixed_parent_child
+  version: v1
+  params:
+    parent_chunk_size: 180
+    parent_chunk_overlap: 20
+    child_chunk_size: 80
+    child_chunk_overlap: 10
+    unit: char
+    parent_chunk_version: parent_chunk_v1.0
+    child_chunk_version: child_chunk_v1.0
+embedding:
+  mode: model
+  name: m3e_base
+  version: local_m3e_base_v1
+  model_name: D:/models/huggingface/embedding/m3e-base
+  device: cuda
+  batch_size: 32
+  dim: 768
+index:
+  backend: artifacts_only
+  metric_type: COSINE
+  collection_name: rag_child_chunks
+outputs:
+  root_dir: data/processed/indexes
+  active_pointer: data/processed/indexes/active_index.json
+  update_active_pointer: false
+deterministic_created_at: "2026-07-16T00:00:00+08:00"
+notes: real m3e-base embedding smoke build; artifacts_only and does not activate the online index

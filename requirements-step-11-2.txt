@@ -1,0 +1,7 @@
+# Install into the existing enterprise-rag-agent environment.
+# Keep the project's existing PyTorch build; do not replace CUDA PyTorch unintentionally.
+pymilvus>=2.4,<3.1
+sentence-transformers>=3,<6
+PyYAML>=6,<7
+numpy>=1.26,<3
+pydantic>=2.7,<3

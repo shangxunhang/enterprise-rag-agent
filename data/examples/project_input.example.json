@@ -1,0 +1,33 @@
+{
+  "task_id": "task_example",
+  "tenant_id": "default",
+  "project_name": "示例项目",
+  "task_type": "scheme_generation",
+  "user_query": "根据指定知识库资料生成示例项目方案",
+  "source_materials": [
+    {
+      "material_type": "knowledge_base",
+      "material_name": "示例资料",
+      "status": "available",
+      "doc_ids": ["doc_example"]
+    }
+  ],
+  "generation_requirements": {
+    "required_sections": ["项目背景", "建设内容", "风险与待确认事项"],
+    "need_citation": true,
+    "citation_required_sections": ["建设内容"],
+    "need_human_review": true,
+    "min_section_chars": 80,
+    "max_section_retries": 1,
+    "max_context_chars": 6000,
+    "max_tokens_per_section": 1024
+  },
+  "output_schema": {
+    "document_title": "示例项目方案",
+    "output_format": "markdown",
+    "required_sections": ["项目背景", "建设内容", "风险与待确认事项"]
+  },
+  "metadata": {
+    "input_source": "example"
+  }
+}

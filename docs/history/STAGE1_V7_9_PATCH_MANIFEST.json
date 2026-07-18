@@ -1,0 +1,96 @@
+{
+  "schema_version": "stage1_mainline_stability_patch_manifest_v1",
+  "release": "stage1-mainline-stability-v7.9.0-20260718",
+  "scope": "mainline runtime contracts; data-quality failures remain business-quality outcomes",
+  "changes": [
+    "derive demo document title from caller request",
+    "enforce GraphState declared write paths",
+    "implement retries, timeout guard, and workflow routing",
+    "discard technical-failure business state by default",
+    "preserve declared partial outputs for DOCUMENT_HARD_GATE_FAILED",
+    "separate execution_integrity from business_quality in E2E reports"
+  ],
+  "verification": {
+    "pytest": "260 passed",
+    "mainline_closure_acceptance": "passed",
+    "fake_e2e": "passed",
+    "business_failure_contract": "execution_integrity=passed; business_quality=failed"
+  },
+  "files": [
+    {
+      "path": "backend/application/project_input_factory.py",
+      "sha256": "ebbf3ea3c47283c76f90382bc395885526b3420ac9e0e31deb99a2e26a6b3474",
+      "size_bytes": 4084
+    },
+    {
+      "path": "backend/agent/runtime/workflow_schema.py",
+      "sha256": "b807126e23668106e92862760f0636a89e5b44cccd82b8c57279fb3619a51429",
+      "size_bytes": 3224
+    },
+    {
+      "path": "backend/apps/enterprise_document/workflows/scheme_generation.py",
+      "sha256": "c436ea9993bcd685330cf91ceca1fc8a54798d1a1891dcfaa952b5e97a3d9adf",
+      "size_bytes": 2446
+    },
+    {
+      "path": "backend/schemas/graph.py",
+      "sha256": "25009c93b7997df8fce840659424bbf1f042bb6153944a8dbdc0107fb7bb85a1",
+      "size_bytes": 6731
+    },
+    {
+      "path": "backend/agent/runtime/graph_state_ops.py",
+      "sha256": "47538420cf21d003133d12cc179b66970570d13acaa331f311c4893f3f2a05a1",
+      "size_bytes": 15364
+    },
+    {
+      "path": "backend/agent/runtime/node_adapter.py",
+      "sha256": "05e6f2b7d7a4a81ac6717b18680ecaf1a1453c3c03309271aff9e75ed28ed8ef",
+      "size_bytes": 6783
+    },
+    {
+      "path": "backend/agent/runtime/native_workflow_engine.py",
+      "sha256": "1e8569fcea66785662465fa6bc1ac2fa2832e9b20e8c6d0fb02958280ce6a8ca",
+      "size_bytes": 25155
+    },
+    {
+      "path": "backend/agent/runtime/workflow_observer.py",
+      "sha256": "da2c7139cc8a74dd2d3923b6b3041dbe06029d01babee1838ca142ac0bc7c9b9",
+      "size_bytes": 6544
+    },
+    {
+      "path": "backend/agent/services/supervisor_service.py",
+      "sha256": "1bbb2fbc6b4230964673ee199605cf7b28e2650be842ae27beafd67c55db504c",
+      "size_bytes": 9835
+    },
+    {
+      "path": "backend/core/error_factory.py",
+      "sha256": "bede1ab9937905f95fc6033668a7084da284b950cf077e2f54def9f07db89237",
+      "size_bytes": 1721
+    },
+    {
+      "path": "scripts/run_demo.py",
+      "sha256": "548be0994f6501724625ef039495d7ba607fdfa3c451b41ae1606f34ff8c9762",
+      "size_bytes": 29345
+    },
+    {
+      "path": "scripts/mainline_runtime.py",
+      "sha256": "0addfb227d19602dcfd18208f5b70ad93342496195762a833d48c23ce7951bf2",
+      "size_bytes": 4222
+    },
+    {
+      "path": "backend/tests/test_stage1_acceptance.py",
+      "sha256": "51a9df072de397276cb5c8a2b8c53c8750986be1a974e2215b7cebe799b20000",
+      "size_bytes": 46410
+    },
+    {
+      "path": "backend/tests/test_step_15_graph_state_workflow_engine.py",
+      "sha256": "c9cfe7305ace1ad3b7729922b85b1f237afb963641d8a2ae5ffd825218a8bdea",
+      "size_bytes": 20860
+    },
+    {
+      "path": "docs/STAGE1_MAINLINE_STABILITY_V7_9_20260718.md",
+      "sha256": "b170c14fd65b4a9ce1b10da82aed0a649cfe3f7bdb7aa24c6b649f4f27cb2e16",
+      "size_bytes": 2737
+    }
+  ]
+}

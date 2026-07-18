@@ -1,0 +1,78 @@
+schema_version: adaptive_profile_router_config_v1
+router_id: adaptive_profile_router_v1
+router_version: v1
+
+policy:
+  name: explainable_rules
+  version: v1
+  enabled: true
+  params:
+    short_query_max_chars: 16
+    formal_task_types:
+      - scheme_generation
+      - report_generation
+
+default_profile_id: hybrid_v1
+# The Agent is composed before per-request routing. In v1 its final-section
+# checker therefore uses this fixed, explicit profile. The RAG profile itself
+# is still selected per request by the router below.
+agent_quality_profile_id: self_rag_v1
+
+profiles:
+  - profile_id: hybrid_v1
+    profile_file: backend/rag/profiles/hybrid_v1.yaml
+  - profile_id: rag_fusion_v1
+    profile_file: backend/rag/profiles/rag_fusion_v1.yaml
+  - profile_id: hyde_v1
+    profile_file: backend/rag/profiles/hyde_v1.yaml
+  - profile_id: c_rag_corrective_v1
+    profile_file: backend/rag/profiles/c_rag_corrective_v1.yaml
+  - profile_id: self_rag_v1
+    profile_file: backend/rag/profiles/self_rag_v1.yaml
+  - profile_id: c_rag_corrective_self_rag_v1
+    profile_file: backend/rag/profiles/c_rag_corrective_self_rag_v1.yaml
+
+rules:
+  - rule_id: formal_grounded_generation
+    priority: 100
+    profile_id: c_rag_corrective_self_rag_v1
+    reason: formal generation with required evidence needs corrective retrieval and final-section checking
+    all_conditions:
+      - field: formal_generation_task
+        operator: truthy
+      - field: high_grounding_required
+        operator: truthy
+
+  - rule_id: high_risk_grounded_query
+    priority: 90
+    profile_id: c_rag_corrective_v1
+    reason: high-risk grounded query needs corrective evidence control
+    all_conditions:
+      - field: high_risk_task
+        operator: truthy
+      - field: high_grounding_required
+        operator: truthy
+
+  - rule_id: multi_aspect_query
+    priority: 70
+    profile_id: rag_fusion_v1
+    reason: multi-aspect request benefits from multiple rewritten retrieval queries
+    all_conditions:
+      - field: multi_aspect_task
+        operator: truthy
+
+  - rule_id: abstract_semantic_query
+    priority: 60
+    profile_id: hyde_v1
+    reason: abstract semantic request benefits from hypothetical-document retrieval
+    all_conditions:
+      - field: abstract_semantic_query
+        operator: truthy
+
+  - rule_id: short_or_ambiguous_query
+    priority: 50
+    profile_id: rag_fusion_v1
+    reason: short or ambiguous request needs query expansion before retrieval
+    all_conditions:
+      - field: short_or_ambiguous
+        operator: truthy

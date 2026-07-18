@@ -1,0 +1,28 @@
+schema_version: offline_index_build_config_v1
+build_id: recursive_parent_child_smoke_v1
+dataset_version: offline_smoke_dataset_v1
+source:
+  path: data/eval/offline_index_smoke/cleaned_text_units.jsonl
+chunker:
+  name: recursive_parent_child
+  version: v1
+  params:
+    parent_chunk_size: 120
+    parent_chunk_overlap: 15
+    child_chunk_size: 70
+    child_chunk_overlap: 10
+    unit: char
+embedding:
+  mode: model
+  name: m3e_base
+  version: local_m3e_base_v1
+  model_name: D:/models/huggingface/embedding/m3e-base
+  device: cuda
+  batch_size: 32
+  dim: 768
+index:
+  backend: artifacts_only
+outputs:
+  root_dir: data/processed/indexes
+  update_active_pointer: false
+deterministic_created_at: "2026-07-16T00:00:00+08:00"
