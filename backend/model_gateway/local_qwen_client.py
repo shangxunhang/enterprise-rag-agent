@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
+# 主要定义：LocalQwenLLMClient。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Thin Qwen client over prompt formatting and HuggingFace runtime services."""
 
 from __future__ import annotations
@@ -12,7 +16,10 @@ from model_gateway.local_hf_runtime import LocalHuggingFaceRuntime
 from schemas.model import ModelRequestSchema, ModelResponseSchema, TokenUsageSchema
 
 
+# 阅读注释（类）：封装 本地 qwen llmclient，集中封装相关状态、依赖和行为。
 class LocalQwenLLMClient(BaseLLMClient):
+    """封装 本地 qwen llmclient，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 LocalQwenLLMClient，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         model_name: str,
@@ -23,6 +30,22 @@ class LocalQwenLLMClient(BaseLLMClient):
         runtime: LocalHuggingFaceRuntime | None = None,
         formatter: ChatPromptFormatter | None = None,
     ) -> None:
+        """初始化 LocalQwenLLMClient，保存运行所需的依赖、配置或状态。
+
+        参数:
+            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+            model_path: 模型 路径，具体约束请结合类型标注和调用方确认。
+            device: device，具体约束请结合类型标注和调用方确认。
+            max_new_tokens: max new tokens，具体约束请结合类型标注和调用方确认。
+            runtime: 运行时，具体约束请结合类型标注和调用方确认。
+            formatter: formatter，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：Path, LocalHuggingFaceRuntime, ChatPromptFormatter。
+        """
         self.model_name = model_name
         self.model_path = Path(model_path)
         self.device = device
@@ -30,34 +53,109 @@ class LocalQwenLLMClient(BaseLLMClient):
         self.runtime = runtime or LocalHuggingFaceRuntime(self.model_path, device)
         self.formatter = formatter or ChatPromptFormatter()
 
+    # 阅读注释（函数）：处理 tokenizer 相关逻辑。
     @property
     def _tokenizer(self):
+        """处理 tokenizer 相关逻辑。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         return self.runtime.tokenizer
 
+    # 阅读注释（函数）：处理 tokenizer 相关逻辑。
     @_tokenizer.setter
     def _tokenizer(self, value):
+        """处理 tokenizer 相关逻辑。
+
+        参数:
+            value: value，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         self.runtime.tokenizer = value
 
+    # 阅读注释（函数）：处理 模型 相关逻辑。
     @property
     def _model(self):
+        """处理 模型 相关逻辑。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         return self.runtime.model
 
+    # 阅读注释（函数）：处理 模型 相关逻辑。
     @_model.setter
     def _model(self, value):
+        """处理 模型 相关逻辑。
+
+        参数:
+            value: value，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         self.runtime.model = value
 
+    # 阅读注释（函数）：确保 loaded 满足运行约束。
     def _ensure_loaded(self) -> None:
+        """确保 loaded 满足运行约束。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：self.runtime.ensure_loaded。
+        """
         self.runtime.ensure_loaded()
         self.device = self.runtime.device
 
+    # 阅读注释（函数）：构建 消息集合。
     def _build_messages(self, request: ModelRequestSchema) -> list[dict[str, str]]:
+        """构建 消息集合。
+
+        参数:
+            request: 当前请求对象。
+
+        返回:
+            list[dict[str, str]]
+
+        阅读提示:
+            主要直接调用：self.formatter.messages。
+        """
         return self.formatter.messages(request)
 
+    # 阅读注释（函数）：构建 提示词 文本。
     def _build_prompt_text(self, request: ModelRequestSchema) -> str:
+        """构建 提示词 文本。
+
+        参数:
+            request: 当前请求对象。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：self._ensure_loaded, self.formatter.prompt_text。
+        """
         self._ensure_loaded()
         return self.formatter.prompt_text(self.runtime.tokenizer, request)
 
+    # 阅读注释（函数）：生成 LocalQwenLLMClient。
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
+        """生成 LocalQwenLLMClient。
+
+        参数:
+            request: 当前请求对象。
+
+        返回:
+            ModelResponseSchema
+
+        阅读提示:
+            主要直接调用：self._ensure_loaded, time.time, self.formatter.prompt_text, min, max, self.runtime.generate, int, strip。
+        """
         self._ensure_loaded()
         started = time.time()
         prompt_text = self.formatter.prompt_text(self.runtime.tokenizer, request)

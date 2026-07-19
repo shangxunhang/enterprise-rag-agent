@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：后端业务模块。
+# 主要定义：_read_dotenv、_get_env、_to_bool、_to_int、_resolve_path、AppSettings、get_settings。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Application config.
 
 Config v1 keeps the project configurable without introducing external dependencies.
@@ -19,6 +23,7 @@ from typing import Dict, Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+# 阅读注释（函数）：读取 dotenv。
 def _read_dotenv(dotenv_path: Path) -> Dict[str, str]:
     """Read a simple .env file without python-dotenv dependency."""
 
@@ -49,25 +54,74 @@ def _read_dotenv(dotenv_path: Path) -> Dict[str, str]:
 _DOTENV_VALUES = _read_dotenv(PROJECT_ROOT / ".env")
 
 
+# 阅读注释（函数）：获取 env。
 def _get_env(key: str, default: str) -> str:
+    """获取 env。
+
+    参数:
+        key: key，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：os.getenv, _DOTENV_VALUES.get。
+    """
     return os.getenv(key) or _DOTENV_VALUES.get(key) or default
 
 
+# 阅读注释（函数）：把 配置 转换为 bool。
 def _to_bool(value: str | bool) -> bool:
+    """把 配置 转换为 bool。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        bool
+
+    阅读提示:
+        主要直接调用：isinstance, lower, value.strip。
+    """
     if isinstance(value, bool):
         return value
 
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+# 阅读注释（函数）：把 配置 转换为 int。
 def _to_int(value: str | int) -> int:
+    """把 配置 转换为 int。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：isinstance, int。
+    """
     if isinstance(value, int):
         return value
 
     return int(value)
 
 
+# 阅读注释（函数）：解析并确定 路径。
 def _resolve_path(value: str | Path) -> Path:
+    """解析并确定 路径。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：Path, path.is_absolute。
+    """
     path = Path(value)
 
     if path.is_absolute():
@@ -76,6 +130,7 @@ def _resolve_path(value: str | Path) -> Path:
     return PROJECT_ROOT / path
 
 
+# 阅读注释（类）：封装 app settings，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class AppSettings:
     """Application settings."""
@@ -109,7 +164,16 @@ class AppSettings:
     local_qwen_device: str
     local_qwen_max_new_tokens: int
 
+    # 阅读注释（函数）：处理 as 字典 相关逻辑。
     def as_dict(self) -> dict:
+        """处理 as 字典 相关逻辑。
+
+        返回:
+            dict
+
+        阅读提示:
+            主要直接调用：str。
+        """
         return {
             "app_name": self.app_name,
             "app_env": self.app_env,
@@ -137,6 +201,7 @@ class AppSettings:
 _SETTINGS: Optional[AppSettings] = None
 
 
+# 阅读注释（函数）：获取 settings。
 def get_settings(reload: bool = False) -> AppSettings:
     """Get application settings.
 

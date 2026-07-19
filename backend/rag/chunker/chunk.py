@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：chunk_documents。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/rag_template/chunker/chunk.py
 =================================核心 chunk_documents 入口。
@@ -14,6 +18,7 @@ from typing import Dict, List, Optional
 from rag.chunker.chunk_factory import build_chunker
 
 
+# 阅读注释（函数）：处理 文本块 documents 相关逻辑。
 def chunk_documents(
     documents: List[Dict],
     chunk_size: int,

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：TokenCounter、get_token_counter、get_default_token_counter。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 # src/rag_template/util/token_utils.py
 """
 Token 级长度计算工具。
@@ -14,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 
+# 阅读注释（类）：封装 Token counter，集中封装相关状态、依赖和行为。
 class TokenCounter:
     """
     Token 计数器。
@@ -24,13 +29,39 @@ class TokenCounter:
 
     _FALLBACK_PATTERN = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", re.UNICODE)
 
+    # 阅读注释（函数）：初始化 TokenCounter，保存运行所需的依赖、配置或状态。
     def __init__(self, tokenizer_name: Optional[str] = None, local_files_only: bool = True):
+        """初始化 TokenCounter，保存运行所需的依赖、配置或状态。
+
+        参数:
+            tokenizer_name: tokenizer 名称，具体约束请结合类型标注和调用方确认。
+            local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：self._load_tokenizer。
+        """
         self.tokenizer_name = tokenizer_name
         self.local_files_only = local_files_only
         self.tokenizer = self._load_tokenizer(tokenizer_name, local_files_only)
 
+    # 阅读注释（函数）：加载 tokenizer。
     @staticmethod
     def _load_tokenizer(tokenizer_name: Optional[str], local_files_only: bool):
+        """加载 tokenizer。
+
+        参数:
+            tokenizer_name: tokenizer 名称，具体约束请结合类型标注和调用方确认。
+            local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：Path, str, startswith, maybe_path.exists, AutoTokenizer.from_pretrained。
+        """
         if not tokenizer_name:
             return None
 
@@ -53,31 +84,75 @@ class TokenCounter:
         except Exception:
             return None
 
+    # 阅读注释（函数）：处理 tokenize 相关逻辑。
     def tokenize(self, text: str) -> List:
+        """处理 tokenize 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+
+        返回:
+            List
+
+        阅读提示:
+            主要直接调用：self.tokenizer.encode, self._FALLBACK_PATTERN.findall。
+        """
         if not text:
             return []
         if self.tokenizer is not None:
             return self.tokenizer.encode(text, add_special_tokens=False)
         return self._FALLBACK_PATTERN.findall(text)
 
+    # 阅读注释（函数）：处理 count 相关逻辑。
     def count(self, text: str) -> int:
+        """处理 count 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+
+        返回:
+            int
+
+        阅读提示:
+            主要直接调用：len, self.tokenize。
+        """
         return len(self.tokenize(text))
 
+    # 阅读注释（函数）：处理 后端实现 相关逻辑。
     @property
     def backend(self) -> str:
+        """处理 后端实现 相关逻辑。
+
+        返回:
+            str
+        """
         if self.tokenizer is not None:
             return "huggingface"
         return "fallback_regex"
 
 
+# 阅读注释（函数）：获取 Token counter。
 @lru_cache(maxsize=8)
 def get_token_counter(
     tokenizer_name: Optional[str] = None,
     local_files_only: bool = True,
 ) -> TokenCounter:
+    """获取 Token counter。
+
+    参数:
+        tokenizer_name: tokenizer 名称，具体约束请结合类型标注和调用方确认。
+        local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        TokenCounter
+
+    阅读提示:
+        主要直接调用：TokenCounter, lru_cache。
+    """
     return TokenCounter(tokenizer_name=tokenizer_name, local_files_only=local_files_only)
 
 
+# 阅读注释（函数）：获取 default Token counter。
 def get_default_token_counter() -> TokenCounter:
     """
     从 RAGConfig 读取默认 tokenizer。

@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：_as_list、_safe_float、_clip01、_normalize_text、_keyword_hit_ratio、_first_text_field、_top_k_results、_collect_context_text_from_results、_collect_context_text_from_run、_result_relevance_score等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/eval/ragas_style_eval.py
 =====================================
@@ -32,13 +36,38 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from eval.rag.engine.rag_eval_case_schema import RagEvalCase
 
 
+# 阅读注释（函数）：处理 as 列表 相关逻辑。
 def _as_list(values: Optional[Sequence[str]]) -> List[str]:
+    """处理 as 列表 相关逻辑。
+
+    参数:
+        values: values，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[str]
+
+    阅读提示:
+        主要直接调用：strip, str。
+    """
     if not values:
         return []
     return [str(x).strip() for x in values if str(x).strip()]
 
 
+# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """处理 safe float 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：float。
+    """
     try:
         if value is None:
             return default
@@ -47,17 +76,54 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# 阅读注释（函数）：处理 clip01 相关逻辑。
 def _clip01(value: float) -> float:
+    """处理 clip01 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：max, min, float。
+    """
     return max(0.0, min(1.0, float(value)))
 
 
+# 阅读注释（函数）：规范化 文本。
 def _normalize_text(text: Any) -> str:
+    """规范化 文本。
+
+    参数:
+        text: 待处理文本。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：replace, str。
+    """
     if text is None:
         return ""
     return str(text).replace("\r\n", "\n").replace("\r", "\n")
 
 
+# 阅读注释（函数）：处理 keyword hit ratio 相关逻辑。
 def _keyword_hit_ratio(keywords: Sequence[str], text: str) -> float:
+    """处理 keyword hit ratio 相关逻辑。
+
+    参数:
+        keywords: keywords，具体约束请结合类型标注和调用方确认。
+        text: 待处理文本。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：_as_list, sum, len。
+    """
     kws = _as_list(keywords)
     if not kws:
         return 0.0
@@ -67,7 +133,20 @@ def _keyword_hit_ratio(keywords: Sequence[str], text: str) -> float:
     return hit / len(kws)
 
 
+# 阅读注释（函数）：处理 first 文本 field 相关逻辑。
 def _first_text_field(item: Dict[str, Any], fields: Sequence[str] = ("text", "parent_text", "child_text")) -> str:
+    """处理 first 文本 field 相关逻辑。
+
+    参数:
+        item: 数据项，具体约束请结合类型标注和调用方确认。
+        fields: fields，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：item.get, _normalize_text。
+    """
     for field in fields:
         value = item.get(field)
         if value:
@@ -75,13 +154,39 @@ def _first_text_field(item: Dict[str, Any], fields: Sequence[str] = ("text", "pa
     return ""
 
 
+# 阅读注释（函数）：处理 top k 结果集合 相关逻辑。
 def _top_k_results(results: Sequence[Dict[str, Any]], top_k: Optional[int]) -> List[Dict[str, Any]]:
+    """处理 top k 结果集合 相关逻辑。
+
+    参数:
+        results: 待处理的结果集合。
+        top_k: top k，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：list, int。
+    """
     if top_k is None or top_k <= 0:
         return list(results)
     return list(results)[: int(top_k)]
 
 
+# 阅读注释（函数）：收集 上下文 文本 from 结果集合。
 def _collect_context_text_from_results(results: Sequence[Dict[str, Any]], top_k: Optional[int] = None) -> str:
+    """收集 上下文 文本 from 结果集合。
+
+    参数:
+        results: 待处理的结果集合。
+        top_k: top k，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：_top_k_results, _first_text_field, parts.append, join。
+    """
     parts: List[str] = []
     for item in _top_k_results(results, top_k):
         text = _first_text_field(item)
@@ -90,7 +195,19 @@ def _collect_context_text_from_results(results: Sequence[Dict[str, Any]], top_k:
     return "\n".join(parts)
 
 
+# 阅读注释（函数）：收集 上下文 文本 from run。
 def _collect_context_text_from_run(run_record: Dict[str, Any]) -> str:
+    """收集 上下文 文本 from run。
+
+    参数:
+        run_record: run 记录，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：_normalize_text, run_record.get, isinstance, context_pack.get, _collect_context_text_from_results。
+    """
     packed_context = _normalize_text(run_record.get("packed_context"))
     if packed_context:
         return packed_context
@@ -110,6 +227,7 @@ def _collect_context_text_from_run(run_record: Dict[str, Any]) -> str:
     return ""
 
 
+# 阅读注释（函数）：处理 结果 relevance score 相关逻辑。
 def _result_relevance_score(item: Dict[str, Any], case: RagEvalCase) -> float:
     """Return a deterministic relevance score in [0, 1] for one retrieved item."""
     doc_id = str(item.get("doc_id") or "")
@@ -132,6 +250,7 @@ def _result_relevance_score(item: Dict[str, Any], case: RagEvalCase) -> float:
     return _clip01(max(scores) if scores else 0.0)
 
 
+# 阅读注释（函数）：计算 上下文 precision proxy。
 def compute_context_precision_proxy(
     retrieval_results: Sequence[Dict[str, Any]],
     case: RagEvalCase,
@@ -168,7 +287,20 @@ def compute_context_precision_proxy(
     return _clip01(precision_sum / relevant_seen), details
 
 
+# 阅读注释（函数）：处理 标识 recall 相关逻辑。
 def _id_recall(expected: Sequence[str], observed: Sequence[str]) -> Optional[float]:
+    """处理 标识 recall 相关逻辑。
+
+    参数:
+        expected: expected，具体约束请结合类型标注和调用方确认。
+        observed: observed，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Optional[float]
+
+    阅读提示:
+        主要直接调用：str, len。
+    """
     expected_set = {str(x) for x in expected if str(x)}
     if not expected_set:
         return None
@@ -176,6 +308,7 @@ def _id_recall(expected: Sequence[str], observed: Sequence[str]) -> Optional[flo
     return len(expected_set & observed_set) / len(expected_set)
 
 
+# 阅读注释（函数）：计算 上下文 recall proxy。
 def compute_context_recall_proxy(
     retrieval_results: Sequence[Dict[str, Any]],
     case: RagEvalCase,
@@ -206,6 +339,7 @@ def compute_context_recall_proxy(
     }
 
 
+# 阅读注释（函数）：计算 faithfulness proxy。
 def compute_faithfulness_proxy(
     *,
     answer: str,
@@ -253,6 +387,7 @@ def compute_faithfulness_proxy(
     }
 
 
+# 阅读注释（函数）：计算 answer relevancy proxy。
 def compute_answer_relevancy_proxy(*, answer: str, query: str, case: RagEvalCase) -> Dict[str, Any]:
     """Approximate answer relevancy with required answer keyword coverage and non-empty answer."""
     answer = _normalize_text(answer)
@@ -281,7 +416,20 @@ def compute_answer_relevancy_proxy(*, answer: str, query: str, case: RagEvalCase
     }
 
 
+# 阅读注释（函数）：计算 引用 hit proxy。
 def compute_citation_hit_proxy(run_record: Dict[str, Any], case: RagEvalCase) -> Dict[str, Any]:
+    """计算 引用 hit proxy。
+
+    参数:
+        run_record: run 记录，具体约束请结合类型标注和调用方确认。
+        case: case，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：set, run_record.get, isinstance, citation.get, cited.append, str, context_pack.get, item.get。
+    """
     expected = set(case.expected_doc_ids)
     if not expected:
         return {"score": 0.0, "expected_doc_ids": [], "cited_doc_ids": []}
@@ -305,6 +453,7 @@ def compute_citation_hit_proxy(run_record: Dict[str, Any], case: RagEvalCase) ->
     }
 
 
+# 阅读注释（函数）：评估 ragas style proxy。
 def evaluate_ragas_style_proxy(
     *,
     run_record: Dict[str, Any],
@@ -368,6 +517,7 @@ def evaluate_ragas_style_proxy(
     }
 
 
+# 阅读注释（函数）：处理 aggregate ragas style proxy 相关逻辑。
 def aggregate_ragas_style_proxy(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Aggregate a list of per-run RAGAS-style proxy results."""
     metric_names = [
@@ -390,7 +540,19 @@ def aggregate_ragas_style_proxy(results: Sequence[Dict[str, Any]]) -> Dict[str, 
     return summary
 
 
+# 阅读注释（函数）：加载 jsonl 记录集合。
 def load_jsonl_records(path: str | Path) -> List[Dict[str, Any]]:
+    """加载 jsonl 记录集合。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        List[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：Path, p.exists, FileNotFoundError, p.open, enumerate, line.strip, json.loads, isinstance。
+    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"JSONL file not found: {p}")
@@ -407,14 +569,40 @@ def load_jsonl_records(path: str | Path) -> List[Dict[str, Any]]:
     return records
 
 
+# 阅读注释（函数）：写入 JSON。
 def write_json(path: str | Path, data: Dict[str, Any]) -> Path:
+    """写入 JSON。
+
+    参数:
+        path: 目标文件或目录路径。
+        data: 数据，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：Path, p.parent.mkdir, p.write_text, json.dumps。
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return p
 
 
+# 阅读注释（函数）：写入 jsonl。
 def write_jsonl(path: str | Path, records: Iterable[Dict[str, Any]]) -> Path:
+    """写入 jsonl。
+
+    参数:
+        path: 目标文件或目录路径。
+        records: 记录集合，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：Path, p.parent.mkdir, p.open, f.write, json.dumps。
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8") as f:

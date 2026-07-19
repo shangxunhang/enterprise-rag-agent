@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：test_context_manager_is_deterministic_and_bounded、test_context_manager_fails_when_required_untruncatable_item_cannot_fit、test_section_policy_preserves_evidence_citations_history_and_lineage、test_passthrough_package_preserves_auxiliary_prompt_exactly、_large_citations、_context_budget_project_input、test_section_policy_only_requires_catalog_for_citation_required_section、test_large_realistic_citation_catalog_is_bounded_without_killing_section、test_required_line_block_catalog_compacts_by_complete_entries。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +25,16 @@ from schemas.rag import (
 from schemas.status import ExecutionStatus
 
 
+# 阅读注释（函数）：处理 测试 上下文 管理器 is deterministic and bounded 相关逻辑。
 def test_context_manager_is_deterministic_and_bounded() -> None:
+    """处理 测试 上下文 管理器 is deterministic and bounded 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ContextBuildRequestSchema, ContextItemSchema, LLMContextManager, manager.build, first.model_dump, second.model_dump, hexdigest, hashlib.sha256。
+    """
     request = ContextBuildRequestSchema(
         task_id="task_1",
         run_id="run_1",
@@ -78,7 +91,16 @@ def test_context_manager_is_deterministic_and_bounded() -> None:
     assert decision.action in {"truncated", "dropped"}
 
 
+# 阅读注释（函数）：处理 测试 上下文 管理器 fails when required untruncatable 数据项 cannot fit 相关逻辑。
 def test_context_manager_fails_when_required_untruncatable_item_cannot_fit() -> None:
+    """处理 测试 上下文 管理器 fails when required untruncatable 数据项 cannot fit 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ContextBuildRequestSchema, ContextItemSchema, pytest.raises, build, LLMContextManager。
+    """
     request = ContextBuildRequestSchema(
         task_id="task_1",
         run_id="run_1",
@@ -103,7 +125,16 @@ def test_context_manager_fails_when_required_untruncatable_item_cannot_fit() -> 
         LLMContextManager().build(request)
 
 
+# 阅读注释（函数）：处理 测试 章节 策略 preserves 证据 citations history and lineage 相关逻辑。
 def test_section_policy_preserves_evidence_citations_history_and_lineage() -> None:
+    """处理 测试 章节 策略 preserves 证据 citations history and lineage 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：CitationSchema, RAGEvidenceItemSchema, RAGContextSchema, len, RAGEvidenceContractSchema, RAGEvidenceLineageSchema, RAGEvidenceAssessmentSchema, contract.model_dump。
+    """
     citation = CitationSchema(
         citation_id="C1",
         source_type="document",
@@ -142,7 +173,6 @@ def test_section_policy_preserves_evidence_citations_history_and_lineage() -> No
         lineage=RAGEvidenceLineageSchema(
             index_version="idx_v1",
             embedding_model="m3e-base",
-            retrieval_strategy="hybrid",
         ),
         assessment=RAGEvidenceAssessmentSchema(),
     )
@@ -199,7 +229,16 @@ def test_section_policy_preserves_evidence_citations_history_and_lineage() -> No
     assert "[C1]" in package.rendered_context
 
 
+# 阅读注释（函数）：处理 测试 passthrough package preserves auxiliary 提示词 exactly 相关逻辑。
 def test_passthrough_package_preserves_auxiliary_prompt_exactly() -> None:
+    """处理 测试 passthrough package preserves auxiliary 提示词 exactly 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_passthrough, LLMContextManager。
+    """
     prompt = "只修复引用，不改变原文事实。"
     package = LLMContextManager().build_passthrough(
         task_id="task_1",
@@ -212,7 +251,19 @@ def test_passthrough_package_preserves_auxiliary_prompt_exactly() -> None:
     assert package.metadata["policy_id"] == "compatibility_passthrough_context_policy_v1"
 
 
+# 阅读注释（函数）：处理 large citations 相关逻辑。
 def _large_citations(count: int = 8) -> list[CitationSchema]:
+    """处理 large citations 相关逻辑。
+
+    参数:
+        count: count，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        list[CitationSchema]
+
+    阅读提示:
+        主要直接调用：CitationSchema, range。
+    """
     return [
         CitationSchema(
             citation_id=f"C{index}",
@@ -231,7 +282,16 @@ def _large_citations(count: int = 8) -> list[CitationSchema]:
     ]
 
 
+# 阅读注释（函数）：处理 上下文 预算 项目 输入 相关逻辑。
 def _context_budget_project_input() -> ProjectInputSchema:
+    """处理 上下文 预算 项目 输入 相关逻辑。
+
+    返回:
+        ProjectInputSchema
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate。
+    """
     return ProjectInputSchema.model_validate(
         {
             "task_id": "task_context_budget",
@@ -253,7 +313,16 @@ def _context_budget_project_input() -> ProjectInputSchema:
     )
 
 
+# 阅读注释（函数）：处理 测试 章节 策略 only requires catalog for 引用 required 章节 相关逻辑。
 def test_section_policy_only_requires_catalog_for_citation_required_section() -> None:
+    """处理 测试 章节 策略 only requires catalog for 引用 required 章节 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_large_citations, RAGContextSchema, len, SectionGenerationContextPolicy, _context_budget_project_input, policy.build_request, next, overview_catalog.content.count。
+    """
     citations = _large_citations()
     evidence_text = "政务云建设通用证据。" * 500
     rag_context = RAGContextSchema(
@@ -303,7 +372,16 @@ def test_section_policy_only_requires_catalog_for_citation_required_section() ->
     assert safety_catalog.content.count("[C") == 6
 
 
+# 阅读注释（函数）：处理 测试 large realistic 引用 catalog is bounded without killing 章节 相关逻辑。
 def test_large_realistic_citation_catalog_is_bounded_without_killing_section() -> None:
+    """处理 测试 large realistic 引用 catalog is bounded without killing 章节 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_large_citations, RAGContextSchema, len, _context_budget_project_input, build_request, SectionGenerationContextPolicy, build, LLMContextManager。
+    """
     citations = _large_citations()
     evidence_text = "政务云安全建设证据正文。" * 800
     rag_context = RAGContextSchema(
@@ -339,7 +417,16 @@ def test_large_realistic_citation_catalog_is_bounded_without_killing_section() -
     )
 
 
+# 阅读注释（函数）：处理 测试 required line block catalog compacts by complete entries 相关逻辑。
 def test_required_line_block_catalog_compacts_by_complete_entries() -> None:
+    """处理 测试 required line block catalog compacts by complete entries 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：range, ContextBuildRequestSchema, ContextItemSchema, join, build, LLMContextManager, next, catalog.content.splitlines。
+    """
     catalog_rows = [
         f"[C{index}] | 来源：规范{index} | 摘要：" + ("安全建设要求。" * 30)
         for index in range(1, 7)

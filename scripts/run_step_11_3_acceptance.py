@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_parser、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import argparse
@@ -18,10 +22,19 @@ from rag.offline.lifecycle import IndexLifecycleManager  # noqa: E402
 from rag.offline.manifest import IndexManifest  # noqa: E402
 from rag.retriever.milvus_child_retriever import MilvusChildRetriever  # noqa: E402
 from rag.runtime.parent_child_runtime_factory import ParentChildRuntimeFactory  # noqa: E402
-from rag.tools.rag_tool import RAGToolConfig  # noqa: E402
+from rag.runtime.retrieval_runtime import RetrievalRuntimeConfig  # noqa: E402
 
 
+# 阅读注释（函数）：处理 parser 相关逻辑。
 def _parser() -> argparse.ArgumentParser:
+    """处理 parser 相关逻辑。
+
+    返回:
+        argparse.ArgumentParser
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument。
+    """
     parser = argparse.ArgumentParser(description="Step 11.3 index lifecycle acceptance")
     parser.add_argument("--index-version", required=True)
     parser.add_argument(
@@ -32,12 +45,35 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：parse_args, _parser, IndexLifecycleManager, manager.status, manager.discover, check, sorted, manager.activate。
+    """
     args = _parser().parse_args()
     manager = IndexLifecycleManager(project_root=PROJECT_ROOT)
     checks: list[dict[str, object]] = []
 
+    # 阅读注释（函数）：检查 main。
     def check(name: str, condition: bool, details: dict[str, object]) -> None:
+        """检查 main。
+
+        参数:
+            name: 名称，具体约束请结合类型标注和调用方确认。
+            condition: condition，具体约束请结合类型标注和调用方确认。
+            details: details，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：checks.append, RuntimeError。
+        """
         checks.append(
             {
                 "name": name,
@@ -120,7 +156,7 @@ def main() -> int:
     )
 
     runtime_cfg = ParentChildRuntimeFactory().resolve_config(
-        RAGToolConfig(),
+        RetrievalRuntimeConfig(),
         PROJECT_ROOT,
     )
     check(

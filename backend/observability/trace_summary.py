@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：后端业务模块。
+# 主要定义：sha256_text、preview_text、_safe_value、bounded_summary、canonical_sha256、model_request_summary、model_response_summary、tool_call_summary、_rag_contract_summary、tool_result_summary等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Stable, bounded summaries for Trace v2 events.
 
 Trace is an observability product, not a second copy of prompts, documents and
@@ -23,16 +27,56 @@ _SECRET_MARKERS = (
 )
 
 
+# 阅读注释（函数）：处理 sha256 文本 相关逻辑。
 def sha256_text(value: str) -> str:
+    """处理 sha256 文本 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：hexdigest, hashlib.sha256, value.encode。
+    """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+# 阅读注释（函数）：处理 preview 文本 相关逻辑。
 def preview_text(value: Any, limit: int = 240) -> str:
+    """处理 preview 文本 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        limit: limit，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：strip, replace, str, len。
+    """
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
     return text if len(text) <= limit else f"{text[:limit]}…"
 
 
+# 阅读注释（函数）：处理 safe value 相关逻辑。
 def _safe_value(value: Any, *, depth: int, max_depth: int, max_items: int) -> Any:
+    """处理 safe value 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        depth: depth，具体约束请结合类型标注和调用方确认。
+        max_depth: max depth，具体约束请结合类型标注和调用方确认。
+        max_items: max 数据项集合，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Any
+
+    阅读提示:
+        主要直接调用：isinstance, len, sha256_text, preview_text, enumerate, value.items, max, str。
+    """
     if depth >= max_depth:
         return "<max_depth>"
     if value is None or isinstance(value, (bool, int, float)):
@@ -85,16 +129,55 @@ def _safe_value(value: Any, *, depth: int, max_depth: int, max_items: int) -> An
     return preview_text(repr(value))
 
 
+# 阅读注释（函数）：处理 bounded summary 相关逻辑。
 def bounded_summary(value: Any, *, max_depth: int = 4, max_items: int = 20) -> Any:
+    """处理 bounded summary 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        max_depth: max depth，具体约束请结合类型标注和调用方确认。
+        max_items: max 数据项集合，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Any
+
+    阅读提示:
+        主要直接调用：_safe_value。
+    """
     return _safe_value(value, depth=0, max_depth=max_depth, max_items=max_items)
 
 
+# 阅读注释（函数）：处理 canonical sha256 相关逻辑。
 def canonical_sha256(value: Any) -> str:
+    """处理 canonical sha256 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：json.dumps, sha256_text。
+    """
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     return sha256_text(payload)
 
 
+# 阅读注释（函数）：处理 模型 请求 summary 相关逻辑。
 def model_request_summary(request: Any, model_name: str) -> Dict[str, Any]:
+    """处理 模型 请求 summary 相关逻辑。
+
+    参数:
+        request: 当前请求对象。
+        model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：str, getattr, dict, extra.get, len, sha256_text, preview_text, bounded_summary。
+    """
     prompt = str(getattr(request, "prompt", "") or "")
     system_prompt = str(getattr(request, "system_prompt", "") or "")
     extra = dict(getattr(request, "extra", {}) or {})
@@ -122,7 +205,19 @@ def model_request_summary(request: Any, model_name: str) -> Dict[str, Any]:
     }
 
 
+# 阅读注释（函数）：处理 模型 响应 summary 相关逻辑。
 def model_response_summary(response: Any) -> Dict[str, Any]:
+    """处理 模型 响应 summary 相关逻辑。
+
+    参数:
+        response: 下游返回的响应对象。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：str, getattr, hasattr, usage.model_dump, dict, bool, len, sha256_text。
+    """
     content = str(getattr(response, "content", "") or "")
     usage = getattr(response, "token_usage", None)
     usage_dict = usage.model_dump(mode="json") if hasattr(usage, "model_dump") else dict(usage or {})
@@ -142,7 +237,19 @@ def model_response_summary(response: Any) -> Dict[str, Any]:
     }
 
 
+# 阅读注释（函数）：处理 工具 call summary 相关逻辑。
 def tool_call_summary(tool_call: Any) -> Dict[str, Any]:
+    """处理 工具 call summary 相关逻辑。
+
+    参数:
+        tool_call: 工具 call，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：dict, getattr, str, tool_input.get, sorted, len, sha256_text, preview_text。
+    """
     tool_input = dict(getattr(tool_call, "tool_input", {}) or {})
     query = str(tool_input.get("query") or "")
     return {
@@ -161,7 +268,19 @@ def tool_call_summary(tool_call: Any) -> Dict[str, Any]:
     }
 
 
+# 阅读注释（函数）：处理 RAG contract summary 相关逻辑。
 def _rag_contract_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+    """处理 RAG contract summary 相关逻辑。
+
+    参数:
+        result: 待处理的结果对象。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：result.get, evidence.get, canonical_sha256, len, str, context.get, assessment.get, lineage.get。
+    """
     evidence = result.get("evidence") or {}
     lineage = evidence.get("lineage") or {}
     assessment = evidence.get("assessment") or {}
@@ -177,11 +296,26 @@ def _rag_contract_summary(result: Dict[str, Any]) -> Dict[str, Any]:
         "index_version": lineage.get("index_version"),
         "dataset_version": lineage.get("dataset_version"),
         "embedding_model": lineage.get("embedding_model"),
-        "retrieval_strategy": lineage.get("retrieval_strategy"),
+        "retrieval_plan_id": (
+            lineage.get("retrieval_plan_id")
+            or lineage.get("retrieval_strategy")
+        ),
     }
 
 
+# 阅读注释（函数）：处理 工具 结果 summary 相关逻辑。
 def tool_result_summary(result: Any) -> Dict[str, Any]:
+    """处理 工具 结果 summary 相关逻辑。
+
+    参数:
+        result: 待处理的结果对象。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：dict, getattr, bool, get, payload.get, _rag_contract_summary。
+    """
     payload = dict(getattr(result, "result", {}) or {})
     error = getattr(result, "error", None)
     summary = {
@@ -199,7 +333,19 @@ def tool_result_summary(result: Any) -> Dict[str, Any]:
     return summary
 
 
+# 阅读注释（函数）：提取 工具 lineage。
 def extract_tool_lineage(result: Any) -> Dict[str, Any]:
+    """提取 工具 lineage。
+
+    参数:
+        result: 待处理的结果对象。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：dict, getattr, payload.get, evidence.get, lineage.get, trace.get, canonical_sha256。
+    """
     payload = dict(getattr(result, "result", {}) or {})
     evidence = payload.get("evidence") or {}
     lineage = evidence.get("lineage") or {}
@@ -210,7 +356,11 @@ def extract_tool_lineage(result: Any) -> Dict[str, Any]:
         "embedding_model": lineage.get("embedding_model") or trace.get("embedding_model"),
         "embedding_version": lineage.get("embedding_version") or trace.get("embedding_version"),
         "reranker_model": lineage.get("reranker_model") or trace.get("reranker_model"),
-        "retrieval_strategy": lineage.get("retrieval_strategy") or trace.get("retrieval_mode"),
-        "pipeline_profile_id": lineage.get("pipeline_profile_id"),
+        "retrieval_plan_id": (
+            lineage.get("retrieval_plan_id")
+            or lineage.get("retrieval_strategy")
+            or trace.get("retrieval_mode")
+        ),
+        "static_retrieval_spec_id": lineage.get("static_retrieval_spec_id"),
         "evidence_contract_sha256": canonical_sha256(evidence) if evidence else None,
     }

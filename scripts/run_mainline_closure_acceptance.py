@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_now_iso、_bundle_by_title、_trace_events、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Run deterministic mainline closure scenarios before LangGraph migration.
 
 This acceptance intentionally uses FakeRAG/FakeLLM so the recovery branches are
@@ -25,11 +29,32 @@ from system_test.mainline_audit import audit_mainline
 from system_test.mainline_closure import run_fake_mainline_scenario
 
 
+# 阅读注释（函数）：处理 now iso 相关逻辑。
 def _now_iso() -> str:
+    """处理 now iso 相关逻辑。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：isoformat, datetime.now。
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
+# 阅读注释（函数）：处理 bundle by title 相关逻辑。
 def _bundle_by_title(summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """处理 bundle by title 相关逻辑。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：summary.get, str, item.get, output.get。
+    """
     output = summary.get("scheme_writer_output") or {}
     return {
         str(item.get("section_title") or ""): item
@@ -37,7 +62,19 @@ def _bundle_by_title(summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     }
 
 
+# 阅读注释（函数）：处理 Trace events 相关逻辑。
 def _trace_events(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """处理 Trace events 相关逻辑。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：Path, json.loads, splitlines, trace_path.read_text, line.strip。
+    """
     trace_path = Path(summary["paths"]["trace"])
     return [
         json.loads(line)
@@ -46,7 +83,16 @@ def _trace_events(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, str, parser.parse_args, resolve, expanduser, Path, output_root.mkdir。
+    """
     parser = argparse.ArgumentParser(description="Run mainline closure acceptance.")
     parser.add_argument(
         "--output-root",
@@ -72,7 +118,7 @@ def main() -> int:
         run_id=f"mainline_corrective_{stamp}",
         rag_scenario="corrective_retrieval",
         llm_scenario="force_corrective_retrieval",
-        enable_corrective_retrieval=True,
+        enable_corrective_section_retrieval=True,
         citation_required_sections=["安全设计"],
     )
     collision = run_fake_mainline_scenario(
@@ -80,14 +126,14 @@ def main() -> int:
         run_id=f"mainline_collision_{stamp}",
         rag_scenario="citation_collision",
         llm_scenario="always_grounded",
-        enable_corrective_retrieval=False,
+        enable_corrective_section_retrieval=False,
     )
     business_failure = run_fake_mainline_scenario(
         output_root / "business_failure",
         run_id=f"mainline_business_failure_{stamp}",
         rag_scenario="business_gate_failure",
         llm_scenario="force_business_gate_failure",
-        enable_corrective_retrieval=True,
+        enable_corrective_section_retrieval=True,
     )
     business_persisted = persist_end_to_end_artifacts(
         business_failure,
@@ -104,7 +150,21 @@ def main() -> int:
 
     checks: List[Dict[str, Any]] = []
 
+    # 阅读注释（函数）：检查 main。
     def check(name: str, condition: bool, details: Dict[str, Any]) -> None:
+        """检查 main。
+
+        参数:
+            name: 名称，具体约束请结合类型标注和调用方确认。
+            condition: condition，具体约束请结合类型标注和调用方确认。
+            details: details，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：checks.append。
+        """
         checks.append(
             {
                 "name": name,
@@ -172,15 +232,15 @@ def main() -> int:
     check(
         "step_16_noop_and_coarse_node_audit",
         all(
-            findings.get(item_id, {}).get("present") is True
+            findings.get(item_id, {}).get("present") is False
             for item_id in (
                 "generation_checker_noop",
                 "repair_strategy_noop",
-                "evidence_grader_noop",
-                "scheme_writer_coarse_node",
-                "section_aware_retrieval_present",
+                "evidence_assessor_noop",
             )
-        ),
+        )
+        and findings.get("section_aware_retrieval_present", {}).get("present")
+        is True,
         {"audit_summary": audit.get("summary"), "findings": findings},
     )
 

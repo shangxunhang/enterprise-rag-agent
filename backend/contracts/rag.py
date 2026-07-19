@@ -1,19 +1,14 @@
-"""RAG services contract."""
+"""Public evidence-retrieval boundary."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
 
-from schemas.rag import RAGToolInputSchema, RAGToolOutputSchema
+from schemas.rag import EvidenceBundleSchema, RAGToolInputSchema
 
 
-class BaseRAGService(ABC):
-    """Contract implemented by RAG services providers."""
+@runtime_checkable
+class RAGServicePort(Protocol):
+    """Retrieve canonical evidence without generating a business answer."""
 
-    @abstractmethod
-    def retrieve(
-        self,
-        request: RAGToolInputSchema,
-    ) -> RAGToolOutputSchema:
-        """Retrieve evidence and return a standardized RAG result."""
-        raise NotImplementedError
+    def retrieve(self, request: RAGToolInputSchema) -> EvidenceBundleSchema: ...

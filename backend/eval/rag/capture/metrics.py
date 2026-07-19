@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：clamp、tokenize、token_set、jaccard、coverage、extract_text_from_chunk、extract_context_text、extract_answer、extract_query、_chunk_relevance_scores等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """RAGAS-style lightweight proxy metrics.
 
 This module intentionally does not depend on official ragas or an LLM judge.
@@ -28,10 +32,25 @@ STOPWORDS: Set[str] = {
 }
 
 
+# 阅读注释（函数）：处理 clamp 相关逻辑。
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    """处理 clamp 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        low: low，具体约束请结合类型标注和调用方确认。
+        high: high，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：max, min, float。
+    """
     return max(low, min(high, float(value)))
 
 
+# 阅读注释（函数）：处理 tokenize 相关逻辑。
 def tokenize(text: str) -> List[str]:
     """Small mixed Chinese/English tokenizer.
 
@@ -48,11 +67,36 @@ def tokenize(text: str) -> List[str]:
     return [x for x in tokens if x and x not in STOPWORDS]
 
 
+# 阅读注释（函数）：处理 Token set 相关逻辑。
 def token_set(text: str) -> Set[str]:
+    """处理 Token set 相关逻辑。
+
+    参数:
+        text: 待处理文本。
+
+    返回:
+        Set[str]
+
+    阅读提示:
+        主要直接调用：set, tokenize。
+    """
     return set(tokenize(text))
 
 
+# 阅读注释（函数）：处理 jaccard 相关逻辑。
 def jaccard(a: Iterable[str], b: Iterable[str]) -> float:
+    """处理 jaccard 相关逻辑。
+
+    参数:
+        a: a，具体约束请结合类型标注和调用方确认。
+        b: b，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：set, len。
+    """
     sa = set(a)
     sb = set(b)
     if not sa or not sb:
@@ -60,6 +104,7 @@ def jaccard(a: Iterable[str], b: Iterable[str]) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+# 阅读注释（函数）：处理 coverage 相关逻辑。
 def coverage(source_tokens: Sequence[str], target_tokens: Sequence[str]) -> float:
     """How much of target is covered by source."""
 
@@ -70,7 +115,19 @@ def coverage(source_tokens: Sequence[str], target_tokens: Sequence[str]) -> floa
     return len(ss & ts) / len(ts)
 
 
+# 阅读注释（函数）：提取 文本 from 文本块。
 def extract_text_from_chunk(chunk: Dict[str, Any]) -> str:
+    """提取 文本 from 文本块。
+
+    参数:
+        chunk: 文本块，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：chunk.get, isinstance, value.strip。
+    """
     for key in ("context_text", "match_text", "text", "content", "quote_text", "summary"):
         value = chunk.get(key)
         if isinstance(value, str) and value.strip():
@@ -78,7 +135,19 @@ def extract_text_from_chunk(chunk: Dict[str, Any]) -> str:
     return ""
 
 
+# 阅读注释（函数）：提取 上下文 文本。
 def extract_context_text(sample: Dict[str, Any]) -> str:
+    """提取 上下文 文本。
+
+    参数:
+        sample: sample，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：sample.get, isinstance, rag_context.get, eval_sample.get, nested.get。
+    """
     rag_context = sample.get("rag_context") or {}
     if isinstance(rag_context, dict):
         text = rag_context.get("context_text")
@@ -94,7 +163,19 @@ def extract_context_text(sample: Dict[str, Any]) -> str:
     return ""
 
 
+# 阅读注释（函数）：提取 answer。
 def extract_answer(sample: Dict[str, Any]) -> str:
+    """提取 answer。
+
+    参数:
+        sample: sample，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：sample.get, isinstance, value.strip, eval_sample.get。
+    """
     for key in ("final_output", "model_output"):
         value = sample.get(key)
         if isinstance(value, str) and value.strip():
@@ -110,7 +191,19 @@ def extract_answer(sample: Dict[str, Any]) -> str:
     return ""
 
 
+# 阅读注释（函数）：提取 查询。
 def extract_query(sample: Dict[str, Any]) -> str:
+    """提取 查询。
+
+    参数:
+        sample: sample，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：sample.get, isinstance, value.strip, eval_sample.get。
+    """
     for key in ("user_input", "query", "input"):
         value = sample.get(key)
         if isinstance(value, str) and value.strip():
@@ -125,7 +218,20 @@ def extract_query(sample: Dict[str, Any]) -> str:
     return ""
 
 
+# 阅读注释（函数）：处理 文本块 relevance scores 相关逻辑。
 def _chunk_relevance_scores(query: str, chunks: List[Dict[str, Any]]) -> List[float]:
+    """处理 文本块 relevance scores 相关逻辑。
+
+    参数:
+        query: 当前检索或生成查询。
+        chunks: chunks，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[float]
+
+    阅读提示:
+        主要直接调用：tokenize, extract_text_from_chunk, coverage, chunk.get, isinstance, math.exp, float, scores.append。
+    """
     q_tokens = tokenize(query)
     scores: List[float] = []
 
@@ -146,7 +252,20 @@ def _chunk_relevance_scores(query: str, chunks: List[Dict[str, Any]]) -> List[fl
     return scores
 
 
+# 阅读注释（函数）：处理 上下文 precision 相关逻辑。
 def context_precision(query: str, retrieved_chunks: List[Dict[str, Any]]) -> RAGEvalMetricSchema:
+    """处理 上下文 precision 相关逻辑。
+
+    参数:
+        query: 当前检索或生成查询。
+        retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        RAGEvalMetricSchema
+
+    阅读提示:
+        主要直接调用：RAGEvalMetricSchema, _chunk_relevance_scores, sum, enumerate, clamp, len。
+    """
     if not retrieved_chunks:
         return RAGEvalMetricSchema(
             name="context_precision",
@@ -180,7 +299,21 @@ def context_precision(query: str, retrieved_chunks: List[Dict[str, Any]]) -> RAG
     )
 
 
+# 阅读注释（函数）：处理 上下文 recall proxy 相关逻辑。
 def context_recall_proxy(query: str, context_text: str, retrieved_chunks: List[Dict[str, Any]]) -> RAGEvalMetricSchema:
+    """处理 上下文 recall proxy 相关逻辑。
+
+    参数:
+        query: 当前检索或生成查询。
+        context_text: 上下文 文本，具体约束请结合类型标注和调用方确认。
+        retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        RAGEvalMetricSchema
+
+    阅读提示:
+        主要直接调用：tokenize, coverage, RAGEvalMetricSchema, clamp, len, set。
+    """
     q_tokens = tokenize(query)
     context_tokens = tokenize(context_text)
 
@@ -206,7 +339,20 @@ def context_recall_proxy(query: str, context_text: str, retrieved_chunks: List[D
     )
 
 
+# 阅读注释（函数）：处理 faithfulness proxy 相关逻辑。
 def faithfulness_proxy(answer: str, context_text: str) -> RAGEvalMetricSchema:
+    """处理 faithfulness proxy 相关逻辑。
+
+    参数:
+        answer: answer，具体约束请结合类型标注和调用方确认。
+        context_text: 上下文 文本，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        RAGEvalMetricSchema
+
+    阅读提示:
+        主要直接调用：tokenize, RAGEvalMetricSchema, coverage, sorted, set, clamp, len。
+    """
     answer_tokens = tokenize(answer)
     context_tokens = tokenize(context_text)
 
@@ -240,7 +386,20 @@ def faithfulness_proxy(answer: str, context_text: str) -> RAGEvalMetricSchema:
     )
 
 
+# 阅读注释（函数）：处理 answer relevance proxy 相关逻辑。
 def answer_relevance_proxy(query: str, answer: str) -> RAGEvalMetricSchema:
+    """处理 answer relevance proxy 相关逻辑。
+
+    参数:
+        query: 当前检索或生成查询。
+        answer: answer，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        RAGEvalMetricSchema
+
+    阅读提示:
+        主要直接调用：tokenize, coverage, RAGEvalMetricSchema, clamp, len, set。
+    """
     q_tokens = tokenize(query)
     a_tokens = tokenize(answer)
 
@@ -263,7 +422,21 @@ def answer_relevance_proxy(query: str, answer: str) -> RAGEvalMetricSchema:
     )
 
 
+# 阅读注释（函数）：处理 引用 coverage 相关逻辑。
 def citation_coverage(answer: str, citations: List[Dict[str, Any]], retrieved_chunks: List[Dict[str, Any]]) -> RAGEvalMetricSchema:
+    """处理 引用 coverage 相关逻辑。
+
+    参数:
+        answer: answer，具体约束请结合类型标注和调用方确认。
+        citations: 引用信息集合。
+        retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        RAGEvalMetricSchema
+
+    阅读提示:
+        主要直接调用：len, answer.strip, RAGEvalMetricSchema, set, c.get, cited_chunk_ids.add, str, chunk.get。
+    """
     answer_chars = len(answer or "")
 
     if not answer.strip():
@@ -310,7 +483,20 @@ def citation_coverage(answer: str, citations: List[Dict[str, Any]], retrieved_ch
     )
 
 
+# 阅读注释（函数）：处理 completeness proxy 相关逻辑。
 def completeness_proxy(answer: str, required_sections: List[str] | None = None) -> RAGEvalMetricSchema:
+    """处理 completeness proxy 相关逻辑。
+
+    参数:
+        answer: answer，具体约束请结合类型标注和调用方确认。
+        required_sections: required sections，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        RAGEvalMetricSchema
+
+    阅读提示:
+        主要直接调用：answer.strip, RAGEvalMetricSchema, min, len, clamp, hit.append, miss.append。
+    """
     required_sections = required_sections or []
     answer = answer or ""
 
@@ -345,7 +531,19 @@ def completeness_proxy(answer: str, required_sections: List[str] | None = None) 
     )
 
 
+# 阅读注释（函数）：处理 weighted overall 相关逻辑。
 def weighted_overall(metrics: Dict[str, RAGEvalMetricSchema]) -> float:
+    """处理 weighted overall 相关逻辑。
+
+    参数:
+        metrics: 指标，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：weights.items, metrics.get, clamp。
+    """
     weights = {
         "context_precision": 0.20,
         "context_recall_proxy": 0.15,

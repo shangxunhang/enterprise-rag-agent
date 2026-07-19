@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：BaseReader。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/rag_template/reader/base_reader.py
 =====================================
@@ -13,6 +17,7 @@ from pathlib import Path
 from typing import List, Dict
 
 
+# 阅读注释（类）：封装 base reader，集中封装相关状态、依赖和行为。
 class BaseReader(ABC):
     """
     Reader 抽象基类。
@@ -24,6 +29,7 @@ class BaseReader(ABC):
     - PdfReader 后续再加
     """
 
+    # 阅读注释（函数）：读取 BaseReader。
     @abstractmethod
     def read(self, path: Path) -> List[Dict]:
         """

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：LocalLLMGenerator。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/llm/local_llm.py
 ====================
@@ -25,6 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - import-time compatibility for 
     AutoModelForCausalLM = None
 
 
+# 阅读注释（类）：封装 本地 llmgenerator，集中封装相关状态、依赖和行为。
 class LocalLLMGenerator:
     """
     本地 LLM 生成器。
@@ -33,11 +38,24 @@ class LocalLLMGenerator:
     RAG 其他模块不关心 tokenizer / model.generate 的细节。
     """
 
+    # 阅读注释（函数）：初始化 LocalLLMGenerator，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         model_name: Union[str, Path],
         device: Optional[str] = None,
     ):
+        """初始化 LocalLLMGenerator，保存运行所需的依赖、配置或状态。
+
+        参数:
+            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+            device: device，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：str, ImportError, torch.cuda.is_available, print, AutoTokenizer.from_pretrained, AutoModelForCausalLM.from_pretrained, self.model.to, self.model.eval。
+        """
         self.model_name = str(model_name)
 
         if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
@@ -78,6 +96,7 @@ class LocalLLMGenerator:
         print("[LocalLLM] 模型加载完成")
         print("=" * 80)
 
+    # 阅读注释（函数）：构建 chat 提示词。
     def _build_chat_prompt(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
         使用 tokenizer 的 chat_template 构造 Instruct 模型输入。
@@ -106,6 +125,7 @@ class LocalLLMGenerator:
 
         return f"{final_system_prompt}\n\n{prompt}"
 
+    # 阅读注释（函数）：生成 LocalLLMGenerator。
     def generate(
         self,
         prompt: str,

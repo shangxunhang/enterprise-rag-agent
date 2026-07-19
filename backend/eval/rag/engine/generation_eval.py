@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：compute_answer_keyword_hit、compute_answer_context_overlap、compute_citation_hit、evaluate_generation。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 generation_eval.py
 ==================
@@ -27,6 +31,7 @@ RAG 生成答案评估模块。
 from typing import List, Optional, Set
 
 
+# 阅读注释（函数）：计算 answer keyword hit。
 def compute_answer_keyword_hit(
     answer: str,
     answer_keywords: List[str],
@@ -57,6 +62,7 @@ def compute_answer_keyword_hit(
     return hit_count / len(answer_keywords)
 
 
+# 阅读注释（函数）：计算 answer 上下文 overlap。
 def compute_answer_context_overlap(
     answer: str,
     retrieved_results: List[RetrievalResult],
@@ -111,6 +117,7 @@ def compute_answer_context_overlap(
     return supported_count / valid_keyword_count
 
 
+# 阅读注释（函数）：计算 引用 hit。
 def compute_citation_hit(
     expected_doc_ids: List[str],
     cited_doc_ids: Optional[List[str]] = None,
@@ -139,6 +146,7 @@ def compute_citation_hit(
     return 1.0 if expected_doc_id_set & cited_doc_id_set else 0.0
 
 
+# 阅读注释（函数）：评估 生成。
 def evaluate_generation(
     sample: EvalSample,
     answer: str,

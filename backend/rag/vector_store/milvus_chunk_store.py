@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：safe_str、safe_int、safe_list、safe_dict、json_dumps_compact、truncate_text、build_milvus_schema_for_chunk_v1、create_or_reset_chunk_collection、build_milvus_chunk_record、insert_records等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/vector_store/milvus_chunk_store.py
 ==============================================
@@ -24,7 +28,20 @@ import numpy as np
 from pymilvus import DataType, MilvusClient
 
 
+# 阅读注释（函数）：处理 safe str 相关逻辑。
 def safe_str(value: Any, default: str = "") -> str:
+    """处理 safe str 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：isinstance, str。
+    """
     if value is None:
         return default
     if isinstance(value, str):
@@ -32,7 +49,20 @@ def safe_str(value: Any, default: str = "") -> str:
     return str(value)
 
 
+# 阅读注释（函数）：处理 safe int 相关逻辑。
 def safe_int(value: Any, default: int = -1) -> int:
+    """处理 safe int 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：int。
+    """
     if value is None or value == "":
         return default
     try:
@@ -41,7 +71,19 @@ def safe_int(value: Any, default: int = -1) -> int:
         return default
 
 
+# 阅读注释（函数）：处理 safe 列表 相关逻辑。
 def safe_list(value: Any) -> List[Any]:
+    """处理 safe 列表 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Any]
+
+    阅读提示:
+        主要直接调用：isinstance, list。
+    """
     if value is None:
         return []
     if isinstance(value, list):
@@ -51,21 +93,71 @@ def safe_list(value: Any) -> List[Any]:
     return [value]
 
 
+# 阅读注释（函数）：处理 safe 字典 相关逻辑。
 def safe_dict(value: Any) -> Dict[str, Any]:
+    """处理 safe 字典 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：isinstance。
+    """
     return value if isinstance(value, dict) else {}
 
 
+# 阅读注释（函数）：处理 JSON dumps compact 相关逻辑。
 def json_dumps_compact(value: Any) -> str:
+    """处理 JSON dumps compact 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：json.dumps。
+    """
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+# 阅读注释（函数）：处理 truncate 文本 相关逻辑。
 def truncate_text(text: str, max_chars: int) -> str:
+    """处理 truncate 文本 相关逻辑。
+
+    参数:
+        text: 待处理文本。
+        max_chars: max chars，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：len。
+    """
     if len(text) <= max_chars:
         return text
     return text[:max_chars]
 
 
+# 阅读注释（函数）：构建 milvus Schema for 文本块 v1。
 def build_milvus_schema_for_chunk_v1(dim: int, max_text_chars: int):
+    """构建 milvus Schema for 文本块 v1。
+
+    参数:
+        dim: dim，具体约束请结合类型标注和调用方确认。
+        max_text_chars: max 文本 chars，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        未显式标注；请结合调用方和实际返回语句理解。
+
+    阅读提示:
+        主要直接调用：MilvusClient.create_schema, schema.add_field, min。
+    """
     schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
     schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, is_primary=True, max_length=512)
     schema.add_field(field_name="vector", datatype=DataType.FLOAT_VECTOR, dim=dim)
@@ -96,6 +188,7 @@ def build_milvus_schema_for_chunk_v1(dim: int, max_text_chars: int):
     return schema
 
 
+# 阅读注释（函数）：创建 or reset 文本块 collection。
 def create_or_reset_chunk_collection(
     client: MilvusClient,
     collection_name: str,
@@ -104,6 +197,22 @@ def create_or_reset_chunk_collection(
     recreate: bool,
     max_text_chars: int,
 ) -> None:
+    """创建 or reset 文本块 collection。
+
+    参数:
+        client: 下游客户端。
+        collection_name: collection 名称，具体约束请结合类型标注和调用方确认。
+        dim: dim，具体约束请结合类型标注和调用方确认。
+        metric_type: 指标 类型，具体约束请结合类型标注和调用方确认。
+        recreate: recreate，具体约束请结合类型标注和调用方确认。
+        max_text_chars: max 文本 chars，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：client.has_collection, client.drop_collection, print, build_milvus_schema_for_chunk_v1, client.prepare_index_params, index_params.add_index, client.create_collection。
+    """
     if client.has_collection(collection_name):
         if recreate:
             client.drop_collection(collection_name)
@@ -128,6 +237,7 @@ def create_or_reset_chunk_collection(
     print(f"Vector index created: AUTOINDEX / {metric_type}")
 
 
+# 阅读注释（函数）：构建 milvus 文本块 记录。
 def build_milvus_chunk_record(
     chunk: Dict[str, Any],
     vector: np.ndarray,
@@ -136,6 +246,22 @@ def build_milvus_chunk_record(
     embedding_version: str,
     max_text_chars: int,
 ) -> Dict[str, Any]:
+    """构建 milvus 文本块 记录。
+
+    参数:
+        chunk: 文本块，具体约束请结合类型标注和调用方确认。
+        vector: vector，具体约束请结合类型标注和调用方确认。
+        embedding_model: embedding 模型，具体约束请结合类型标注和调用方确认。
+        embedding_dim: embedding dim，具体约束请结合类型标注和调用方确认。
+        embedding_version: embedding 版本，具体约束请结合类型标注和调用方确认。
+        max_text_chars: max 文本 chars，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：safe_str, chunk.get, tolist, vector.astype, truncate_text, safe_int, len, json_dumps_compact。
+    """
     return {
         "chunk_id": safe_str(chunk.get("chunk_id")),
         "vector": vector.astype(np.float32).tolist(),
@@ -164,12 +290,27 @@ def build_milvus_chunk_record(
     }
 
 
+# 阅读注释（函数）：处理 insert 记录集合 相关逻辑。
 def insert_records(
     client: MilvusClient,
     collection_name: str,
     records: Sequence[Dict[str, Any]],
     batch_size: int,
 ) -> int:
+    """处理 insert 记录集合 相关逻辑。
+
+    参数:
+        client: 下游客户端。
+        collection_name: collection 名称，具体约束请结合类型标注和调用方确认。
+        records: 记录集合，具体约束请结合类型标注和调用方确认。
+        batch_size: batch size，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：range, len, list, client.insert, print。
+    """
     total = 0
     for start in range(0, len(records), batch_size):
         batch = list(records[start: start + batch_size])
@@ -179,6 +320,7 @@ def insert_records(
     return total
 
 
+# 阅读注释（函数）：搜索 smoke 测试。
 def search_smoke_test(
     client: MilvusClient,
     collection_name: str,
@@ -186,6 +328,21 @@ def search_smoke_test(
     top_k: int,
     metric_type: str,
 ) -> List[Dict[str, Any]]:
+    """搜索 smoke 测试。
+
+    参数:
+        client: 下游客户端。
+        collection_name: collection 名称，具体约束请结合类型标注和调用方确认。
+        query_vector: 查询 vector，具体约束请结合类型标注和调用方确认。
+        top_k: top k，具体约束请结合类型标注和调用方确认。
+        metric_type: 指标 类型，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：client.load_collection, print, client.search, tolist, query_vector.astype。
+    """
     try:
         client.load_collection(collection_name)
     except Exception as exc:

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：create_dirs、create_file、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 init_mini_rag.py
 ================
@@ -158,6 +162,7 @@ FAISS 本身主要保存向量索引，chunk 的原文内容、来源文件、ch
 """
 
 
+# 阅读注释（函数）：创建 dirs。
 def create_dirs() -> None:
     """
     创建项目目录。
@@ -166,6 +171,7 @@ def create_dirs() -> None:
         dir_path.mkdir(parents=True, exist_ok=True)
 
 
+# 阅读注释（函数）：创建 文件。
 def create_file(file_path: Path, content: str = "") -> None:
     """
     创建文件。
@@ -188,6 +194,7 @@ def create_file(file_path: Path, content: str = "") -> None:
     print(f"[Create] 文件已创建: {file_path}")
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
     """
     初始化 Mini-RAG 项目。

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：上下文管理模块，用于组织证据、历史状态和 Token 预算。
+# 主要定义：ContextBudgetExceededError、LLMContextManager。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Deterministic bounded context manager."""
 
 from __future__ import annotations
@@ -16,10 +20,12 @@ from schemas.context import (
 from .token_estimator import DeterministicTokenEstimator
 
 
+# 阅读注释（类）：封装 上下文 预算 exceeded 错误，集中封装相关状态、依赖和行为。
 class ContextBudgetExceededError(RuntimeError):
     """Raised when required blocks alone cannot fit the configured budget."""
 
 
+# 阅读注释（类）：封装 llmcontext 管理器，集中封装相关状态、依赖和行为。
 class LLMContextManager:
     """Select, truncate and render one model-call context package.
 
@@ -27,9 +33,22 @@ class LLMContextManager:
     or mutate workflow state. The same request produces the same package.
     """
 
+    # 阅读注释（函数）：初始化 LLMContextManager，保存运行所需的依赖、配置或状态。
     def __init__(self, estimator: DeterministicTokenEstimator | None = None) -> None:
+        """初始化 LLMContextManager，保存运行所需的依赖、配置或状态。
+
+        参数:
+            estimator: estimator，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：DeterministicTokenEstimator。
+        """
         self.estimator = estimator or DeterministicTokenEstimator()
 
+    # 阅读注释（函数）：构建 passthrough。
     def build_passthrough(
         self,
         *,
@@ -116,7 +135,19 @@ class LLMContextManager:
             },
         )
 
+    # 阅读注释（函数）：构建 LLMContextManager。
     def build(self, request: ContextBuildRequestSchema) -> LLMContextPackageSchema:
+        """构建 LLMContextManager。
+
+        参数:
+            request: 当前请求对象。
+
+        返回:
+            LLMContextPackageSchema
+
+        阅读提示:
+            主要直接调用：max, int, sorted, strip, str, len, self.estimator.estimate, decisions.append。
+        """
         max_chars = max(256, int(request.max_context_chars))
         usable_tokens = max(
             1,
@@ -316,6 +347,7 @@ class LLMContextManager:
             },
         )
 
+    # 阅读注释（函数）：处理 fit rendered projection 相关逻辑。
     def _fit_rendered_projection(
         self,
         selected: List[ContextItemSchema],
@@ -324,6 +356,20 @@ class LLMContextManager:
         max_chars: int,
         max_tokens: int,
     ) -> tuple[List[ContextItemSchema], List[ContextDecisionSchema], str, int]:
+        """处理 fit rendered projection 相关逻辑。
+
+        参数:
+            selected: selected，具体约束请结合类型标注和调用方确认。
+            decisions: decisions，具体约束请结合类型标注和调用方确认。
+            max_chars: max chars，具体约束请结合类型标注和调用方确认。
+            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            tuple[List[ContextItemSchema], List[ContextDecisionSchema], str, int]
+
+        阅读提示:
+            主要直接调用：list, max, len, range, self._render, self.estimator.estimate, decision_by_id.values, next。
+        """
         current = list(selected)
         decision_by_id = {item.item_id: item for item in decisions}
         max_iterations = max(16, len(current) * 6)
@@ -419,6 +465,7 @@ class LLMContextManager:
             raise ContextBudgetExceededError("rendered context cannot fit configured budget")
         return current, list(decision_by_id.values()), rendered, rendered_tokens
 
+    # 阅读注释（函数）：处理 fit 数据项 content 相关逻辑。
     def _fit_item_content(
         self,
         item: ContextItemSchema,
@@ -461,6 +508,7 @@ class LLMContextManager:
             "fit_remaining_budget",
         )
 
+    # 阅读注释（函数）：处理 fit line blocks 相关逻辑。
     def _fit_line_blocks(
         self,
         text: str,
@@ -469,6 +517,20 @@ class LLMContextManager:
         max_tokens: int,
         min_blocks: int = 0,
     ) -> tuple[str, int, int]:
+        """处理 fit line blocks 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+            max_chars: max chars，具体约束请结合类型标注和调用方确认。
+            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
+            min_blocks: min blocks，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            tuple[str, int, int]
+
+        阅读提示:
+            主要直接调用：len, text.splitlines, line.strip, splitlines, str, join, self.estimator.estimate, selected.append。
+        """
         if max_chars <= 0 or max_tokens <= 0:
             return "", 0, len([line for line in text.splitlines() if line.strip()])
 
@@ -499,7 +561,21 @@ class LLMContextManager:
 
         return "\n".join(selected), len(selected), len(blocks)
 
+    # 阅读注释（函数）：处理 fit prefix 相关逻辑。
     def _fit_prefix(self, text: str, *, max_chars: int, max_tokens: int) -> str:
+        """处理 fit prefix 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+            max_chars: max chars，具体约束请结合类型标注和调用方确认。
+            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：min, len, rstrip, self.estimator.estimate, best.rfind, max。
+        """
         if max_chars <= 0 or max_tokens <= 0:
             return ""
         upper = min(len(text), max_chars)
@@ -524,15 +600,37 @@ class LLMContextManager:
             best = best[: cut + 1].rstrip()
         return best
 
+    # 阅读注释（函数）：处理 heading 相关逻辑。
     @staticmethod
     def _heading(item: ContextItemSchema) -> str:
+        """处理 heading 相关逻辑。
+
+        参数:
+            item: 数据项，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+        """
         return f"## {item.title} [{item.source_type}:{item.item_id}]"
 
+    # 阅读注释（函数）：渲染 LLMContextManager。
     @classmethod
     def _render(cls, items: Iterable[ContextItemSchema]) -> str:
+        """渲染 LLMContextManager。
+
+        参数:
+            items: 待处理的数据项集合。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：cls._heading, item.content.strip, join。
+        """
         blocks = [f"{cls._heading(item)}\n{item.content.strip()}" for item in items]
         return "\n\n".join(blocks)
 
+    # 阅读注释（函数）：处理 decision 相关逻辑。
     @staticmethod
     def _decision(
         item: ContextItemSchema,
@@ -544,6 +642,23 @@ class LLMContextManager:
         tokens_before: int,
         tokens_after: int,
     ) -> ContextDecisionSchema:
+        """处理 decision 相关逻辑。
+
+        参数:
+            item: 数据项，具体约束请结合类型标注和调用方确认。
+            action: action，具体约束请结合类型标注和调用方确认。
+            reason: reason，具体约束请结合类型标注和调用方确认。
+            chars_before: chars before，具体约束请结合类型标注和调用方确认。
+            chars_after: chars after，具体约束请结合类型标注和调用方确认。
+            tokens_before: tokens before，具体约束请结合类型标注和调用方确认。
+            tokens_after: tokens after，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ContextDecisionSchema
+
+        阅读提示:
+            主要直接调用：ContextDecisionSchema。
+        """
         return ContextDecisionSchema(
             item_id=item.item_id,
             source_type=item.source_type,

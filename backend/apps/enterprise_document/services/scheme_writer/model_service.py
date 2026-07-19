@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：SectionModelService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generated from the stable v7.5.1 SchemeWriter behavior."""
 
 
@@ -6,14 +10,38 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agent.runtime.shared_state_schema import SharedStateSchema
+from apps.enterprise_document.quality.budget import current_workflow_budget
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationSchema
 from schemas.model import ModelRequestSchema, ModelResponseSchema
 from schemas.rag import RAGContextSchema
-from .base import RuntimeBoundService
+from context_manager import LLMContextManager
+from model_gateway.model_gateway import ModelGateway
+from .prompt_service import SectionPromptService
+from .runtime_support import SchemeWriterRuntimeSupport
 
 
-class SectionModelService(RuntimeBoundService):
+# 阅读注释（类）：封装 章节 模型 服务，封装一组可复用的业务能力。
+class SectionModelService:
+    """封装 章节 模型 服务，封装一组可复用的业务能力。"""
+
+    def __init__(
+        self,
+        *,
+        model_gateway: ModelGateway | None,
+        model_name: str,
+        agent_name: str,
+        context_manager: LLMContextManager,
+        prompt_service: SectionPromptService,
+        runtime_support: SchemeWriterRuntimeSupport,
+    ) -> None:
+        self.model_gateway = model_gateway
+        self.model_name = model_name
+        self.agent_name = agent_name
+        self.context_manager = context_manager
+        self.prompt_service = prompt_service
+        self.runtime_support = runtime_support
+    # 阅读注释（函数）：处理 call 模型 相关逻辑。
     def _call_model(
         self,
         shared_state: SharedStateSchema,
@@ -30,6 +58,28 @@ class SectionModelService(RuntimeBoundService):
         prompt_id: Optional[str] = None,
         prompt_version: Optional[str] = None,
     ) -> ModelResponseSchema:
+        """处理 call 模型 相关逻辑。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+            prompt: 提示词，具体约束请结合类型标注和调用方确认。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+            available_citation_ids: available 引用 标识集合，具体约束请结合类型标注和调用方确认。
+            purpose: purpose，具体约束请结合类型标注和调用方确认。
+            suffix: suffix，具体约束请结合类型标注和调用方确认。
+            max_tokens_override: max tokens override，具体约束请结合类型标注和调用方确认。
+            context_package: 上下文 package，具体约束请结合类型标注和调用方确认。
+            prompt_id: 提示词 标识，具体约束请结合类型标注和调用方确认。
+            prompt_version: 提示词 版本，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ModelResponseSchema
+
+        阅读提示:
+            主要直接调用：RuntimeError, self.context_manager.build_passthrough, int, project_input.generation_requirements.extra.get, passthrough.model_dump, ModelRequestSchema, self._now_iso, self._context_package_summary。
+        """
         if self.model_gateway is None:
             raise RuntimeError("ModelGateway is not configured")
         if not context_package:
@@ -69,7 +119,7 @@ class SectionModelService(RuntimeBoundService):
                 if max_tokens_override is not None
                 else project_input.generation_requirements.max_tokens_per_section
             ),
-            created_at=self._now_iso(),
+            created_at=self.runtime_support._now_iso(),
             extra={
                 "call_purpose": purpose,
                 "section_id": section_id,
@@ -81,6 +131,9 @@ class SectionModelService(RuntimeBoundService):
                 "llm_context_summary": self._context_package_summary(context_package),
             },
         )
+        budget = current_workflow_budget()
+        if budget is not None:
+            budget.reserve_llm_call(max_tokens=request.max_tokens)
         print(
             f"[Model] START purpose={purpose} section={section_title} max_tokens={request.max_tokens}",
             flush=True,
@@ -95,10 +148,22 @@ class SectionModelService(RuntimeBoundService):
         shared_state.generated_outputs[request.model_call_id] = response.model_dump()
         return response
 
+    # 阅读注释（函数）：处理 上下文 package summary 相关逻辑。
     @staticmethod
     def _context_package_summary(
         package: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        """处理 上下文 package summary 相关逻辑。
+
+        参数:
+            package: package，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Dict[str, Any]
+
+        阅读提示:
+            主要直接调用：dict, package.get, list, len, item.get, sum, budget.get。
+        """
         if not package:
             return {"managed": False}
         budget = dict(package.get("budget") or {})
@@ -128,6 +193,7 @@ class SectionModelService(RuntimeBoundService):
             "lineage": dict(package.get("lineage") or {}),
         }
 
+    # 阅读注释（函数）：处理 continue truncated 章节 相关逻辑。
     def _continue_truncated_section(
         self,
         shared_state: SharedStateSchema,
@@ -139,17 +205,38 @@ class SectionModelService(RuntimeBoundService):
         citations: List[CitationSchema],
         rag_context: RAGContextSchema,
     ) -> ModelResponseSchema:
+        """处理 continue truncated 章节 相关逻辑。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+            original_content: original content，具体约束请结合类型标注和调用方确认。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+            citations: 引用信息集合。
+            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ModelResponseSchema
+
+        阅读提示:
+            主要直接调用：max, self._target_section_chars, len, self._citation_catalog, self._runtime._call_model, min。
+        """
         reduced_context = rag_context.context_text[: max(1000, rag_context.max_context_chars // 2)]
-        remaining_chars = max(160, self._target_section_chars(project_input) - len(original_content))
+        remaining_chars = max(
+            160,
+            self.prompt_service._target_section_chars(project_input)
+            - len(original_content),
+        )
         prompt = (
             f"继续完成“{section_title}”章节。不要重复已完成内容，只输出续写部分。\n"
             f"续写最多 {remaining_chars} 个汉字，只补全未完成句子和必要结论；"
             "不得新增其他章节、标题、分隔线或大段扩展。\n\n"
             f"已完成内容：\n{original_content}\n\n"
             f"缩短后的证据上下文：\n{reduced_context}\n\n"
-            f"可用引用：\n{self._citation_catalog(citations)}"
+            f"可用引用：\n{self.prompt_service._citation_catalog(citations)}"
         )
-        return self._runtime._call_model(
+        return self._call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -161,6 +248,7 @@ class SectionModelService(RuntimeBoundService):
             max_tokens_override=min(256, project_input.generation_requirements.max_tokens_per_section),
         )
 
+    # 阅读注释（函数）：重试 truncated 章节。
     def _retry_truncated_section(
         self,
         shared_state: SharedStateSchema,
@@ -183,9 +271,11 @@ class SectionModelService(RuntimeBoundService):
         divisor = max(2, retry_index + 1)
         reduced_chars = max(800, rag_context.max_context_chars // divisor)
         reduced_context = rag_context.context_text[:reduced_chars]
-        target_chars = self._target_section_chars(project_input)
+        target_chars = self.prompt_service._target_section_chars(project_input)
         compact_target_chars = min(800, max(480, int(target_chars * 0.68)))
-        contract = self._section_generation_contract(section_title, project_input)
+        contract = self.prompt_service._section_generation_contract(
+            section_title, project_input
+        )
         prompt = (
             f"“{section_title}”章节此前因达到输出上限而未完整结束。请从头生成一版完整短稿。\n"
             f"强制要求：正文控制在 {compact_target_chars} 个汉字以内，最多使用 4 至 6 个要点；"
@@ -195,9 +285,9 @@ class SectionModelService(RuntimeBoundService):
             f"章节边界：{contract}\n\n"
             f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
             f"缩短后的证据上下文：\n{reduced_context}\n\n"
-            f"可用引用：\n{self._citation_catalog(citations)}"
+            f"可用引用：\n{self.prompt_service._citation_catalog(citations)}"
         )
-        return self._runtime._call_model(
+        return self._call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -211,6 +301,7 @@ class SectionModelService(RuntimeBoundService):
             ),
         )
 
+    # 阅读注释（函数）：恢复 complete prefix。
     @staticmethod
     def _recover_complete_prefix(
         content: str,
@@ -244,6 +335,7 @@ class SectionModelService(RuntimeBoundService):
             return None
         return candidate
 
+    # 阅读注释（函数）：处理 compress overlong 章节 相关逻辑。
     def _compress_overlong_section(
         self,
         shared_state: SharedStateSchema,
@@ -256,9 +348,11 @@ class SectionModelService(RuntimeBoundService):
     ) -> ModelResponseSchema:
         """Compress a complete but overlong section instead of free regeneration."""
 
-        target_chars = self._target_section_chars(project_input)
+        target_chars = self.prompt_service._target_section_chars(project_input)
         hard_limit = int(target_chars * 1.5)
-        contract = self._section_generation_contract(section_title, project_input)
+        contract = self.prompt_service._section_generation_contract(
+            section_title, project_input
+        )
         prompt = (
             f"下面的‘{section_title}’章节内容完整，但长度超过限制。请执行压缩改写，"
             f"不要重新自由扩写。目标不超过 {target_chars} 个汉字，绝对不得超过 "
@@ -268,9 +362,9 @@ class SectionModelService(RuntimeBoundService):
             "只输出压缩后的完整正文，并以完整句子结束。\n\n"
             f"章节边界：\n{contract}\n\n"
             f"原始正文：\n{original_content}\n\n"
-            f"可用引用目录：\n{self._citation_catalog(citations)}"
+            f"可用引用目录：\n{self.prompt_service._citation_catalog(citations)}"
         )
-        return self._runtime._call_model(
+        return self._call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -286,6 +380,7 @@ class SectionModelService(RuntimeBoundService):
             ),
         )
 
+    # 阅读注释（函数）：改写 invalid 章节。
     def _rewrite_invalid_section(
         self,
         shared_state: SharedStateSchema,
@@ -299,8 +394,10 @@ class SectionModelService(RuntimeBoundService):
     ) -> ModelResponseSchema:
         """Apply one issue-directed rewrite based on semantic gate output."""
 
-        target_chars = self._target_section_chars(project_input)
-        contract = self._section_generation_contract(section_title, project_input)
+        target_chars = self.prompt_service._target_section_chars(project_input)
+        contract = self.prompt_service._section_generation_contract(
+            section_title, project_input
+        )
         prompt = (
             f"‘{section_title}’章节存在语义质量问题。请只按问题清单做定向修订，"
             "不要重新自由扩写，也不要增加新事实。\n"
@@ -312,9 +409,9 @@ class SectionModelService(RuntimeBoundService):
             f"语义评审问题：\n{json.dumps(semantic_issues, ensure_ascii=False, indent=2)}\n\n"
             f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
             f"原始正文：\n{original_content}\n\n"
-            f"可用引用目录：\n{self._citation_catalog(citations)}"
+            f"可用引用目录：\n{self.prompt_service._citation_catalog(citations)}"
         )
-        return self._runtime._call_model(
+        return self._call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,

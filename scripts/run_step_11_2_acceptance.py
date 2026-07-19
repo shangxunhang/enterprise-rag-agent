@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：parse_args、apply_overrides、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import argparse
@@ -16,12 +20,21 @@ from rag.offline.config import OfflineIndexBuildConfig, OfflineIndexConfigLoader
 from rag.offline.verification import OfflineIndexVerifier  # noqa: E402
 
 
+# 阅读注释（函数）：解析 args。
 def parse_args() -> argparse.Namespace:
+    """解析 args。
+
+    返回:
+        argparse.Namespace
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, parser.parse_args。
+    """
     parser = argparse.ArgumentParser(
         description="Step 11.2 acceptance: build and verify a real m3e-base + Milvus Lite index"
     )
-    parser.add_argument("--index-config", required=True, help="Offline index YAML/JSON profile")
-    parser.add_argument("--source-path", help="Override source.path from the profile")
+    parser.add_argument("--index-config", required=True, help="Offline index YAML/JSON config")
+    parser.add_argument("--source-path", help="Override source.path from the config")
     parser.add_argument("--embedding-model", help="Override embedding.model_name")
     parser.add_argument("--device", choices=("cpu", "cuda", "mps"), help="Override embedding.device")
     parser.add_argument("--batch-size", type=int, help="Override embedding.batch_size")
@@ -37,7 +50,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# 阅读注释（函数）：应用 overrides。
 def apply_overrides(config: OfflineIndexBuildConfig, args: argparse.Namespace) -> OfflineIndexBuildConfig:
+    """应用 overrides。
+
+    参数:
+        config: 运行配置。
+        args: 额外位置参数。
+
+    返回:
+        OfflineIndexBuildConfig
+
+    阅读提示:
+        主要直接调用：config.model_dump, OfflineIndexBuildConfig.model_validate。
+    """
     payload = config.model_dump(mode="python")
     if args.source_path:
         payload["source"]["path"] = args.source_path
@@ -54,7 +80,16 @@ def apply_overrides(config: OfflineIndexBuildConfig, args: argparse.Namespace) -
     return OfflineIndexBuildConfig.model_validate(payload)
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：parse_args, OfflineIndexConfigLoader, loader.load, apply_overrides, ValueError, expanduser, Path, manifest_path.is_absolute。
+    """
     args = parse_args()
     loader = OfflineIndexConfigLoader()
     config = loader.load(args.index_config, project_root=PROJECT_ROOT)

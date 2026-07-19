@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：_rows、test_trace_v2_sequence_and_nested_span_context、test_tool_trace_records_evidence_lineage、test_model_trace_hashes_prompt_instead_of_copying_it、test_trace_validator_accepts_complete_fake_mainline_shape、test_tool_failure_is_recorded_as_error_span。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import json
@@ -17,11 +21,35 @@ from tools.tool_registry import ToolRegistry
 NOW = "2026-07-17T00:00:00+00:00"
 
 
+# 阅读注释（函数）：处理 rows 相关逻辑。
 def _rows(path: Path) -> list[dict]:
+    """处理 rows 相关逻辑。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        list[dict]
+
+    阅读提示:
+        主要直接调用：json.loads, splitlines, path.read_text, line.strip。
+    """
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+# 阅读注释（函数）：处理 测试 Trace v2 sequence and nested span 上下文 相关逻辑。
 def test_trace_v2_sequence_and_nested_span_context(tmp_path: Path) -> None:
+    """处理 测试 Trace v2 sequence and nested span 上下文 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlRunTraceRecorder, new_span, activate_span, recorder.record, _rows, all。
+    """
     recorder = JsonlRunTraceRecorder(tmp_path)
     root = new_span(run_id="run_1", span_name="root", span_kind="server")
     with activate_span(root):
@@ -81,7 +109,19 @@ def test_trace_v2_sequence_and_nested_span_context(tmp_path: Path) -> None:
     assert rows[1]["parent_span_id"] == root.span_id
 
 
+# 阅读注释（函数）：处理 测试 工具 Trace 记录集合 证据 lineage 相关逻辑。
 def test_tool_trace_records_evidence_lineage(tmp_path: Path) -> None:
+    """处理 测试 工具 Trace 记录集合 证据 lineage 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlRunTraceRecorder, ToolRegistry, registry.register, FakeRAGTool, ToolExecutor, new_span, activate_span, executor.execute。
+    """
     recorder = JsonlRunTraceRecorder(tmp_path)
     registry = ToolRegistry()
     registry.register(FakeRAGTool())
@@ -108,7 +148,19 @@ def test_tool_trace_records_evidence_lineage(tmp_path: Path) -> None:
     assert finish["output_summary"]["rag_evidence"]["selected_evidence_count"] == 1
 
 
+# 阅读注释（函数）：处理 测试 模型 Trace hashes 提示词 instead of copying it 相关逻辑。
 def test_model_trace_hashes_prompt_instead_of_copying_it(tmp_path: Path) -> None:
+    """处理 测试 模型 Trace hashes 提示词 instead of copying it 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlRunTraceRecorder, ModelGateway, gateway.register_client, FakeLLMClient, new_span, activate_span, gateway.generate, ModelRequestSchema。
+    """
     recorder = JsonlRunTraceRecorder(tmp_path)
     gateway = ModelGateway(default_model_name="fake_llm", run_trace_recorder=recorder)
     gateway.register_client(FakeLLMClient())
@@ -136,7 +188,19 @@ def test_model_trace_hashes_prompt_instead_of_copying_it(tmp_path: Path) -> None
     assert prompt not in json.dumps(start, ensure_ascii=False)
 
 
+# 阅读注释（函数）：处理 测试 Trace validator accepts complete fake 主链 shape 相关逻辑。
 def test_trace_validator_accepts_complete_fake_mainline_shape(tmp_path: Path) -> None:
+    """处理 测试 Trace validator accepts complete fake 主链 shape 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlRunTraceRecorder, new_span, replace, recorder.record, validate_trace_v2, load_trace_events。
+    """
     recorder = JsonlRunTraceRecorder(tmp_path)
     root = new_span(run_id="run_validate", span_name="run", span_kind="server")
     workflow = new_span(run_id="run_validate", span_name="workflow", parent=None)
@@ -188,13 +252,39 @@ def test_trace_validator_accepts_complete_fake_mainline_shape(tmp_path: Path) ->
     assert report["failed_checks"] == []
 
 
+# 阅读注释（函数）：处理 测试 工具 failure is recorded as 错误 span 相关逻辑。
 def test_tool_failure_is_recorded_as_error_span(tmp_path: Path) -> None:
+    """处理 测试 工具 failure is recorded as 错误 span 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlRunTraceRecorder, ToolRegistry, registry.register, BrokenTool, ToolExecutor, new_span, activate_span, executor.execute。
+    """
     from contracts.base_tool import BaseTool
 
+    # 阅读注释（类）：封装 broken 工具，集中封装相关状态、依赖和行为。
     class BrokenTool(BaseTool):
+        """封装 broken 工具，集中封装相关状态、依赖和行为。"""
         tool_name = "BrokenTool"
 
+        # 阅读注释（函数）：执行 BrokenTool 的主流程。
         def run(self, tool_call):
+            """执行 BrokenTool 的主流程。
+
+            参数:
+                tool_call: 工具 call，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：RuntimeError。
+            """
             raise RuntimeError("boom")
 
     recorder = JsonlRunTraceRecorder(tmp_path)

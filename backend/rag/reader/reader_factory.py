@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：get_reader、load_documents。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/rag_template/reader/reader_factory.py
 ========================================
@@ -21,6 +25,7 @@ from rag.reader.base_reader import BaseReader
 
 
 
+# 阅读注释（函数）：获取 reader。
 def get_reader(file_path: Path) -> BaseReader:
     """
     根据文件后缀获取 reader。
@@ -41,6 +46,7 @@ def get_reader(file_path: Path) -> BaseReader:
     return reader_cls()
 
 
+# 阅读注释（函数）：加载 documents。
 def load_documents(raw_data_dir: Path) -> List[Dict]:
     """
     扫描 raw_data_dir 下所有支持的文件，并读取为统一 Document Schema。

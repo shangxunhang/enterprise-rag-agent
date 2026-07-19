@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_safe_float、_parse_json_list、normalize_milvus_child_hit、MilvusChildRetriever。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/retriever/milvus_child_retriever.py
 ================================================
@@ -66,7 +70,20 @@ DEFAULT_CHILD_OUTPUT_FIELDS = [
 ]
 
 
+# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """处理 safe float 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：float。
+    """
     if value is None:
         return default
     try:
@@ -75,7 +92,19 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# 阅读注释（函数）：解析 JSON 列表。
 def _parse_json_list(value: Any) -> List[Any]:
+    """解析 JSON 列表。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Any]
+
+    阅读提示:
+        主要直接调用：isinstance, json.loads。
+    """
     if value is None or value == "":
         return []
     if isinstance(value, list):
@@ -89,6 +118,7 @@ def _parse_json_list(value: Any) -> List[Any]:
     return parsed if isinstance(parsed, list) else [parsed]
 
 
+# 阅读注释（函数）：规范化 milvus 子块 hit。
 def normalize_milvus_child_hit(hit: Dict[str, Any], rank: int) -> Dict[str, Any]:
     """Normalize one MilvusClient.search hit into a stable child hit dict."""
     entity = hit.get("entity", {}) if isinstance(hit, dict) else {}
@@ -118,9 +148,11 @@ def normalize_milvus_child_hit(hit: Dict[str, Any], rank: int) -> Dict[str, Any]
     }
 
 
+# 阅读注释（类）：封装 milvus 子块 retriever，集中封装相关状态、依赖和行为。
 class MilvusChildRetriever:
     """Dense retriever over child_chunk_v1 collection."""
 
+    # 阅读注释（函数）：初始化 MilvusChildRetriever，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         db_file: str | Path,
@@ -136,6 +168,28 @@ class MilvusChildRetriever:
         output_fields: Optional[Sequence[str]] = None,
         vector_db: str = DEFAULT_VECTOR_DB,
     ):
+        """初始化 MilvusChildRetriever，保存运行所需的依赖、配置或状态。
+
+        参数:
+            db_file: db 文件，具体约束请结合类型标注和调用方确认。
+            collection_name: collection 名称，具体约束请结合类型标注和调用方确认。
+            metric_type: 指标 类型，具体约束请结合类型标注和调用方确认。
+            vector_field: vector field，具体约束请结合类型标注和调用方确认。
+            embedding_model: embedding 模型，具体约束请结合类型标注和调用方确认。
+            embedding_device: embedding device，具体约束请结合类型标注和调用方确认。
+            embedding_batch_size: embedding batch size，具体约束请结合类型标注和调用方确认。
+            embedding_version: embedding 版本，具体约束请结合类型标注和调用方确认。
+            hash_embedding: hash embedding，具体约束请结合类型标注和调用方确认。
+            hash_dim: hash dim，具体约束请结合类型标注和调用方确认。
+            output_fields: 输出 fields，具体约束请结合类型标注和调用方确认。
+            vector_db: vector db，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：str, resolve_default_embedding_model, int, list, exists, Path, FileNotFoundError, MilvusClient。
+        """
         self.db_file = str(db_file)
         self.collection_name = collection_name
         self.metric_type = metric_type
@@ -162,7 +216,19 @@ class MilvusChildRetriever:
             # Milvus Lite 有时无需显式 load；这里不阻断。
             pass
 
+    # 阅读注释（函数）：处理 encode 查询 相关逻辑。
     def encode_query(self, query: str) -> np.ndarray:
+        """处理 encode 查询 相关逻辑。
+
+        参数:
+            query: 当前检索或生成查询。
+
+        返回:
+            np.ndarray
+
+        阅读提示:
+            主要直接调用：query.strip, ValueError, encode_query_with_hash, encode_query_with_model。
+        """
         if not query or not query.strip():
             raise ValueError("query cannot be empty")
         if self.hash_embedding:
@@ -176,12 +242,26 @@ class MilvusChildRetriever:
             batch_size=self.embedding_batch_size,
         )
 
+    # 阅读注释（函数）：搜索 by vector。
     def search_by_vector(
         self,
         query_vector: np.ndarray,
         top_k: int = 10,
         filter_expr: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """搜索 by vector。
+
+        参数:
+            query_vector: 查询 vector，具体约束请结合类型标注和调用方确认。
+            top_k: top k，具体约束请结合类型标注和调用方确认。
+            filter_expr: filter expr，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：ValueError, reshape, np.asarray, vector.tolist, int, self.client.search, normalize_milvus_child_hit, enumerate。
+        """
         if query_vector is None:
             raise ValueError("query_vector cannot be None")
         vector = np.asarray(query_vector, dtype=np.float32).reshape(-1)
@@ -201,16 +281,39 @@ class MilvusChildRetriever:
         hits = result[0] if result else []
         return [normalize_milvus_child_hit(hit, rank=i) for i, hit in enumerate(hits, start=1)]
 
+    # 阅读注释（函数）：搜索 MilvusChildRetriever。
     def search(
         self,
         query: str,
         top_k: int = 10,
         filter_expr: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """搜索 MilvusChildRetriever。
+
+        参数:
+            query: 当前检索或生成查询。
+            top_k: top k，具体约束请结合类型标注和调用方确认。
+            filter_expr: filter expr，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：self.encode_query, self.search_by_vector。
+        """
         query_vector = self.encode_query(query)
         return self.search_by_vector(query_vector=query_vector, top_k=top_k, filter_expr=filter_expr)
 
+    # 阅读注释（函数）：释放 MilvusChildRetriever 持有的资源。
     def close(self) -> None:
+        """释放 MilvusChildRetriever 持有的资源。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：getattr, callable, close。
+        """
         close = getattr(self.client, "close", None)
         if callable(close):
             close()

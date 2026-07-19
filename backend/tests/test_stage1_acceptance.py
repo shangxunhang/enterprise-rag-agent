@@ -1,11 +1,16 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：test_demo_project_title_is_derived_from_user_request、test_project_input_preserves_caller_defined_sections、test_truncation_detects_token_limit_and_unclosed_json、_FailingAgent、test_workflow_propagates_structured_failure_and_stops、test_hard_gate_rejects_unverified_citation_binding、test_production_project_input_rejects_demo_defaults、test_project_fact_boundary_rejects_invented_resources、test_project_fact_boundary_accepts_qualified_or_supported_facts、test_task_and_rag_filters_preserve_source_material_ids等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Acceptance-level tests for the corrected stage-1 mainline contracts."""
 
 from __future__ import annotations
 
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
+from agent.runtime.graph_state import GraphStateSchema
+from agent.runtime.native_workflow_engine import NativeWorkflowEngine
 from agent.runtime.shared_state_schema import SharedStateSchema
-from agent.runtime.workflow_executor import WorkflowExecutor
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from application.project_input_factory import ProjectInputFactory
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
@@ -16,6 +21,15 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     TruncationCheckSchema,
 )
 from apps.enterprise_document.services.output_validation import detect_truncation
+from apps.enterprise_document.services.scheme_writer.advisory_service import (
+    SectionAdvisoryService,
+)
+from apps.enterprise_document.services.scheme_writer.document_planning_service import (
+    DocumentPlanningService,
+)
+from apps.enterprise_document.services.scheme_writer.prompt_service import (
+    SectionPromptService,
+)
 from eval.agent.hard_gate import evaluate_scheme_draft
 from schemas.agent import AgentResultSchema
 from schemas.citation import CitationBindingSchema
@@ -26,7 +40,16 @@ from schemas.status import ExecutionStatus
 NOW = "2026-07-14T00:00:00+00:00"
 
 
+# 阅读注释（函数）：处理 测试 演示 项目 title is derived from user 请求 相关逻辑。
 def test_demo_project_title_is_derived_from_user_request() -> None:
+    """处理 测试 演示 项目 title is derived from user 请求 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build, ProjectInputFactory。
+    """
     item = ProjectInputFactory().build(
         task_id="task_demo_title",
         user_input="生成一个政务云建设方案",
@@ -37,7 +60,16 @@ def test_demo_project_title_is_derived_from_user_request() -> None:
     assert "RAG-Agent" not in item.output_schema.document_title
 
 
+# 阅读注释（函数）：处理 测试 项目 输入 preserves caller defined sections 相关逻辑。
 def test_project_input_preserves_caller_defined_sections() -> None:
+    """处理 测试 项目 输入 preserves caller defined sections 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate。
+    """
     item = ProjectInputSchema.model_validate(
         {
             "task_id": "task_custom",
@@ -64,7 +96,16 @@ def test_project_input_preserves_caller_defined_sections() -> None:
     assert item.output_schema.document_title == "自定义报告"
 
 
+# 阅读注释（函数）：处理 测试 truncation detects Token limit and unclosed JSON 相关逻辑。
 def test_truncation_detects_token_limit_and_unclosed_json() -> None:
+    """处理 测试 truncation detects Token limit and unclosed JSON 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：detect_truncation。
+    """
     token_limited = detect_truncation("正文尚未结束，", "length", min_chars=10)
     invalid_json = detect_truncation('{"name": "unfinished"', "stop")
 
@@ -74,11 +115,25 @@ def test_truncation_detects_token_limit_and_unclosed_json() -> None:
     assert invalid_json.json_closed is False
 
 
+# 阅读注释（类）：封装 failing Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
 class _FailingAgent(BaseAgent):
+    """封装 failing Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
     agent_name = "FailingAgent"
     agent_type = "sub_agent"
 
+    # 阅读注释（函数）：执行 _FailingAgent 的主流程。
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:
+        """执行 _FailingAgent 的主流程。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            AgentResultSchema
+
+        阅读提示:
+            主要直接调用：ErrorSchema, AgentResultSchema。
+        """
         error = ErrorSchema(
             error_code="LOW_LEVEL_FAILURE",
             error_type="RuntimeError",
@@ -101,7 +156,16 @@ class _FailingAgent(BaseAgent):
         )
 
 
+# 阅读注释（函数）：处理 测试 工作流 propagates structured failure and stops 相关逻辑。
 def test_workflow_propagates_structured_failure_and_stops() -> None:
+    """处理 测试 工作流 propagates structured failure and stops 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _FailingAgent, WorkflowDefinitionSchema, WorkflowStepSchema, GraphStateSchema, ContextBundleSchema, UserContextSchema。
+    """
     registry = AgentRegistry()
     registry.register(_FailingAgent())
     workflow = WorkflowDefinitionSchema(
@@ -127,7 +191,7 @@ def test_workflow_propagates_structured_failure_and_stops() -> None:
         ],
         created_at=NOW,
     )
-    state = SharedStateSchema(
+    state = GraphStateSchema(
         task_id="task_1",
         run_id="run_1",
         task_type="test",
@@ -139,7 +203,8 @@ def test_workflow_propagates_structured_failure_and_stops() -> None:
         created_at=NOW,
     )
 
-    results = WorkflowExecutor(registry).run(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    results = execution.node_results
 
     assert len(results) == 1
     assert state.status == ExecutionStatus.RETRYABLE_FAILED
@@ -148,7 +213,16 @@ def test_workflow_propagates_structured_failure_and_stops() -> None:
     assert "s2" not in state.workflow_step_states
 
 
+# 阅读注释（函数）：处理 测试 hard gate rejects unverified 引用 绑定关系 相关逻辑。
 def test_hard_gate_rejects_unverified_citation_binding() -> None:
+    """处理 测试 hard gate rejects unverified 引用 绑定关系 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：CitationBindingSchema, SchemeSectionSchema, TruncationCheckSchema, SectionEvalSchema, SchemeDraftSchema, evaluate_scheme_draft, join。
+    """
     binding = CitationBindingSchema(
         binding_id="binding_unverified",
         citation_id="C1",
@@ -198,11 +272,20 @@ def test_hard_gate_rejects_unverified_citation_binding() -> None:
     assert result.metadata["unverified_binding_ids"] == ["binding_unverified"]
 
 
+# 阅读注释（函数）：处理 测试 production 项目 输入 rejects 演示 defaults 相关逻辑。
 def test_production_project_input_rejects_demo_defaults() -> None:
+    """处理 测试 production 项目 输入 rejects 演示 defaults 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module.build_project_input, str, AssertionError。
+    """
     import importlib.util
     from pathlib import Path
 
-    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -241,7 +324,16 @@ def test_production_project_input_rejects_demo_defaults() -> None:
     assert item.output_schema.document_title == "自定义报告"
 
 
+# 阅读注释（函数）：处理 测试 项目 fact boundary rejects invented resources 相关逻辑。
 def test_project_fact_boundary_rejects_invented_resources() -> None:
+    """处理 测试 项目 fact boundary rejects invented resources 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._project_fact_violations, len, all。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -253,7 +345,7 @@ def test_project_fact_boundary_rejects_invented_resources() -> None:
             "output_schema": {"required_sections": ["资源"]},
         }
     )
-    violations = SchemeWriterAgent._project_fact_violations(
+    violations = SectionAdvisoryService._project_fact_violations(
         "项目将采购两台GPU服务器，并组建5人技术团队。",
         item,
         [],
@@ -266,7 +358,16 @@ def test_project_fact_boundary_rejects_invented_resources() -> None:
     )
 
 
+# 阅读注释（函数）：处理 测试 项目 fact boundary accepts qualified or supported facts 相关逻辑。
 def test_project_fact_boundary_accepts_qualified_or_supported_facts() -> None:
+    """处理 测试 项目 fact boundary accepts qualified or supported facts 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, CitationSchema, SchemeWriterAgent._project_fact_violations。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.citation import CitationSchema
 
@@ -293,17 +394,26 @@ def test_project_fact_boundary_accepts_qualified_or_supported_facts() -> None:
         "GPU服务器数量需项目方确认。"
     )
 
-    assert SchemeWriterAgent._project_fact_violations(content, item, [evidence]) == []
+    assert SectionAdvisoryService._project_fact_violations(content, item, [evidence]) == []
 
 
+# 阅读注释（函数）：处理 测试 任务 and RAG filters preserve source material 标识集合 相关逻辑。
 def test_task_and_rag_filters_preserve_source_material_ids() -> None:
+    """处理 测试 任务 and RAG filters preserve source material 标识集合 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module.build_task, ExecutorStub, SchemeWriterAgent。
+    """
     import importlib.util
     from pathlib import Path
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
-    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo_sources", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -336,16 +446,36 @@ def test_task_and_rag_filters_preserve_source_material_ids() -> None:
     assert task.doc_ids == ["doc_1", "doc_2"]
     assert task.kb_ids == ["kb_1"]
 
+    # 阅读注释（类）：封装 executor stub，集中封装相关状态、依赖和行为。
     class ExecutorStub:
+        """封装 executor stub，集中封装相关状态、依赖和行为。"""
+        # 阅读注释（函数）：初始化 ExecutorStub，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 ExecutorStub，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+            """
             self.call = None
 
-        def execute(self, call):
+        # 阅读注释（函数）：执行 ExecutorStub。
+        def retrieve(self, call):
+            """执行 ExecutorStub。
+
+            参数:
+                call: call，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：SimpleNamespace。
+            """
             self.call = call
             return SimpleNamespace(model_dump=lambda: {}, success=False)
 
     executor = ExecutorStub()
-    agent = SchemeWriterAgent(tool_executor=executor)
+    agent = SchemeWriterAgent(rag_service=executor)
     state = SimpleNamespace(
         run_id="run_sources",
         task_id="task_sources",
@@ -355,14 +485,23 @@ def test_task_and_rag_filters_preserve_source_material_ids() -> None:
         tool_results={},
     )
     project_input = ProjectInputSchema.model_validate(payload)
-    agent._call_rag_tool(state, project_input)
+    agent.evidence_service._call_rag_tool(state, project_input)
 
-    assert executor.call.tool_input["filters"]["doc_ids"] == ["doc_1", "doc_2"]
-    assert executor.call.tool_input["filters"]["file_ids"] == ["file_1"]
-    assert executor.call.tool_input["kb_ids"] == ["kb_1"]
+    assert executor.call.filters["doc_ids"] == ["doc_1", "doc_2"]
+    assert executor.call.filters["file_ids"] == ["file_1"]
+    assert executor.call.kb_ids == ["kb_1"]
 
 
+# 阅读注释（函数）：处理 测试 文档 计划 is derived from 项目 输入 without fixed sections 相关逻辑。
 def test_document_plan_is_derived_from_project_input_without_fixed_sections() -> None:
+    """处理 测试 文档 计划 is derived from 项目 输入 without fixed sections 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._build_document_plan。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -380,7 +519,7 @@ def test_document_plan_is_derived_from_project_input_without_fixed_sections() ->
             },
         }
     )
-    plan = SchemeWriterAgent._build_document_plan(
+    plan = DocumentPlanningService._build_document_plan(
         run_id="run_plan",
         document_id="document_plan",
         project_input=item,
@@ -393,7 +532,16 @@ def test_document_plan_is_derived_from_project_input_without_fixed_sections() ->
     assert plan.planning_source == "project_input"
 
 
+# 阅读注释（函数）：处理 测试 项目 输入 rejects inconsistent 章节 contracts 相关逻辑。
 def test_project_input_rejects_inconsistent_section_contracts() -> None:
+    """处理 测试 项目 输入 rejects inconsistent 章节 contracts 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, str, AssertionError。
+    """
     try:
         ProjectInputSchema.model_validate(
             {
@@ -410,15 +558,35 @@ def test_project_input_rejects_inconsistent_section_contracts() -> None:
         raise AssertionError("inconsistent section contracts must fail")
 
 
+# 阅读注释（函数）：处理 测试 truncated 章节 uses compact full retry without continuation 相关逻辑。
 def test_truncated_section_uses_compact_full_retry_without_continuation() -> None:
+    """处理 测试 truncated 章节 uses compact full retry without continuation 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SimpleNamespace, _generate_section, RetryAgent, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class RetryAgent(SchemeWriterAgent):
+        """封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 RetryAgent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 RetryAgent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -443,7 +611,20 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
                 ),
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -461,7 +642,7 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
         }
     )
     state = SimpleNamespace(run_id="run_retry", task_id="task_retry")
-    section = RetryAgent()._generate_section(
+    section = RetryAgent().section_generation_service._generate_section(
         state,
         document_id="document_retry",
         project_input=item,
@@ -480,7 +661,16 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
     assert section.extra["truncation_retry_model_call_ids"] == ["retry"]
 
 
+# 阅读注释（函数）：处理 测试 项目 fact boundary ignores structural enumeration 相关逻辑。
 def test_project_fact_boundary_ignores_structural_enumeration() -> None:
+    """处理 测试 项目 fact boundary ignores structural enumeration 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._project_fact_violations。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -492,22 +682,46 @@ def test_project_fact_boundary_ignores_structural_enumeration() -> None:
             "output_schema": {"required_sections": ["正文"]},
         }
     )
-    assert SchemeWriterAgent._project_fact_violations(
+    assert SectionAdvisoryService._project_fact_violations(
         "本章节从以下四个方面展开说明。",
         item,
         [],
     ) == []
 
 
+# 阅读注释（函数）：处理 测试 stage1 minimal gate does not block domain content 相关逻辑。
 def test_stage1_minimal_gate_does_not_block_domain_content() -> None:
+    """处理 测试 stage1 minimal gate does not block domain content 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, InventingAgent, SimpleNamespace, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 inventing Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class InventingAgent(SchemeWriterAgent):
+        """封装 inventing Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：ModelResponseSchema。
+            """
             return ModelResponseSchema(
                 model_call_id="invented",
                 task_id="task_invented",
@@ -532,7 +746,7 @@ def test_stage1_minimal_gate_does_not_block_domain_content() -> None:
             "output_schema": {"required_sections": ["资源说明"]},
         }
     )
-    section = InventingAgent()._generate_section(
+    section = InventingAgent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_invented", task_id="task_invented"),
         document_id="document_invented",
         project_input=item,
@@ -551,7 +765,16 @@ def test_stage1_minimal_gate_does_not_block_domain_content() -> None:
 
 
 
+# 阅读注释（函数）：处理 测试 项目 fact boundary ignores generic technical design terms 相关逻辑。
 def test_project_fact_boundary_ignores_generic_technical_design_terms() -> None:
+    """处理 测试 项目 fact boundary ignores generic technical design terms 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._project_fact_violations。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -568,10 +791,19 @@ def test_project_fact_boundary_ignores_generic_technical_design_terms() -> None:
         "安全设计可采用JWT认证，并通过WebSocket推送运行事件。"
     )
 
-    assert SchemeWriterAgent._project_fact_violations(content, item, []) == []
+    assert SectionAdvisoryService._project_fact_violations(content, item, []) == []
 
 
+# 阅读注释（函数）：处理 测试 项目 fact boundary accepts resource recommendation but rejects commitment 相关逻辑。
 def test_project_fact_boundary_accepts_resource_recommendation_but_rejects_commitment() -> None:
+    """处理 测试 项目 fact boundary accepts resource recommendation but rejects commitment 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._project_fact_violations。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -584,18 +816,27 @@ def test_project_fact_boundary_accepts_resource_recommendation_but_rejects_commi
         }
     )
 
-    assert SchemeWriterAgent._project_fact_violations(
+    assert SectionAdvisoryService._project_fact_violations(
         "建议根据实际并发量测算服务器数量，GPU型号需项目方确认。",
         item,
         [],
     ) == []
-    assert SchemeWriterAgent._project_fact_violations(
+    assert SectionAdvisoryService._project_fact_violations(
         "本项目将配置两台GPU服务器。",
         item,
         [],
     )
 
+# 阅读注释（函数）：处理 测试 deterministic 查询 expansion has no fixed business scenario 相关逻辑。
 def test_deterministic_query_expansion_has_no_fixed_business_scenario() -> None:
+    """处理 测试 deterministic 查询 expansion has no fixed business scenario 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：QueryExpander, expander._deterministic_rewrite_queries, join, all。
+    """
     from rag.query.query_expander import QueryExpander
 
     expander = QueryExpander(use_llm=False)
@@ -608,7 +849,16 @@ def test_deterministic_query_expansion_has_no_fixed_business_scenario() -> None:
     assert all("分析设备故障" in item for item in rewrites)
 
 
+# 阅读注释（函数）：处理 测试 RAG 质量 judge has no fixed business noise terms 相关逻辑。
 def test_rag_quality_judge_has_no_fixed_business_noise_terms() -> None:
+    """处理 测试 RAG 质量 judge has no fixed business noise terms 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：CRAGJudge, judge._deterministic_judge_chunk。
+    """
     from rag.judge.rag_quality_judge import CRAGJudge
 
     judge = CRAGJudge(use_llm=False)
@@ -624,7 +874,16 @@ def test_rag_quality_judge_has_no_fixed_business_noise_terms() -> None:
 
     assert judgement["noise_terms"] == []
 
+# 阅读注释（函数）：处理 测试 production entry does not import 演示 module 相关逻辑。
 def test_production_entry_does_not_import_demo_module() -> None:
+    """处理 测试 production entry does not import 演示 module 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, read_text。
+    """
     from pathlib import Path
 
     project_root = Path(__file__).resolve().parents[2]
@@ -637,7 +896,16 @@ def test_production_entry_does_not_import_demo_module() -> None:
 
 
 
+# 阅读注释（函数）：处理 测试 项目 fact boundary distinguishes goal training and resource commitment 相关逻辑。
 def test_project_fact_boundary_distinguishes_goal_training_and_resource_commitment() -> None:
+    """处理 测试 项目 fact boundary distinguishes goal training and resource commitment 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._project_fact_violations, len。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -659,12 +927,21 @@ def test_project_fact_boundary_distinguishes_goal_training_and_resource_commitme
         "同时招聘高级技术人员并组建项目小组。"
     )
 
-    assert SchemeWriterAgent._project_fact_violations(allowed, item, []) == []
-    violations = SchemeWriterAgent._project_fact_violations(rejected, item, [])
+    assert SectionAdvisoryService._project_fact_violations(allowed, item, []) == []
+    violations = SectionAdvisoryService._project_fact_violations(rejected, item, [])
     assert len(violations) == 2
 
 
+# 阅读注释（函数）：处理 测试 legacy scope keyword gate is disabled 相关逻辑。
 def test_legacy_scope_keyword_gate_is_disabled() -> None:
+    """处理 测试 legacy scope keyword gate is disabled 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：SchemeWriterAgent._section_scope_violations。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     content = (
@@ -675,10 +952,19 @@ def test_legacy_scope_keyword_gate_is_disabled() -> None:
 
     # Scope is now evaluated semantically against the dynamic section plan;
     # chapter-name keyword blacklists no longer produce hard failures.
-    assert SchemeWriterAgent._section_scope_violations(content, "项目概述") == []
+    assert SectionPromptService._section_scope_violations(content, "项目概述") == []
 
 
+# 阅读注释（函数）：处理 测试 resource contract degrades to sizing principles without inputs 相关逻辑。
 def test_resource_contract_degrades_to_sizing_principles_without_inputs() -> None:
+    """处理 测试 resource contract degrades to sizing principles without inputs 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._section_generation_contract。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -691,22 +977,42 @@ def test_resource_contract_degrades_to_sizing_principles_without_inputs() -> Non
         }
     )
 
-    contract = SchemeWriterAgent._section_generation_contract("资源配置", item)
+    contract = SectionPromptService._section_generation_contract("资源配置", item)
     assert "测算维度" in contract
     assert "采购" in contract
     assert "确定承诺" in contract
     assert "当前章节标题" in contract
 
 
+# 阅读注释（函数）：处理 测试 stage1 minimal gate does not invoke semantic 改写 相关逻辑。
 def test_stage1_minimal_gate_does_not_invoke_semantic_rewrite() -> None:
+    """处理 测试 stage1 minimal gate does not invoke semantic 改写 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, ValidationRewriteAgent, SimpleNamespace, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 validation 改写 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class ValidationRewriteAgent(SchemeWriterAgent):
+        """封装 validation 改写 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 ValidationRewriteAgent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 ValidationRewriteAgent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -721,7 +1027,20 @@ def test_stage1_minimal_gate_does_not_invoke_semantic_rewrite() -> None:
                 )
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -738,7 +1057,7 @@ def test_stage1_minimal_gate_does_not_invoke_semantic_rewrite() -> None:
             "output_schema": {"required_sections": ["资源配置"]},
         }
     )
-    section = ValidationRewriteAgent()._generate_section(
+    section = ValidationRewriteAgent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_resource_rewrite", task_id="task_resource_rewrite"),
         document_id="document_resource_rewrite",
         project_input=item,
@@ -755,15 +1074,35 @@ def test_stage1_minimal_gate_does_not_invoke_semantic_rewrite() -> None:
     assert section.extra["project_fact_violations"] == []
 
 
+# 阅读注释（函数）：处理 测试 overlong 章节 uses dedicated compression pass 相关逻辑。
 def test_overlong_section_uses_dedicated_compression_pass() -> None:
+    """处理 测试 overlong 章节 uses dedicated compression pass 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, CompressionAgent, SimpleNamespace, RAGContextSchema, len。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 compression Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class CompressionAgent(SchemeWriterAgent):
+        """封装 compression Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 CompressionAgent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 CompressionAgent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -788,7 +1127,20 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
                 ),
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -806,7 +1158,7 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
             "output_schema": {"required_sections": ["技术方案"]},
         }
     )
-    section = CompressionAgent()._generate_section(
+    section = CompressionAgent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_compress", task_id="task_compress"),
         document_id="document_compress",
         project_input=item,
@@ -823,7 +1175,16 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
     assert len(section.content) <= section.extra["max_section_chars"]
 
 
+# 阅读注释（函数）：处理 测试 semantic scope issue is partial not failed 相关逻辑。
 def test_semantic_scope_issue_is_partial_not_failed() -> None:
+    """处理 测试 semantic scope issue is partial not failed 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, _Agent, SimpleNamespace, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
@@ -834,8 +1195,22 @@ def test_semantic_scope_issue_is_partial_not_failed() -> None:
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 scope judge，集中封装相关状态、依赖和行为。
     class _ScopeJudge:
+        """封装 scope judge，集中封装相关状态、依赖和行为。"""
+        # 阅读注释（函数）：处理 judge 相关逻辑。
         def judge(self, **kwargs):
+            """处理 judge 相关逻辑。
+
+            参数:
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：SemanticGateResultSchema, SemanticGateIssueSchema。
+            """
             return (
                 SemanticGateResultSchema(
                     decision="partial",
@@ -853,12 +1228,36 @@ def test_semantic_scope_issue_is_partial_not_failed() -> None:
                 None,
             )
 
+    # 阅读注释（类）：封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _Agent(SchemeWriterAgent):
+        """封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 _Agent，保存运行所需的依赖、配置或状态。
         def __init__(self):
-            super().__init__(enable_semantic_gate=True)
-            self.semantic_judge = _ScopeJudge()
+            """初始化 _Agent，保存运行所需的依赖、配置或状态。
 
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, _ScopeJudge。
+            """
+            super().__init__(enable_semantic_gate=True)
+            self.section_generation_service.semantic_judge = _ScopeJudge()
+
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：ModelResponseSchema。
+            """
             return ModelResponseSchema(
                 model_call_id="scope_generation",
                 task_id="task_scope",
@@ -884,7 +1283,7 @@ def test_semantic_scope_issue_is_partial_not_failed() -> None:
             "output_schema": {"required_sections": ["章节A", "章节B"]},
         }
     )
-    section = _Agent()._generate_section(
+    section = _Agent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_scope", task_id="task_scope"),
         document_id="document_scope",
         project_input=item,
@@ -903,7 +1302,16 @@ def test_semantic_scope_issue_is_partial_not_failed() -> None:
     assert "semantic:section_scope_drift" in section.eval_result.warnings
 
 
+# 阅读注释（函数）：处理 测试 semantic judge cannot hide explicit unsupported quantity 相关逻辑。
 def test_semantic_judge_cannot_hide_explicit_unsupported_quantity() -> None:
+    """处理 测试 semantic judge cannot hide explicit unsupported quantity 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：SemanticSectionJudge._merge_deterministic_candidates, len。
+    """
     from apps.enterprise_document.services.semantic_section_judge import (
         SemanticSectionJudge,
     )
@@ -923,7 +1331,16 @@ def test_semantic_judge_cannot_hide_explicit_unsupported_quantity() -> None:
     assert issues[0].issue_type == "unsupported_quantitative_claim"
 
 
+# 阅读注释（函数）：处理 测试 hard gate accepts partial sections and returns warnings 相关逻辑。
 def test_hard_gate_accepts_partial_sections_and_returns_warnings() -> None:
+    """处理 测试 hard gate accepts partial sections and returns warnings 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：SchemeSectionSchema, TruncationCheckSchema, SectionEvalSchema, SchemeDraftSchema, evaluate_scheme_draft。
+    """
     section = SchemeSectionSchema(
         section_id="section_partial",
         section_title="说明",
@@ -960,7 +1377,16 @@ def test_hard_gate_accepts_partial_sections_and_returns_warnings() -> None:
     assert result.metadata["partial_sections"] == ["说明"]
 
 
+# 阅读注释（函数）：处理 测试 semantic judge downgrades scope hard failure to soft 相关逻辑。
 def test_semantic_judge_downgrades_scope_hard_failure_to_soft() -> None:
+    """处理 测试 semantic judge downgrades scope hard failure to soft 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：SemanticSectionJudge, judge._normalize_issue。
+    """
     from apps.enterprise_document.services.semantic_section_judge import (
         SemanticSectionJudge,
     )
@@ -984,7 +1410,16 @@ def test_semantic_judge_downgrades_scope_hard_failure_to_soft() -> None:
     assert issue.severity == "soft_failure"
 
 
+# 阅读注释（函数）：处理 测试 semantic judge invalid JSON uses conservative fallback 相关逻辑。
 def test_semantic_judge_invalid_json_uses_conservative_fallback() -> None:
+    """处理 测试 semantic judge invalid JSON uses conservative fallback 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ModelGateway, gateway.register_client, _InvalidJsonClient, SemanticSectionJudge, ProjectInputSchema.model_validate, judge.judge。
+    """
     from contracts.base_client import BaseLLMClient
     from apps.enterprise_document.services.semantic_section_judge import (
         SemanticSectionJudge,
@@ -992,10 +1427,24 @@ def test_semantic_judge_invalid_json_uses_conservative_fallback() -> None:
     from model_gateway.model_gateway import ModelGateway
     from schemas.model import ModelRequestSchema, ModelResponseSchema
 
+    # 阅读注释（类）：封装 invalid JSON 客户端，集中封装相关状态、依赖和行为。
     class _InvalidJsonClient(BaseLLMClient):
+        """封装 invalid JSON 客户端，集中封装相关状态、依赖和行为。"""
         model_name = "invalid_json_model"
 
+        # 阅读注释（函数）：生成 _InvalidJsonClient。
         def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
+            """生成 _InvalidJsonClient。
+
+            参数:
+                request: 当前请求对象。
+
+            返回:
+                ModelResponseSchema
+
+            阅读提示:
+                主要直接调用：ModelResponseSchema。
+            """
             return ModelResponseSchema(
                 model_call_id=request.model_call_id,
                 task_id=request.task_id,
@@ -1047,15 +1496,35 @@ def test_semantic_judge_invalid_json_uses_conservative_fallback() -> None:
     assert result.issues[0].severity == "soft_failure"
 
 
+# 阅读注释（函数）：处理 测试 truncated compact retry can recover complete prefix 相关逻辑。
 def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
+    """处理 测试 truncated compact retry can recover complete prefix 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, _Agent, SimpleNamespace, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _Agent(SchemeWriterAgent):
+        """封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 _Agent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 _Agent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -1080,7 +1549,20 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
                 ),
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -1097,7 +1579,7 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
             "output_schema": {"required_sections": ["正文"]},
         }
     )
-    section = _Agent()._generate_section(
+    section = _Agent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_safe_trim", task_id="task_safe_trim"),
         document_id="document_safe_trim",
         project_input=item,
@@ -1116,7 +1598,16 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
     assert "truncation_recovered:complete_sentence_prefix" in section.eval_result.warnings
 
 
+# 阅读注释（函数）：处理 测试 semantic hard issue is advisory only in stage1 相关逻辑。
 def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
+    """处理 测试 semantic hard issue is advisory only in stage1 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, _Agent, SimpleNamespace, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
@@ -1127,8 +1618,22 @@ def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 judge，集中封装相关状态、依赖和行为。
     class _Judge:
+        """封装 judge，集中封装相关状态、依赖和行为。"""
+        # 阅读注释（函数）：处理 judge 相关逻辑。
         def judge(self, **kwargs):
+            """处理 judge 相关逻辑。
+
+            参数:
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：SemanticGateResultSchema, SemanticGateIssueSchema。
+            """
             return (
                 SemanticGateResultSchema(
                     decision="fail",
@@ -1146,12 +1651,36 @@ def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
                 None,
             )
 
+    # 阅读注释（类）：封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _Agent(SchemeWriterAgent):
+        """封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 _Agent，保存运行所需的依赖、配置或状态。
         def __init__(self):
-            super().__init__(enable_semantic_gate=True)
-            self.semantic_judge = _Judge()
+            """初始化 _Agent，保存运行所需的依赖、配置或状态。
 
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, _Judge。
+            """
+            super().__init__(enable_semantic_gate=True)
+            self.section_generation_service.semantic_judge = _Judge()
+
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：ModelResponseSchema。
+            """
             return ModelResponseSchema(
                 model_call_id="semantic_advisory_generation",
                 task_id="task_semantic_advisory",
@@ -1177,7 +1706,7 @@ def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
             "output_schema": {"required_sections": ["说明"]},
         }
     )
-    section = _Agent()._generate_section(
+    section = _Agent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_semantic_advisory", task_id="task_semantic_advisory"),
         document_id="document_semantic_advisory",
         project_input=item,
@@ -1195,11 +1724,20 @@ def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
     assert "semantic:unsupported_quantitative_claim" in section.eval_result.warnings
 
 
+# 阅读注释（函数）：处理 测试 演示 partial success never fabricates sub Agent failure 相关逻辑。
 def test_demo_partial_success_never_fabricates_sub_agent_failure() -> None:
+    """处理 测试 演示 partial success never fabricates sub Agent failure 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module._effective_runtime_error。
+    """
     import importlib.util
     from pathlib import Path
 
-    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo_status_contract", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1229,11 +1767,20 @@ def test_demo_partial_success_never_fabricates_sub_agent_failure() -> None:
     assert module._effective_runtime_error(summary) == {}
 
 
+# 阅读注释（函数）：处理 测试 演示 failed 状态 can still recover real sub Agent 错误 相关逻辑。
 def test_demo_failed_status_can_still_recover_real_sub_agent_error() -> None:
+    """处理 测试 演示 failed 状态 can still recover real sub Agent 错误 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module._effective_runtime_error。
+    """
     import importlib.util
     from pathlib import Path
 
-    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo_failed_contract", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：FixedClock、FixedIds、_state、test_scheme_schema_compatibility_exports_same_class、test_shared_state_writer_keeps_runtime_mutation_centralized、test_trace_recorder_accepts_clock_and_id_ports、test_task_manager_accepts_clock_and_id_ports、test_model_gateway_facade_uses_registry_router_invoker、test_workflow_dispatcher_returns_structured_unsupported_failure、test_fixed_chunkers_share_algorithm_but_preserve_legacy_metadata等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Architecture contracts for the stage-1.5 modular-monolith refactor."""
 from __future__ import annotations
 
@@ -6,8 +10,6 @@ from pathlib import Path
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.state_access import SharedStateWriter
-from agent.runtime.step_dispatcher import WorkflowStepDispatcher
-from agent.runtime.workflow_schema import WorkflowStepSchema
 from apps.enterprise_document.schemas.scheme_writer import SchemeDraftSchema as NewDraft
 from apps.enterprise_document.schemas.scheme_writer_schema import SchemeDraftSchema as CompatDraft
 from data_capture.run_trace_recorder import JsonlRunTraceRecorder
@@ -17,24 +19,51 @@ from rag.chunker.FixedSizeChunker import FixedSizeChunker as LegacyFixedChunker
 from rag.chunker.fixed_chunker import FixedSizeChunker as CanonicalFixedChunker
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
 from schemas.model import ModelRequestSchema
-from schemas.status import ExecutionStatus
 from task.task_manager import JsonlTaskManager
 from schemas.task import TaskSchema
 
 NOW = "2026-07-15T00:00:00+00:00"
 
 
+# 阅读注释（类）：封装 fixed clock，集中封装相关状态、依赖和行为。
 class FixedClock:
+    """封装 fixed clock，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：处理 now iso 相关逻辑。
     def now_iso(self) -> str:
+        """处理 now iso 相关逻辑。
+
+        返回:
+            str
+        """
         return NOW
 
 
+# 阅读注释（类）：封装 fixed 标识集合，集中封装相关状态、依赖和行为。
 class FixedIds:
+    """封装 fixed 标识集合，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：处理 new 标识 相关逻辑。
     def new_id(self, prefix: str) -> str:
+        """处理 new 标识 相关逻辑。
+
+        参数:
+            prefix: prefix，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+        """
         return f"{prefix}_fixed"
 
 
+# 阅读注释（函数）：处理 状态 相关逻辑。
 def _state() -> SharedStateSchema:
+    """处理 状态 相关逻辑。
+
+    返回:
+        SharedStateSchema
+
+    阅读提示:
+        主要直接调用：SharedStateSchema, ContextBundleSchema, UserContextSchema, TaskContextSchema。
+    """
     return SharedStateSchema(
         task_id="task_1",
         run_id="run_1",
@@ -48,11 +77,26 @@ def _state() -> SharedStateSchema:
     )
 
 
+# 阅读注释（函数）：处理 测试 scheme Schema compatibility exports same class 相关逻辑。
 def test_scheme_schema_compatibility_exports_same_class() -> None:
+    """处理 测试 scheme Schema compatibility exports same class 相关逻辑。
+
+    返回:
+        None
+    """
     assert CompatDraft is NewDraft
 
 
+# 阅读注释（函数）：处理 测试 shared 状态 writer keeps 运行时 mutation centralized 相关逻辑。
 def test_shared_state_writer_keeps_runtime_mutation_centralized() -> None:
+    """处理 测试 shared 状态 writer keeps 运行时 mutation centralized 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_state, SharedStateWriter, writer.set_evidence_context, writer.set_final_result。
+    """
     state = _state()
     writer = SharedStateWriter()
     writer.set_evidence_context(
@@ -69,7 +113,19 @@ def test_shared_state_writer_keeps_runtime_mutation_centralized() -> None:
     assert state.final_result == {"status": "success"}
 
 
+# 阅读注释（函数）：处理 测试 Trace recorder accepts clock and 标识 ports 相关逻辑。
 def test_trace_recorder_accepts_clock_and_id_ports(tmp_path: Path) -> None:
+    """处理 测试 Trace recorder accepts clock and 标识 ports 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlRunTraceRecorder, FixedClock, FixedIds, recorder.record, json.loads, strip, read_text。
+    """
     recorder = JsonlRunTraceRecorder(
         tmp_path,
         clock=FixedClock(),
@@ -88,7 +144,19 @@ def test_trace_recorder_accepts_clock_and_id_ports(tmp_path: Path) -> None:
     assert row["event_id"] == "event_fixed"
 
 
+# 阅读注释（函数）：处理 测试 任务 管理器 accepts clock and 标识 ports 相关逻辑。
 def test_task_manager_accepts_clock_and_id_ports(tmp_path: Path) -> None:
+    """处理 测试 任务 管理器 accepts clock and 标识 ports 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：JsonlTaskManager, FixedClock, FixedIds, TaskSchema, manager.create_task。
+    """
     manager = JsonlTaskManager(tmp_path, clock=FixedClock(), id_generator=FixedIds())
     task = TaskSchema(
         task_id="task_1",
@@ -103,7 +171,16 @@ def test_task_manager_accepts_clock_and_id_ports(tmp_path: Path) -> None:
     assert record.events[0].event_id == "task_event_fixed"
 
 
+# 阅读注释（函数）：处理 测试 模型 网关 facade uses 注册表 路由器 invoker 相关逻辑。
 def test_model_gateway_facade_uses_registry_router_invoker() -> None:
+    """处理 测试 模型 网关 facade uses 注册表 路由器 invoker 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ModelGateway, gateway.register_client, FakeLLMClient, gateway.generate, ModelRequestSchema。
+    """
     gateway = ModelGateway(default_model_name="fake_llm")
     gateway.register_client(FakeLLMClient())
     response = gateway.generate(
@@ -120,22 +197,16 @@ def test_model_gateway_facade_uses_registry_router_invoker() -> None:
     assert response.model_name == "fake_llm"
 
 
-def test_workflow_dispatcher_returns_structured_unsupported_failure() -> None:
-    state = _state()
-    step = WorkflowStepSchema(
-        step_id="tool_step",
-        step_name="tool",
-        step_type="tool",
-        target_name="MissingToolHandler",
-        order=1,
-    )
-    result = WorkflowStepDispatcher([]).execute(step, state)
-    assert result.status == ExecutionStatus.FAILED
-    assert result.error is not None
-    assert result.error.error_code == "UNSUPPORTED_WORKFLOW_STEP_TYPE"
-
-
+# 阅读注释（函数）：处理 测试 fixed chunkers share algorithm but preserve legacy 元数据 相关逻辑。
 def test_fixed_chunkers_share_algorithm_but_preserve_legacy_metadata() -> None:
+    """处理 测试 fixed chunkers share algorithm but preserve legacy 元数据 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：chunk_document, LegacyFixedChunker, CanonicalFixedChunker。
+    """
     document = {"doc_id": "doc_1", "text": "abcdefgh", "metadata": {}}
     legacy = LegacyFixedChunker(chunk_size=4, chunk_overlap=1).chunk_document(document)
     canonical = CanonicalFixedChunker(chunk_size=4, chunk_overlap=1).chunk_document(document)
@@ -145,7 +216,16 @@ def test_fixed_chunkers_share_algorithm_but_preserve_legacy_metadata() -> None:
     assert canonical[0]["metadata"]["extra"]["start_char"] == 0
 
 
+# 阅读注释（函数）：处理 测试 运行时 packages do not depend on 评测 package 相关逻辑。
 def test_runtime_packages_do_not_depend_on_eval_package() -> None:
+    """处理 测试 运行时 packages do not depend on 评测 package 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, runtime_root.rglob, path.read_text, offenders.append, str, path.relative_to。
+    """
     root = Path(__file__).resolve().parents[1]
     runtime_roots = [
         root / "agent",

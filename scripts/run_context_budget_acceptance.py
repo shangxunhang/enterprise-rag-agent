@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_now_iso、_citations、_project_input、_build_package、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Accept compact citation projection and request-level failure isolation."""
 
 from __future__ import annotations
@@ -24,11 +28,32 @@ from schemas.citation import CitationSchema
 from schemas.rag import RAGContextSchema
 
 
+# 阅读注释（函数）：处理 now iso 相关逻辑。
 def _now_iso() -> str:
+    """处理 now iso 相关逻辑。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：isoformat, datetime.now。
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
+# 阅读注释（函数）：处理 citations 相关逻辑。
 def _citations(count: int = 8) -> list[CitationSchema]:
+    """处理 citations 相关逻辑。
+
+    参数:
+        count: count，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        list[CitationSchema]
+
+    阅读提示:
+        主要直接调用：CitationSchema, range。
+    """
     return [
         CitationSchema(
             citation_id=f"C{index}",
@@ -47,7 +72,16 @@ def _citations(count: int = 8) -> list[CitationSchema]:
     ]
 
 
+# 阅读注释（函数）：处理 项目 输入 相关逻辑。
 def _project_input() -> ProjectInputSchema:
+    """处理 项目 输入 相关逻辑。
+
+    返回:
+        ProjectInputSchema
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate。
+    """
     return ProjectInputSchema.model_validate(
         {
             "task_id": "task_context_budget_acceptance",
@@ -69,7 +103,19 @@ def _project_input() -> ProjectInputSchema:
     )
 
 
+# 阅读注释（函数）：构建 package。
 def _build_package(section_title: str) -> tuple[Any, Any]:
+    """构建 package。
+
+    参数:
+        section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        tuple[Any, Any]
+
+    阅读提示:
+        主要直接调用：_citations, RAGContextSchema, len, _project_input, build_request, SectionGenerationContextPolicy, build, LLMContextManager。
+    """
     citations = _citations()
     evidence_text = "政务云建设和安全设计证据正文。" * 800
     rag_context = RAGContextSchema(
@@ -94,7 +140,16 @@ def _build_package(section_title: str) -> tuple[Any, Any]:
     return request, LLMContextManager().build(request)
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, str, parser.parse_args, resolve, expanduser, Path, report_path.parent.mkdir。
+    """
     parser = argparse.ArgumentParser(description="Run context budget acceptance.")
     parser.add_argument(
         "--report-path",

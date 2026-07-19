@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：方案生成中的证据服务：构造 RAGTool 请求、调用检索工具并把结果转换为章节可用证据。
+# 主要定义：DocumentCitationRegistry、SchemeEvidenceService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Evidence retrieval and section-aware citation normalization."""
 
 from __future__ import annotations
@@ -9,32 +13,52 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from observability.trace_summary import canonical_sha256
 
 from agent.runtime.shared_state_schema import SharedStateSchema
-from agent.runtime.state_access import SharedStateWriter
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
+from contracts.rag import RAGServicePort
 from schemas.citation import CitationSchema
 from rag.evidence.contract import RAGEvidenceContractBuilder, RAGEvidenceContractReader
 from schemas.rag import (
     RAGContextSchema,
+    EvidenceBundleSchema,
     RAGEvidenceContractSchema,
+    RAGToolInputSchema,
     RAGTraceSchema,
     RetrievedChunkSchema,
 )
-from schemas.tool import ToolCallSchema, ToolResultSchema
-from .base import RuntimeBoundService
+from schemas.tool import ToolResultSchema
 
 
 _MARKER_PATTERN = re.compile(r"\[([^\[\]]+)\]")
 
 
+# 阅读注释（类）：封装 文档 引用 注册表，集中封装相关状态、依赖和行为。
 class DocumentCitationRegistry:
     """Allocate stable document-wide citation ids across multiple RAG calls."""
 
+    # 阅读注释（函数）：初始化 DocumentCitationRegistry，保存运行所需的依赖、配置或状态。
     def __init__(self) -> None:
+        """初始化 DocumentCitationRegistry，保存运行所需的依赖、配置或状态。
+
+        返回:
+            None
+        """
         self._by_key: Dict[str, CitationSchema] = {}
         self._ordered: List[CitationSchema] = []
 
+    # 阅读注释（函数）：处理 identity 相关逻辑。
     @staticmethod
     def _identity(citation: CitationSchema) -> str:
+        """处理 identity 相关逻辑。
+
+        参数:
+            citation: 引用，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：list, join, split, any, payload.values, canonical_sha256。
+        """
         payload = {
             "source_document_id": citation.source_document_id or citation.doc_id,
             "file_id": citation.file_id,
@@ -53,6 +77,7 @@ class DocumentCitationRegistry:
             payload["original_citation_id"] = citation.citation_id
         return canonical_sha256(payload)
 
+    # 阅读注释（函数）：注册 DocumentCitationRegistry。
     def register(
         self,
         citations: Iterable[CitationSchema],
@@ -60,6 +85,19 @@ class DocumentCitationRegistry:
         scope: str,
         query: str,
     ) -> Tuple[List[CitationSchema], Dict[str, str]]:
+        """注册 DocumentCitationRegistry。
+
+        参数:
+            citations: 引用信息集合。
+            scope: scope，具体约束请结合类型标注和调用方确认。
+            query: 当前检索或生成查询。
+
+        返回:
+            Tuple[List[CitationSchema], Dict[str, str]]
+
+        阅读提示:
+            主要直接调用：self._identity, self._by_key.get, len, dict, extra.update, citation.model_copy, self._ordered.append, list。
+        """
         remapped: List[CitationSchema] = []
         id_map: Dict[str, str] = {}
         for citation in citations:
@@ -109,11 +147,31 @@ class DocumentCitationRegistry:
             remapped.append(existing)
         return remapped, id_map
 
+    # 阅读注释（函数）：处理 all 相关逻辑。
     def all(self) -> List[CitationSchema]:
+        """处理 all 相关逻辑。
+
+        返回:
+            List[CitationSchema]
+
+        阅读提示:
+            主要直接调用：list。
+        """
         return list(self._ordered)
 
 
-class SchemeEvidenceService(RuntimeBoundService):
+# 阅读注释（类）：封装 scheme 证据 服务，封装一组可复用的业务能力。
+class SchemeEvidenceService:
+    def __init__(
+        self,
+        *,
+        rag_service: RAGServicePort | None,
+        agent_name: str,
+    ) -> None:
+        self.rag_service = rag_service
+        self.agent_name = agent_name
+    """封装 scheme 证据 服务，封装一组可复用的业务能力。"""
+    # 阅读注释（函数）：处理 call RAG 工具 相关逻辑。
     def _call_rag_tool(
         self,
         shared_state: SharedStateSchema,
@@ -124,8 +182,25 @@ class SchemeEvidenceService(RuntimeBoundService):
         section_id: Optional[str] = None,
         section_title: Optional[str] = None,
         call_suffix: Optional[str] = None,
-    ) -> Optional[ToolResultSchema]:
-        if self.tool_executor is None:
+    ) -> Optional[EvidenceBundleSchema]:
+        """处理 call RAG 工具 相关逻辑。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+            query: 当前检索或生成查询。
+            scope: scope，具体约束请结合类型标注和调用方确认。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            call_suffix: call suffix，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Optional[ToolResultSchema]
+
+        阅读提示:
+            主要直接调用：strip, str, list, dict.fromkeys, material.metadata.get, get, re.sub, ToolCallSchema。
+        """
+        if self.rag_service is None:
             return None
 
         requirements = project_input.generation_requirements
@@ -153,68 +228,72 @@ class SchemeEvidenceService(RuntimeBoundService):
         ))
         task_kb_ids = (shared_state.task or {}).get("kb_ids") or []
         raw_suffix = call_suffix or scope
-        safe_suffix = re.sub(r"[^0-9A-Za-z_\-]+", "_", raw_suffix).strip("_") or "document"
-        tool_call = ToolCallSchema(
-            tool_call_id=f"tool_call_{shared_state.run_id}_rag_{safe_suffix}",
+        safe_suffix = (
+            re.sub(r"[^0-9A-Za-z_\-]+", "_", raw_suffix).strip("_")
+            or "document"
+        )
+        retrieval_trace_id = f"rag_{shared_state.run_id}_{safe_suffix}"
+        extra_metadata = {
+            "task_type": project_input.task_type,
+            "retrieval_scope": scope,
+            "section_id": section_id,
+            "section_title": section_title,
+            "context_requirements": {
+                "model_context_window": int(
+                    requirements.extra.get("max_input_context_tokens", 8192)
+                ),
+                "prompt_reserved_tokens": int(
+                    requirements.extra.get(
+                        "prompt_reserved_tokens",
+                        requirements.max_tokens_per_section + 512,
+                    )
+                ),
+                "section_token_budget": int(
+                    requirements.extra.get("max_evidence_context_tokens", 4096)
+                ),
+                "max_evidence_items": int(
+                    requirements.extra.get("max_evidence_items", 5)
+                ),
+                "max_context_chars": int(requirements.max_context_chars),
+            },
+            "document_context": {
+                "project_name": project_input.project_name,
+                "project_type": project_input.project_type,
+                "document_title": project_input.output_schema.document_title,
+                "required_sections": list(
+                    project_input.generation_requirements.required_sections
+                    or project_input.output_schema.required_sections
+                ),
+                "citation_required_sections": list(
+                    project_input.generation_requirements.citation_required_sections
+                ),
+                "target_documents": list(project_input.target_documents),
+                "target_templates": list(project_input.target_templates),
+            },
+        }
+        request = RAGToolInputSchema(
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
-            tool_name=self.rag_tool_name,
-            tool_input={
-                "query": resolved_query,
-                "kb_ids": list(dict.fromkeys([*task_kb_ids, *source_kb_ids])),
-                "retrieval_mode": self.rag_retrieval_mode,
-                "retrieval_strategy": self.rag_retrieval_mode,
-                "mode": "retrieve_only",
-                "generate_answer": False,
-                "need_citation": requirements.need_citation,
-                "max_context_chars": requirements.max_context_chars,
-                "max_context_items": 5,
-                "dense_top_k": 10,
-                "keyword_top_k": 10,
-                "candidate_top_k": 10,
-                "rerank_top_k": 5,
-                "filters": {
-                    "tenant_id": project_input.tenant_id,
-                    "doc_ids": source_doc_ids,
-                    "file_ids": source_file_ids,
-                },
-                "extra_metadata": {
-                    "task_type": project_input.task_type,
-                    "retrieval_scope": scope,
-                    "section_id": section_id,
-                    "section_title": section_title,
-                    "document_context": {
-                        "project_name": project_input.project_name,
-                        "project_type": project_input.project_type,
-                        "document_title": project_input.output_schema.document_title,
-                        "required_sections": list(
-                            project_input.generation_requirements.required_sections
-                            or project_input.output_schema.required_sections
-                        ),
-                        "citation_required_sections": list(
-                            project_input.generation_requirements.citation_required_sections
-                        ),
-                        "target_documents": list(project_input.target_documents),
-                        "target_templates": list(project_input.target_templates),
-                    },
-                },
+            agent_name=self.agent_name,
+            query=resolved_query,
+            kb_ids=list(dict.fromkeys([*task_kb_ids, *source_kb_ids])),
+            filters={
+                "tenant_id": project_input.tenant_id,
+                "doc_ids": source_doc_ids,
+                "file_ids": source_file_ids,
             },
-            caller_agent=self.agent_name,
-            step_name=f"evidence_retrieval:{scope}",
-            created_at=shared_state.updated_at or shared_state.created_at,
-            metadata={
-                "expected_output_schema": "RAGToolOutputSchema",
+            need_citation=requirements.need_citation,
+            max_context_chars=requirements.max_context_chars,
+            max_context_items=5,
+            extra={
+                "retrieval_trace_id": retrieval_trace_id,
                 "retrieval_scope": scope,
-                "section_id": section_id,
-                "section_title": section_title,
+                "extra_metadata": extra_metadata,
             },
         )
-        result = self.tool_executor.execute(tool_call)
-        SharedStateWriter().set_tool_result(
-            shared_state, tool_call.tool_call_id, result.model_dump()
-        )
-        return result
+        return self.rag_service.retrieve(request)
 
+    # 阅读注释（函数）：构建 章节 查询。
     @staticmethod
     def _build_section_query(
         project_input: ProjectInputSchema,
@@ -222,6 +301,19 @@ class SchemeEvidenceService(RuntimeBoundService):
         *,
         recovery: bool = False,
     ) -> str:
+        """构建 章节 查询。
+
+        参数:
+            project_input: 规范化后的项目输入。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            recovery: recovery，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：next, usable_label, strip, str, re.search, match.group, re.sub, domain_hints.get。
+        """
         placeholder_values = {
             "",
             "unspecified",
@@ -233,7 +325,19 @@ class SchemeEvidenceService(RuntimeBoundService):
             "默认项目",
         }
 
+        # 阅读注释（函数）：处理 usable label 相关逻辑。
         def usable_label(value: Any) -> Optional[str]:
+            """处理 usable label 相关逻辑。
+
+            参数:
+                value: value，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                Optional[str]
+
+            阅读提示:
+                主要直接调用：strip, str, text.lower。
+            """
             text = str(value or "").strip()
             if text.lower() in placeholder_values:
                 return None
@@ -283,17 +387,43 @@ class SchemeEvidenceService(RuntimeBoundService):
             f"{recovery_clause}"
         )
 
+    # 阅读注释（函数）：处理 replace markers 相关逻辑。
     @staticmethod
     def _replace_markers(text: str, id_map: Dict[str, str]) -> str:
+        """处理 replace markers 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+            id_map: 标识 map，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：_MARKER_PATTERN.sub。
+        """
         if not text or not id_map:
             return text
 
+        # 阅读注释（函数）：处理 replace 相关逻辑。
         def replace(match: re.Match[str]) -> str:
+            """处理 replace 相关逻辑。
+
+            参数:
+                match: match，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                str
+
+            阅读提示:
+                主要直接调用：match.group, id_map.get。
+            """
             old = match.group(1)
             return f"[{id_map.get(old, old)}]"
 
         return _MARKER_PATTERN.sub(replace, text)
 
+    # 阅读注释（函数）：处理 remap bundle citations 相关逻辑。
     @classmethod
     def _remap_bundle_citations(
         cls,
@@ -306,6 +436,23 @@ class SchemeEvidenceService(RuntimeBoundService):
         scope: str,
         query: str,
     ) -> Tuple[RAGContextSchema, List[RetrievedChunkSchema], List[CitationSchema], Dict[str, Any]]:
+        """处理 remap bundle citations 相关逻辑。
+
+        参数:
+            context: 当前执行上下文。
+            chunks: chunks，具体约束请结合类型标注和调用方确认。
+            citations: 引用信息集合。
+            normalized: normalized，具体约束请结合类型标注和调用方确认。
+            registry: 注册表，具体约束请结合类型标注和调用方确认。
+            scope: scope，具体约束请结合类型标注和调用方确认。
+            query: 当前检索或生成查询。
+
+        返回:
+            Tuple[RAGContextSchema, List[RetrievedChunkSchema], List[CitationSchema], Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：registry.register, list, values, cls._replace_markers, context.model_copy, len, get, isinstance。
+        """
         remapped_citations, id_map = registry.register(
             citations,
             scope=scope,
@@ -377,12 +524,42 @@ class SchemeEvidenceService(RuntimeBoundService):
         }
         return remapped_context, chunks, remapped_citations, normalized
 
+    # 阅读注释（函数）：提取 RAG 输出。
     @staticmethod
     def _extract_rag_output(
         shared_state: SharedStateSchema,
-        result: Optional[ToolResultSchema],
+        result: Optional[EvidenceBundleSchema | ToolResultSchema],
     ) -> Tuple[RAGContextSchema, List[RetrievedChunkSchema], List[CitationSchema], Dict[str, Any]]:
         """Consume the canonical Step 12 evidence contract."""
+
+        if isinstance(result, EvidenceBundleSchema):
+            contract = result
+            context, chunks, citations = RAGEvidenceContractReader.projections(
+                contract
+            )
+            context.extra = {
+                **dict(context.extra or {}),
+                "evidence_contract": contract.model_dump(),
+                "evidence_contract_sha256": canonical_sha256(
+                    contract.model_dump()
+                ),
+                "lineage": contract.lineage.model_dump(),
+            }
+            normalized = {
+                "schema_version": "evidence_bundle_v1",
+                "task_id": contract.task_id or shared_state.task_id,
+                "run_id": contract.run_id or shared_state.run_id,
+                "status": contract.status.value,
+                "query": contract.query,
+                "rewritten_queries": list(contract.rewritten_queries),
+                "evidence": contract.model_dump(),
+                "context": context.model_dump(),
+                "retrieved_chunks": [item.model_dump() for item in chunks],
+                "citations": [item.model_dump() for item in citations],
+                "trace": contract.trace.model_dump() if contract.trace else None,
+                "extra": dict(contract.extra or {}),
+            }
+            return context, chunks, citations, normalized
 
         payload = result.result if result and result.success else {}
         payload = payload or {}

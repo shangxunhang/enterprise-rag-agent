@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_json_hash、_is_explicit_local_model_path、_write_jsonl、OfflineIndexBuildResult、OfflineIndexBuilder。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Reproducible offline parent/child index builder."""
 from __future__ import annotations
 
@@ -10,16 +14,28 @@ from typing import Any
 
 import numpy as np
 
-from rag.config.pipeline_config import ComponentConfig
+from rag.config.static_retrieval import ComponentConfig
 from rag.embed.embedding_service import encode_texts_with_hash, encode_texts_with_model
-from rag.legacy.schema.VectorIndexRecord_Schema import build_vector_index_record_v2
+from rag.schema.VectorIndexRecord_Schema import build_vector_index_record_v2
 from rag.offline.config import OfflineIndexBuildConfig, OfflineIndexConfigLoader
 from rag.offline.manifest import ActiveIndexPointer, ArtifactRecord, IndexManifest, milvus_semantic_fingerprint, sha256_file
 from rag.registry.default_registrations import build_default_component_registry
 from rag.store.parent_chunk_store import load_jsonl_dicts
 
 
+# 阅读注释（函数）：处理 JSON hash 相关逻辑。
 def _json_hash(payload: Any) -> str:
+    """处理 JSON hash 相关逻辑。
+
+    参数:
+        payload: 跨层传递的数据载荷。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：hexdigest, hashlib.sha256, encode, json.dumps。
+    """
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -27,14 +43,39 @@ def _json_hash(payload: Any) -> str:
 
 
 
+# 阅读注释（函数）：判断 explicit 本地 模型 路径。
 def _is_explicit_local_model_path(value: str) -> bool:
+    """判断 explicit 本地 模型 路径。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        bool
+
+    阅读提示:
+        主要直接调用：strip, str, bool, re.match, normalized.startswith。
+    """
     normalized = str(value or "").strip()
     return bool(
         re.match(r"^[A-Za-z]:[\\/]", normalized)
         or normalized.startswith(("/", "\\\\", "./", "../", ".\\", "..\\"))
     )
 
+# 阅读注释（函数）：写入 jsonl。
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    """写入 jsonl。
+
+    参数:
+        path: 目标文件或目录路径。
+        records: 记录集合，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：path.parent.mkdir, path.open, handle.write, json.dumps。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for record in records:
@@ -42,8 +83,10 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
             handle.write("\n")
 
 
+# 阅读注释（类）：封装 离线 索引 build 结果，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class OfflineIndexBuildResult:
+    """封装 离线 索引 build 结果，集中封装相关状态、依赖和行为。"""
     status: str
     index_version: str
     config_hash: str
@@ -55,12 +98,36 @@ class OfflineIndexBuildResult:
     child_chunk_count: int
     validation_only: bool = False
 
+    # 阅读注释（函数）：把 OfflineIndexBuildResult 转换为 字典。
     def to_dict(self) -> dict[str, Any]:
+        """把 OfflineIndexBuildResult 转换为 字典。
+
+        返回:
+            dict[str, Any]
+
+        阅读提示:
+            主要直接调用：self.__dict__.copy。
+        """
         return self.__dict__.copy()
 
 
+# 阅读注释（类）：封装 离线 索引 builder，集中封装相关状态、依赖和行为。
 class OfflineIndexBuilder:
+    """封装 离线 索引 builder，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 OfflineIndexBuilder，保存运行所需的依赖、配置或状态。
     def __init__(self, *, registry=None, project_root: str | Path | None = None) -> None:
+        """初始化 OfflineIndexBuilder，保存运行所需的依赖、配置或状态。
+
+        参数:
+            registry: 注册表，具体约束请结合类型标注和调用方确认。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：resolve, expanduser, Path, OfflineIndexConfigLoader.default_project_root, build_default_component_registry。
+        """
         self.project_root = (
             Path(project_root).expanduser().resolve()
             if project_root
@@ -68,11 +135,35 @@ class OfflineIndexBuilder:
         )
         self.registry = registry or build_default_component_registry()
 
+    # 阅读注释（函数）：解析并确定 OfflineIndexBuilder。
     def resolve(self, path: str | Path) -> Path:
+        """解析并确定 OfflineIndexBuilder。
+
+        参数:
+            path: 目标文件或目录路径。
+
+        返回:
+            Path
+
+        阅读提示:
+            主要直接调用：expanduser, Path, candidate.is_absolute, candidate.resolve, resolve。
+        """
         candidate = Path(path).expanduser()
         return candidate.resolve() if candidate.is_absolute() else (self.project_root / candidate).resolve()
 
+    # 阅读注释（函数）：校验 OfflineIndexBuilder。
     def validate(self, config: OfflineIndexBuildConfig) -> OfflineIndexBuildResult:
+        """校验 OfflineIndexBuilder。
+
+        参数:
+            config: 运行配置。
+
+        返回:
+            OfflineIndexBuildResult
+
+        阅读提示:
+            主要直接调用：self.resolve, source_path.exists, FileNotFoundError, strip, str, _is_explicit_local_model_path, exists, expanduser。
+        """
         source_path = self.resolve(config.source.path)
         if not source_path.exists():
             raise FileNotFoundError(f"cleaned unit source not found: {source_path}")
@@ -107,7 +198,19 @@ class OfflineIndexBuilder:
             validation_only=True,
         )
 
+    # 阅读注释（函数）：构建 OfflineIndexBuilder。
     def build(self, config: OfflineIndexBuildConfig) -> OfflineIndexBuildResult:
+        """构建 OfflineIndexBuilder。
+
+        参数:
+            config: 运行配置。
+
+        返回:
+            OfflineIndexBuildResult
+
+        阅读提示:
+            主要直接调用：self.validate, self.resolve, Path, manifest_path.exists, IndexManifest.model_validate_json, manifest_path.read_text, config.config_hash, ValueError。
+        """
         validated = self.validate(config)
         source_path = self.resolve(config.source.path)
         output_dir = Path(validated.output_dir)

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：MilvusRetriever。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 milvus_retriever.py
 ===================
@@ -28,6 +32,7 @@ from typing import Any, Dict, List, Optional
 from rag.vector_store.milvus_chunk_store import MilvusLiteStore
 
 
+# 阅读注释（类）：封装 milvus retriever，集中封装相关状态、依赖和行为。
 class MilvusRetriever:
     """
     Milvus Lite 检索器。
@@ -36,6 +41,7 @@ class MilvusRetriever:
         query -> query embedding -> Milvus search -> normalized results
     """
 
+    # 阅读注释（函数）：初始化 MilvusRetriever，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         db_file: str | Path,
@@ -43,6 +49,20 @@ class MilvusRetriever:
         dim: int,
         embedder: Any,
     ):
+        """初始化 MilvusRetriever，保存运行所需的依赖、配置或状态。
+
+        参数:
+            db_file: db 文件，具体约束请结合类型标注和调用方确认。
+            collection_name: collection 名称，具体约束请结合类型标注和调用方确认。
+            dim: dim，具体约束请结合类型标注和调用方确认。
+            embedder: embedder，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：MilvusLiteStore, self.store.has_collection, ValueError。
+        """
         self.db_file = db_file
         self.collection_name = collection_name
         self.dim = dim
@@ -60,6 +80,7 @@ class MilvusRetriever:
                 f"请先运行 scripts/build_milvus_lite_index.py"
             )
 
+    # 阅读注释（函数）：检索 MilvusRetriever。
     def retrieve(
         self,
         query: str,
@@ -101,6 +122,7 @@ class MilvusRetriever:
 
         return self._normalize_results(raw_results)
 
+    # 阅读注释（函数）：搜索 MilvusRetriever。
     def search(
         self,
         query: str,
@@ -116,6 +138,7 @@ class MilvusRetriever:
             filter_expr=filter_expr,
         )
 
+    # 阅读注释（函数）：规范化 结果集合。
     @staticmethod
     def _normalize_results(
         raw_results: List[Dict[str, Any]],

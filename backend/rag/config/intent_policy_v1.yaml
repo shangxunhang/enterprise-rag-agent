@@ -1,0 +1,3 @@
+schema_version: intent_policy_v1
+policy_id: adaptive_intent_v1
+short_query_max_chars: 16

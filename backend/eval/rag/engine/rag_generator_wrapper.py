@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：RAGGeneratorWrapper。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_generator_wrapper.py
 ========================
@@ -10,9 +14,10 @@ rag_generator_wrapper.py
 
 from typing import Any, Dict, List
 
-from rag.legacy.schema.eval_schema import RetrievalResult
+from rag.schema.eval_schema import RetrievalResult
 
 
+# 阅读注释（类）：封装 raggenerator wrapper，集中封装相关状态、依赖和行为。
 class RAGGeneratorWrapper:
     """
     完整 RAG 生成器封装。
@@ -27,6 +32,7 @@ class RAGGeneratorWrapper:
     所以这里用 wrapper 把完整生成链路封装起来。
     """
 
+    # 阅读注释（函数）：初始化 RAGGeneratorWrapper，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         prompt_builder: Any,
@@ -34,11 +40,23 @@ class RAGGeneratorWrapper:
         reranker: Any = None,
         rerank_top_k: int | None = None,
     ):
+        """初始化 RAGGeneratorWrapper，保存运行所需的依赖、配置或状态。
+
+        参数:
+            prompt_builder: 提示词 builder，具体约束请结合类型标注和调用方确认。
+            llm_generator: LLM generator，具体约束请结合类型标注和调用方确认。
+            reranker: reranker，具体约束请结合类型标注和调用方确认。
+            rerank_top_k: 重排 top k，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         self.prompt_builder = prompt_builder
         self.llm_generator = llm_generator
         self.reranker = reranker
         self.rerank_top_k = rerank_top_k
 
+    # 阅读注释（函数）：生成 RAGGeneratorWrapper。
     def generate(
         self,
         query: str,
@@ -77,6 +95,7 @@ class RAGGeneratorWrapper:
             "cited_doc_ids": cited_doc_ids,
         }
 
+    # 阅读注释（函数）：对 RAGGeneratorWrapper 重新排序。
     def _rerank(
         self,
         query: str,
@@ -99,6 +118,7 @@ class RAGGeneratorWrapper:
 
         return reranked_results
 
+    # 阅读注释（函数）：构建 提示词。
     def _build_prompt(
         self,
         query: str,
@@ -115,6 +135,7 @@ class RAGGeneratorWrapper:
             retrieved_results=retrieved_results,
         )
 
+    # 阅读注释（函数）：生成 answer。
     def _generate_answer(self, prompt: str) -> str:
         """
         调用 LLM 生成答案。
@@ -124,6 +145,7 @@ class RAGGeneratorWrapper:
 
         return self.llm_generator.generate(prompt)
 
+    # 阅读注释（函数）：提取 cited doc 标识集合。
     def _extract_cited_doc_ids(
         self,
         retrieved_results: List[RetrievalResult],

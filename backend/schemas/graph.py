@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：_stable_hash、GraphNodeInputSchema、GraphStateDeltaSchema、GraphNodeOutputSchema、GraphNodeExecutionRecordSchema、WorkflowEngineResultSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Graph-state and workflow-node execution contracts.
 
 These contracts are framework-neutral.  The native workflow engine and the
@@ -18,7 +22,19 @@ from .common import ErrorSchema, SchemaBase, WarningSchema
 from .status import ExecutionStatus
 
 
+# 阅读注释（函数）：处理 stable hash 相关逻辑。
 def _stable_hash(value: Any) -> str:
+    """处理 stable hash 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：json.dumps, hexdigest, hashlib.sha256, payload.encode。
+    """
     payload = json.dumps(
         value,
         ensure_ascii=False,
@@ -29,6 +45,7 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# 阅读注释（类）：封装 graph node 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class GraphNodeInputSchema(SchemaBase):
     """Declared subset of graph state supplied to one workflow node."""
 
@@ -52,8 +69,17 @@ class GraphNodeInputSchema(SchemaBase):
 
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：校验 hash。
     @model_validator(mode="after")
     def validate_hash(self) -> "GraphNodeInputSchema":
+        """校验 hash。
+
+        返回:
+            'GraphNodeInputSchema'
+
+        阅读提示:
+            主要直接调用：_stable_hash, ValueError, model_validator。
+        """
         actual = _stable_hash(
             {
                 "node_id": self.node_id,
@@ -69,6 +95,7 @@ class GraphNodeInputSchema(SchemaBase):
         return self
 
 
+# 阅读注释（类）：封装 graph 状态 delta Schema，定义跨模块传递的数据结构与字段约束。
 class GraphStateDeltaSchema(SchemaBase):
     """Deterministic state update emitted by a workflow node.
 
@@ -95,8 +122,17 @@ class GraphStateDeltaSchema(SchemaBase):
 
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：校验 delta。
     @model_validator(mode="after")
     def validate_delta(self) -> "GraphStateDeltaSchema":
+        """校验 delta。
+
+        返回:
+            'GraphStateDeltaSchema'
+
+        阅读提示:
+            主要直接调用：ValueError, _stable_hash, model_validator。
+        """
         if self.next_revision != self.base_revision + 1:
             raise ValueError("next_revision must equal base_revision + 1")
         actual = _stable_hash(
@@ -118,6 +154,7 @@ class GraphStateDeltaSchema(SchemaBase):
         return self
 
 
+# 阅读注释（类）：封装 graph node 输出 Schema，定义跨模块传递的数据结构与字段约束。
 class GraphNodeOutputSchema(SchemaBase):
     """Canonical output of one workflow node."""
 
@@ -140,13 +177,23 @@ class GraphNodeOutputSchema(SchemaBase):
     error: Optional[ErrorSchema] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：校验 结果 状态。
     @model_validator(mode="after")
     def validate_result_status(self) -> "GraphNodeOutputSchema":
+        """校验 结果 状态。
+
+        返回:
+            'GraphNodeOutputSchema'
+
+        阅读提示:
+            主要直接调用：ValueError, model_validator。
+        """
         if self.status != self.result.status:
             raise ValueError("node output status must match AgentResult status")
         return self
 
 
+# 阅读注释（类）：封装 graph node execution 记录 Schema，定义跨模块传递的数据结构与字段约束。
 class GraphNodeExecutionRecordSchema(SchemaBase):
     """Bounded graph history retained inside GraphState."""
 
@@ -167,6 +214,7 @@ class GraphNodeExecutionRecordSchema(SchemaBase):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 工作流 engine 结果 Schema，定义跨模块传递的数据结构与字段约束。
 class WorkflowEngineResultSchema(SchemaBase):
     """Framework-neutral result returned by a workflow engine."""
 
@@ -192,8 +240,17 @@ class WorkflowEngineResultSchema(SchemaBase):
     error: Optional[ErrorSchema] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：校验 counts。
     @model_validator(mode="after")
     def validate_counts(self) -> "WorkflowEngineResultSchema":
+        """校验 counts。
+
+        返回:
+            'WorkflowEngineResultSchema'
+
+        阅读提示:
+            主要直接调用：len, ValueError, model_validator。
+        """
         if len(self.node_outputs) != len(self.node_results):
             raise ValueError("node_outputs and node_results must have equal length")
         if self.completed_node_ids != [item.node_id for item in self.node_outputs]:

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：上下文管理模块，用于组织证据、历史状态和 Token 预算。
+# 主要定义：SectionGenerationContextPolicy。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Context policies for enterprise document generation."""
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from schemas.context import ContextBuildRequestSchema, ContextItemSchema
 from schemas.rag import RAGContextSchema, RAGEvidenceContractSchema
 
 
+# 阅读注释（类）：封装 章节 生成 上下文 策略，集中封装相关状态、依赖和行为。
 class SectionGenerationContextPolicy:
     """Build candidates for the initial generation of one document section."""
 
@@ -23,6 +28,7 @@ class SectionGenerationContextPolicy:
         "标注‘待补充’或‘需项目方确认’。引用知识库事实时只能使用提供的citation_id。"
     )
 
+    # 阅读注释（函数）：构建 请求。
     def build_request(
         self,
         *,
@@ -38,6 +44,27 @@ class SectionGenerationContextPolicy:
         citations: List[CitationSchema],
         previous_sections: List[SchemeSectionSchema],
     ) -> ContextBuildRequestSchema:
+        """构建 请求。
+
+        参数:
+            task_id: 任务唯一标识。
+            run_id: 本次运行唯一标识。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+            section_contract: 章节 contract，具体约束请结合类型标注和调用方确认。
+            target_section_chars: target 章节 chars，具体约束请结合类型标注和调用方确认。
+            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
+            citations: 引用信息集合。
+            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ContextBuildRequestSchema
+
+        阅读提示:
+            主要直接调用：self._evidence_contract, contract.lineage.model_dump, dict, get, strip, str, bool, max。
+        """
         contract = self._evidence_contract(rag_context)
         lineage = (
             contract.lineage.model_dump()
@@ -195,8 +222,20 @@ class SectionGenerationContextPolicy:
             },
         )
 
+    # 阅读注释（函数）：处理 项目 core 相关逻辑。
     @staticmethod
     def _project_core(project_input: ProjectInputSchema) -> dict:
+        """处理 项目 core 相关逻辑。
+
+        参数:
+            project_input: 规范化后的项目输入。
+
+        返回:
+            dict
+
+        阅读提示:
+            主要直接调用：list, item.model_dump, project_input.output_schema.model_dump。
+        """
         return {
             "task_id": project_input.task_id,
             "tenant_id": project_input.tenant_id,
@@ -226,8 +265,20 @@ class SectionGenerationContextPolicy:
             },
         }
 
+    # 阅读注释（函数）：处理 supplemental 项目 上下文 相关逻辑。
     @staticmethod
     def _supplemental_project_context(project_input: ProjectInputSchema) -> dict:
+        """处理 supplemental 项目 上下文 相关逻辑。
+
+        参数:
+            project_input: 规范化后的项目输入。
+
+        返回:
+            dict
+
+        阅读提示:
+            主要直接调用：item.model_dump, list, dict, result.items。
+        """
         result = {
             "department_groups": [item.model_dump() for item in project_input.department_groups],
             "hardware_resources": [item.model_dump() for item in project_input.hardware_resources],
@@ -238,8 +289,21 @@ class SectionGenerationContextPolicy:
         }
         return {key: value for key, value in result.items() if value}
 
+    # 阅读注释（函数）：处理 compact 文本 相关逻辑。
     @staticmethod
     def _compact_text(value: object, *, max_chars: int) -> str:
+        """处理 compact 文本 相关逻辑。
+
+        参数:
+            value: value，具体约束请结合类型标注和调用方确认。
+            max_chars: max chars，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：join, split, str, len, rstrip, max, prefix.rfind, prefix.rstrip。
+        """
         text = " ".join(str(value or "").split())
         if len(text) <= max_chars:
             return text
@@ -249,6 +313,7 @@ class SectionGenerationContextPolicy:
             prefix = prefix[: cut + 1].rstrip()
         return prefix.rstrip("，,；;。.") + "…"
 
+    # 阅读注释（函数）：处理 引用 catalog 相关逻辑。
     @classmethod
     def _citation_catalog(
         cls,
@@ -257,6 +322,19 @@ class SectionGenerationContextPolicy:
         max_items: int,
         max_quote_chars: int,
     ) -> tuple[str, list[str], dict]:
+        """处理 引用 catalog 相关逻辑。
+
+        参数:
+            citations: 引用信息集合。
+            max_items: max 数据项集合，具体约束请结合类型标注和调用方确认。
+            max_quote_chars: max quote chars，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            tuple[str, list[str], dict]
+
+        阅读提示:
+            主要直接调用：list, max, int, strip, str, cls._compact_text, parts.append, rows.append。
+        """
         source_items = list(citations)
         selected_items = source_items[: max(0, int(max_items))]
         rows: list[str] = []
@@ -290,8 +368,20 @@ class SectionGenerationContextPolicy:
             },
         )
 
+    # 阅读注释（函数）：处理 history summary 相关逻辑。
     @staticmethod
     def _history_summary(previous_sections: List[SchemeSectionSchema]) -> str:
+        """处理 history summary 相关逻辑。
+
+        参数:
+            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：strip, str, get, item.content.strip, rows.append, join。
+        """
         rows: list[str] = []
         for item in previous_sections:
             summary = str((item.extra or {}).get("context_summary") or "").strip()
@@ -301,8 +391,20 @@ class SectionGenerationContextPolicy:
                 rows.append(f"- {item.section_title}: {summary}")
         return "\n".join(rows)
 
+    # 阅读注释（函数）：处理 证据 contract 相关逻辑。
     @staticmethod
     def _evidence_contract(rag_context: RAGContextSchema) -> RAGEvidenceContractSchema | None:
+        """处理 证据 contract 相关逻辑。
+
+        参数:
+            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            RAGEvidenceContractSchema | None
+
+        阅读提示:
+            主要直接调用：get, isinstance, RAGEvidenceContractSchema.model_validate。
+        """
         raw = (rag_context.extra or {}).get("evidence_contract")
         if not isinstance(raw, dict):
             return None
@@ -311,12 +413,25 @@ class SectionGenerationContextPolicy:
         except Exception:
             return None
 
+    # 阅读注释（函数）：处理 证据 数据项集合 相关逻辑。
     @classmethod
     def _evidence_items(
         cls,
         contract: RAGEvidenceContractSchema | None,
         rag_context: RAGContextSchema,
     ) -> list[ContextItemSchema]:
+        """处理 证据 数据项集合 相关逻辑。
+
+        参数:
+            contract: contract，具体约束请结合类型标注和调用方确认。
+            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            list[ContextItemSchema]
+
+        阅读提示:
+            主要直接调用：rag_context.context_text.strip, ContextItemSchema, enumerate, result.append, max, list。
+        """
         if contract is None:
             if not rag_context.context_text.strip():
                 return []

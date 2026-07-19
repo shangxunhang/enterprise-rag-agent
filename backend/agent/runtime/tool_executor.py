@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：ToolExecutor。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Tool execution orchestrator with structured failures and Trace v2 spans."""
 from __future__ import annotations
 
@@ -16,7 +20,10 @@ from schemas.tool import ToolCallSchema, ToolResultSchema
 from tools.tool_registry import ToolRegistry
 
 
+# 阅读注释（类）：封装 工具 executor，集中封装相关状态、依赖和行为。
 class ToolExecutor:
+    """封装 工具 executor，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 ToolExecutor，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         tool_registry: ToolRegistry,
@@ -24,15 +31,52 @@ class ToolExecutor:
         *,
         error_factory: ErrorFactory | None = None,
     ) -> None:
+        """初始化 ToolExecutor，保存运行所需的依赖、配置或状态。
+
+        参数:
+            tool_registry: 工具 注册表，具体约束请结合类型标注和调用方确认。
+            run_trace_recorder: run Trace recorder，具体约束请结合类型标注和调用方确认。
+            error_factory: 错误 工厂，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：ErrorFactory。
+        """
         self.tool_registry = tool_registry
         self.run_trace_recorder = run_trace_recorder
         self.error_factory = error_factory or ErrorFactory()
 
+    # 阅读注释（函数）：处理 Trace 相关逻辑。
     def _trace(self, **kwargs) -> None:
+        """处理 Trace 相关逻辑。
+
+        参数:
+            **kwargs: 额外关键字参数。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：self.run_trace_recorder.record。
+        """
         if self.run_trace_recorder is not None:
             self.run_trace_recorder.record(**kwargs)
 
+    # 阅读注释（函数）：执行 ToolExecutor。
     def execute(self, tool_call: ToolCallSchema) -> ToolResultSchema:
+        """执行 ToolExecutor。
+
+        参数:
+            tool_call: 工具 call，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ToolResultSchema
+
+        阅读提示:
+            主要直接调用：new_span, current_span, self._trace, tool_call.model_dump, tool_call_summary, activate_span, self.tool_registry.get, tool.run。
+        """
         span = new_span(
             run_id=tool_call.run_id,
             span_name=f"tool:{tool_call.tool_name}",

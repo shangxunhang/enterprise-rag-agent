@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_safe_float、_safe_int、get_child_key、_ensure_source_fields、rrf_fuse。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/ranker/rrf_fusion.py
 =================================
@@ -18,7 +22,20 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 
+# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """处理 safe float 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：float。
+    """
     try:
         if value is None:
             return default
@@ -27,7 +44,20 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# 阅读注释（函数）：处理 safe int 相关逻辑。
 def _safe_int(value: Any, default: int = 10**9) -> int:
+    """处理 safe int 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：int。
+    """
     try:
         if value is None:
             return default
@@ -36,6 +66,7 @@ def _safe_int(value: Any, default: int = 10**9) -> int:
         return default
 
 
+# 阅读注释（函数）：获取 子块 key。
 def get_child_key(hit: Mapping[str, Any]) -> str:
     """Return stable child candidate key."""
     key = hit.get("child_chunk_id") or hit.get("chunk_id")
@@ -46,7 +77,19 @@ def get_child_key(hit: Mapping[str, Any]) -> str:
     return str(key or "")
 
 
+# 阅读注释（函数）：确保 source fields 满足运行约束。
 def _ensure_source_fields(candidate: Dict[str, Any]) -> None:
+    """确保 source fields 满足运行约束。
+
+    参数:
+        candidate: candidate，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：candidate.setdefault。
+    """
     candidate.setdefault("retrieval_sources", [])
     candidate.setdefault("source_ranks", {})
     candidate.setdefault("source_scores", {})
@@ -54,6 +97,7 @@ def _ensure_source_fields(candidate: Dict[str, Any]) -> None:
     candidate.setdefault("rrf_contributions", {})
 
 
+# 阅读注释（函数）：处理 rrf fuse 相关逻辑。
 def rrf_fuse(
     ranked_lists: Mapping[str, Sequence[Dict[str, Any]]],
     *,

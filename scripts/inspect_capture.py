@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_latest_raw_file、_read_last_record、_print_record、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Inspect the latest Agent-RAG capture files."""
 
 from __future__ import annotations
@@ -18,7 +22,19 @@ if str(BACKEND_ROOT) not in sys.path:
 from core.config import get_settings
 
 
+# 阅读注释（函数）：处理 latest raw 文件 相关逻辑。
 def _latest_raw_file(captures_dir: Path) -> Path:
+    """处理 latest raw 文件 相关逻辑。
+
+    参数:
+        captures_dir: captures dir，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：list, raw_dir.glob, FileNotFoundError, max。
+    """
     raw_dir = captures_dir / "raw_interactions"
     files = list(raw_dir.glob("*_raw_interactions.jsonl"))
 
@@ -30,7 +46,19 @@ def _latest_raw_file(captures_dir: Path) -> Path:
     return max(files, key=lambda path: path.stat().st_mtime)
 
 
+# 阅读注释（函数）：读取 last 记录。
 def _read_last_record(path: Path) -> dict[str, Any]:
+    """读取 last 记录。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        dict[str, Any]
+
+    阅读提示:
+        主要直接调用：path.is_file, FileNotFoundError, splitlines, path.read_text, line.strip, ValueError, json.loads。
+    """
     if not path.is_file():
         raise FileNotFoundError(path)
 
@@ -46,7 +74,20 @@ def _read_last_record(path: Path) -> dict[str, Any]:
     return json.loads(lines[-1])
 
 
+# 阅读注释（函数）：处理 print 记录 相关逻辑。
 def _print_record(name: str, path: Path) -> None:
+    """处理 print 记录 相关逻辑。
+
+    参数:
+        name: 名称，具体约束请结合类型标注和调用方确认。
+        path: 目标文件或目录路径。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：print, _read_last_record, record.get, list, record.keys, len, rag_context.get, keys。
+    """
     print("=" * 100)
     print(name, path)
 
@@ -72,7 +113,16 @@ def _print_record(name: str, path: Path) -> None:
     print("eval keys:", list((record.get("eval_sample") or {}).keys()))
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：get_settings, argparse.ArgumentParser, parser.add_argument, str, parser.parse_args, resolve, expanduser, Path。
+    """
     settings = get_settings()
 
     parser = argparse.ArgumentParser(

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：atomic_write_text、sha256_file、_update_directory_file_fingerprint、fingerprint_path、sha256_path、milvus_semantic_fingerprint、effective_artifact_integrity_mode、ArtifactRecord、IndexManifest、ActiveIndexPointer。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Immutable index manifest and active-index pointer."""
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# 阅读注释（函数）：处理 atomic write 文本 相关逻辑。
 def atomic_write_text(path: Path, text: str) -> None:
     """Atomically replace a UTF-8 text file in the same directory."""
     target = Path(path)
@@ -29,7 +34,19 @@ def atomic_write_text(path: Path, text: str) -> None:
             pass
 
 
+# 阅读注释（函数）：处理 sha256 文件 相关逻辑。
 def sha256_file(path: Path) -> str:
+    """处理 sha256 文件 相关逻辑。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：hashlib.sha256, path.open, iter, digest.update, digest.hexdigest。
+    """
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -37,6 +54,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# 阅读注释（函数）：更新 directory 文件 fingerprint。
 def _update_directory_file_fingerprint(
     *,
     digest: "hashlib._Hash",
@@ -45,6 +63,21 @@ def _update_directory_file_fingerprint(
     metadata_only: bool,
     content_sha256: str | None = None,
 ) -> None:
+    """更新 directory 文件 fingerprint。
+
+    参数:
+        digest: digest，具体约束请结合类型标注和调用方确认。
+        root: root，具体约束请结合类型标注和调用方确认。
+        item: 数据项，具体约束请结合类型标注和调用方确认。
+        metadata_only: 元数据 only，具体约束请结合类型标注和调用方确认。
+        content_sha256: content sha256，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：as_posix, item.relative_to, relative_text.encode, int, item.stat, digest.update, to_bytes, len。
+    """
     relative_text = item.relative_to(root).as_posix()
     relative = relative_text.encode("utf-8")
     size = int(item.stat().st_size)
@@ -63,6 +96,7 @@ def _update_directory_file_fingerprint(
     digest.update(content_sha256.encode("ascii"))
 
 
+# 阅读注释（函数）：处理 fingerprint 路径 相关逻辑。
 def fingerprint_path(
     path: Path,
     *,
@@ -125,15 +159,29 @@ def fingerprint_path(
     return digest.hexdigest(), used_metadata_only
 
 
+# 阅读注释（函数）：处理 sha256 路径 相关逻辑。
 def sha256_path(
     path: Path,
     *,
     metadata_only_paths: set[str] | None = None,
 ) -> str:
+    """处理 sha256 路径 相关逻辑。
+
+    参数:
+        path: 目标文件或目录路径。
+        metadata_only_paths: 元数据 only paths，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：fingerprint_path。
+    """
     digest, _ = fingerprint_path(path, metadata_only_paths=metadata_only_paths)
     return digest
 
 
+# 阅读注释（函数）：处理 milvus semantic fingerprint 相关逻辑。
 def milvus_semantic_fingerprint(
     *,
     collection_name: str,
@@ -171,6 +219,7 @@ def milvus_semantic_fingerprint(
     return hashlib.sha256(canonical).hexdigest()
 
 
+# 阅读注释（函数）：处理 effective artifact integrity mode 相关逻辑。
 def effective_artifact_integrity_mode(
     artifact_name: str,
     artifact: "ArtifactRecord",
@@ -189,7 +238,9 @@ def effective_artifact_integrity_mode(
     return "content_sha256"
 
 
+# 阅读注释（类）：封装 artifact 记录，集中封装相关状态、依赖和行为。
 class ArtifactRecord(BaseModel):
+    """封装 artifact 记录，集中封装相关状态、依赖和行为。"""
     model_config = ConfigDict(extra="forbid")
     path: str
     sha256: str
@@ -199,7 +250,9 @@ class ArtifactRecord(BaseModel):
     metadata_only_paths: list[str] = Field(default_factory=list)
 
 
+# 阅读注释（类）：封装 索引 manifest，集中封装相关状态、依赖和行为。
 class IndexManifest(BaseModel):
+    """封装 索引 manifest，集中封装相关状态、依赖和行为。"""
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["rag_index_manifest_v1"] = "rag_index_manifest_v1"
     index_version: str
@@ -219,7 +272,19 @@ class IndexManifest(BaseModel):
     reproducibility_hash: str
     notes: str | None = None
 
+    # 阅读注释（函数）：写入 IndexManifest。
     def write(self, path: Path) -> None:
+        """写入 IndexManifest。
+
+        参数:
+            path: 目标文件或目录路径。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：atomic_write_text, json.dumps, self.model_dump。
+        """
         atomic_write_text(
             path,
             json.dumps(
@@ -230,14 +295,28 @@ class IndexManifest(BaseModel):
         )
 
 
+# 阅读注释（类）：封装 active 索引 pointer，集中封装相关状态、依赖和行为。
 class ActiveIndexPointer(BaseModel):
+    """封装 active 索引 pointer，集中封装相关状态、依赖和行为。"""
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["active_rag_index_pointer_v1"] = "active_rag_index_pointer_v1"
     index_version: str
     manifest_path: str
     manifest_sha256: str
 
+    # 阅读注释（函数）：写入 ActiveIndexPointer。
     def write(self, path: Path) -> None:
+        """写入 ActiveIndexPointer。
+
+        参数:
+            path: 目标文件或目录路径。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：atomic_write_text, json.dumps, self.model_dump。
+        """
         atomic_write_text(
             path,
             json.dumps(self.model_dump(mode="json"), ensure_ascii=False, indent=2),

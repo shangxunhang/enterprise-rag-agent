@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：AgentSpecSchema、AgentMessageSchema、AgentResultSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Agent protocol schemas."""
 
 from __future__ import annotations
@@ -14,7 +18,9 @@ from typing import List
 from pydantic import Field
 
 
+# 阅读注释（类）：封装 Agent spec Schema，定义跨模块传递的数据结构与字段约束。
 class AgentSpecSchema(SchemaBase):
+    """封装 Agent spec Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "agent_spec_v1"
 
     agent_name: str
@@ -42,7 +48,9 @@ class AgentSpecSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 Agent 消息 Schema，定义跨模块传递的数据结构与字段约束。
 class AgentMessageSchema(SchemaBase):
+    """封装 Agent 消息 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "agent_message_v1"
 
     message_id: str
@@ -64,7 +72,9 @@ class AgentMessageSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 Agent 结果 Schema，定义跨模块传递的数据结构与字段约束。
 class AgentResultSchema(SchemaBase):
+    """封装 Agent 结果 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "agent_result_v1"
 
     result_id: str

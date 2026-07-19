@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：系统级验收与审计模块，用于验证完整运行闭环。
+# 主要定义：run_fake_mainline_scenario。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Reusable deterministic scenarios for mainline closure acceptance."""
 
 from __future__ import annotations
@@ -9,18 +13,20 @@ from typing import Any, Dict
 
 from core.config import get_settings
 from mainline_runtime import build_project_input
-from run_demo_back import run_demo
+from run_demo import run_demo
 
 
+# 阅读注释（函数）：执行 主链 closure 的主流程。
 def run_fake_mainline_scenario(
     output_root: str | Path,
     *,
     run_id: str,
     rag_scenario: str,
     llm_scenario: str,
-    enable_corrective_retrieval: bool,
+    enable_corrective_section_retrieval: bool,
     user_input: str = "生成一个政务云建设方案",
     citation_required_sections: list[str] | None = None,
+    enable_agent_self_rag: bool = False,
 ) -> Dict[str, Any]:
     """Run the formal mainline with deterministic test doubles.
 
@@ -42,7 +48,9 @@ def run_fake_mainline_scenario(
     old_env = {key: os.environ.get(key) for key in env_keys}
     try:
         os.environ["USE_REAL_RAG_TOOL"] = "false"
-        os.environ["ENABLE_AGENT_SELF_RAG"] = "false"
+        os.environ["ENABLE_AGENT_SELF_RAG"] = (
+            "true" if enable_agent_self_rag else "false"
+        )
         os.environ["ENABLE_SEMANTIC_GATE"] = "false"
         os.environ["FAKE_RAG_SCENARIO"] = rag_scenario
         os.environ["FAKE_LLM_SCENARIO"] = llm_scenario
@@ -70,7 +78,9 @@ def run_fake_mainline_scenario(
         project_input["generation_requirements"]["extra"].update(
             {
                 "enable_section_aware_retrieval": True,
-                "enable_corrective_section_retrieval": enable_corrective_retrieval,
+                "enable_corrective_section_retrieval": (
+                    enable_corrective_section_retrieval
+                ),
             }
         )
         if citation_required_sections is not None:
@@ -85,8 +95,7 @@ def run_fake_mainline_scenario(
             output_root=output_root,
             clean_existing=True,
             settings=settings,
-            retrieval_strategy="hybrid",
-            enable_agent_self_rag=False,
+            enable_agent_self_rag=enable_agent_self_rag,
             project_input=project_input,
             allow_demo_defaults=False,
         )

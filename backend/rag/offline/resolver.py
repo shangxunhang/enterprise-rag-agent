@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_resolve_artifact_path、ActiveIndexResolver。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Resolve an active index pointer into online-runtime paths and lineage."""
 from __future__ import annotations
 
@@ -13,19 +17,56 @@ from rag.offline.manifest import (
 )
 
 
+# 阅读注释（函数）：解析并确定 artifact 路径。
 def _resolve_artifact_path(manifest_file: Path, raw_path: str) -> Path:
+    """解析并确定 artifact 路径。
+
+    参数:
+        manifest_file: manifest 文件，具体约束请结合类型标注和调用方确认。
+        raw_path: raw 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：expanduser, Path, candidate.is_absolute, candidate.resolve, resolve。
+    """
     candidate = Path(raw_path).expanduser()
     if candidate.is_absolute():
         return candidate.resolve()
     return (manifest_file.parent / candidate).resolve()
 
 
+# 阅读注释（类）：封装 active 索引 resolver，集中封装相关状态、依赖和行为。
 class ActiveIndexResolver:
+    """封装 active 索引 resolver，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 ActiveIndexResolver，保存运行所需的依赖、配置或状态。
     def __init__(self, *, verify_manifest_hash: bool = True, verify_artifacts: bool = False) -> None:
+        """初始化 ActiveIndexResolver，保存运行所需的依赖、配置或状态。
+
+        参数:
+            verify_manifest_hash: verify manifest hash，具体约束请结合类型标注和调用方确认。
+            verify_artifacts: verify artifacts，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.verify_manifest_hash = verify_manifest_hash
         self.verify_artifacts = verify_artifacts
 
+    # 阅读注释（函数）：解析并确定 ActiveIndexResolver。
     def resolve(self, pointer_path: str | Path) -> dict[str, Any]:
+        """解析并确定 ActiveIndexResolver。
+
+        参数:
+            pointer_path: pointer 路径，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            dict[str, Any]
+
+        阅读提示:
+            主要直接调用：resolve, expanduser, Path, pointer_file.is_file, FileNotFoundError, ActiveIndexPointer.model_validate_json, pointer_file.read_text, manifest_file.is_absolute。
+        """
         pointer_file = Path(pointer_path).expanduser().resolve()
         if not pointer_file.is_file():
             raise FileNotFoundError(f"active index pointer not found: {pointer_file}")

@@ -1,12 +1,12 @@
-"""Compatibility adapter from legacy Agent steps to graph node contracts."""
+"""Isolate Agent execution and project state changes into graph deltas."""
 
 from __future__ import annotations
 
 import traceback
 
+from agent.agent_registry import AgentRegistry
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateDiffer, StateWriteContractViolation
-from agent.runtime.step_dispatcher import WorkflowStepDispatcher
 from agent.runtime.workflow_schema import WorkflowStepSchema
 from core.error_factory import ErrorFactory
 from core.runtime.clock import Clock, SystemClock
@@ -16,23 +16,23 @@ from schemas.graph import GraphNodeInputSchema, GraphNodeOutputSchema
 from schemas.status import ExecutionStatus
 
 
-class LegacyAgentNodeAdapter:
+class AgentNodeAdapter:
     """Run an existing Agent on an isolated state copy and emit a delta.
 
-    The canonical graph state is never handed to the legacy Agent. This gives
+    The canonical graph state is never handed to an Agent. This gives
     the workflow engine an explicit commit boundary and makes late timeout
     results or failed writes unable to mutate canonical state directly.
     """
 
     def __init__(
         self,
-        dispatcher: WorkflowStepDispatcher,
+        agent_registry: AgentRegistry,
         *,
         differ: GraphStateDiffer | None = None,
         clock: Clock | None = None,
         error_factory: ErrorFactory | None = None,
     ) -> None:
-        self.dispatcher = dispatcher
+        self.agent_registry = agent_registry
         self.differ = differ or GraphStateDiffer()
         self.clock = clock or SystemClock()
         self.error_factory = error_factory or ErrorFactory()
@@ -44,6 +44,7 @@ class LegacyAgentNodeAdapter:
         node_input: GraphNodeInputSchema,
         state: GraphStateSchema,
     ) -> GraphNodeOutputSchema:
+        """Execute one workflow step and return its validated state delta."""
         started_at = self.clock.now_iso()
         timer = MonotonicTimer()
         started = timer.now()
@@ -51,8 +52,13 @@ class LegacyAgentNodeAdapter:
         contract_violation: StateWriteContractViolation | None = None
 
         try:
-            result = self.dispatcher.execute(step, working_state)
-        except Exception as exc:  # Defensive boundary above handler-level guards.
+            if step.step_type != "agent":
+                raise ValueError(
+                    f"unsupported workflow step_type={step.step_type!r}; "
+                    "the fixed workflow accepts agent steps only"
+                )
+            result = self.agent_registry.get(step.target_name).run(working_state)
+        except Exception as exc:
             error = self.error_factory.create(
                 error_code="WORKFLOW_NODE_ADAPTER_EXCEPTION",
                 error_type=exc.__class__.__name__,
@@ -61,7 +67,7 @@ class LegacyAgentNodeAdapter:
                 recoverable=True,
                 retryable=step.max_retries > 0,
                 failed_node=step.step_id,
-                component="LegacyAgentNodeAdapter",
+                component="AgentNodeAdapter",
                 agent_name=step.target_name,
                 step_name=step.step_name,
                 stack_trace=traceback.format_exc(),
@@ -104,7 +110,7 @@ class LegacyAgentNodeAdapter:
                 recoverable=False,
                 retryable=False,
                 failed_node=step.step_id,
-                component="LegacyAgentNodeAdapter",
+                component="AgentNodeAdapter",
                 agent_name=step.target_name,
                 step_name=step.step_name,
                 details={
@@ -151,7 +157,7 @@ class LegacyAgentNodeAdapter:
             warnings=list(result.warnings or []),
             error=result.error,
             metadata={
-                "adapter_id": "legacy_agent_node_adapter_v2",
+                "adapter_id": "agent_node_adapter_v3",
                 "node_input_sha256": node_input.input_sha256,
                 "declared_read_keys": list(step.input_keys),
                 "declared_write_keys": list(step.output_keys),

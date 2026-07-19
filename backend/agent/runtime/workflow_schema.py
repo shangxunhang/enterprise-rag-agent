@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：WorkflowStepSchema、WorkflowDefinitionSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Workflow schemas."""
 
 from __future__ import annotations
@@ -8,7 +12,9 @@ from pydantic import Field, model_validator
 from schemas.common import SchemaBase
 
 
+# 阅读注释（类）：封装 工作流 step Schema，定义跨模块传递的数据结构与字段约束。
 class WorkflowStepSchema(SchemaBase):
+    """封装 工作流 step Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "workflow_step_v1"
 
     step_id: str
@@ -44,7 +50,9 @@ class WorkflowStepSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 工作流 definition Schema，定义跨模块传递的数据结构与字段约束。
 class WorkflowDefinitionSchema(SchemaBase):
+    """封装 工作流 definition Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "workflow_definition_v1"
 
     workflow_id: str
@@ -63,8 +71,17 @@ class WorkflowDefinitionSchema(SchemaBase):
 
     extra: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：校验 工作流 graph。
     @model_validator(mode="after")
     def validate_workflow_graph(self) -> "WorkflowDefinitionSchema":
+        """校验 工作流 graph。
+
+        返回:
+            'WorkflowDefinitionSchema'
+
+        阅读提示:
+            主要直接调用：len, set, ValueError, strip, str, model_validator。
+        """
         step_ids = [item.step_id for item in self.steps]
         if len(step_ids) != len(set(step_ids)):
             raise ValueError("workflow step_id values must be unique")

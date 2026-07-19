@@ -1,387 +1,188 @@
+"""Contracts for independently configured retrieval and generation quality plugins."""
+
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import fields
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 
-from rag.application.parent_child_generation import ParentChildGenerationPipeline
-from rag.application.parent_child_retrieval import ParentChildRetrievalPipeline
-from rag.config.pipeline_config import (
-    ComponentConfig,
-    OnlineRAGPipelineConfig,
-    PipelineConfigLoader,
+from apps.enterprise_document.config.grounded_generation import (
+    GenerationPluginConfig,
+    GroundedGenerationPolicyLoader,
 )
-from rag.plugins.evidence_graders import (
-    CRAGLiteEvidenceGraderPlugin,
-    NoOpEvidenceGraderPlugin,
+from apps.enterprise_document.quality.registry import build_generation_plugin_registry
+from rag.config.static_retrieval import ComponentConfig, StaticRetrievalSpecLoader
+from rag.plugins.correction_gates import EvidenceSufficiencyCorrectionGate
+from rag.plugins.corrective_query_planners import SectionGapCorrectiveQueryPlanner
+from rag.plugins.evidence_assessors import (
+    CRAGEvidenceAssessorPlugin,
+    NoOpEvidenceAssessorPlugin,
 )
-from rag.plugins.generation_checkers import (
-    NoOpGenerationCheckerPlugin,
-    SelfRAGLiteGenerationCheckerPlugin,
-)
-from rag.query.query_transform_chain import QueryTransformChain
+from rag.ports.quality import EvidenceAssessment
 from rag.registry.default_registrations import build_default_component_registry
-from rag.schema.candidate import CandidateSet
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+STATIC_SPEC = PROJECT_ROOT / "backend/rag/config/static_retrieval_v1.yaml"
+GENERATION_POLICY = (
+    PROJECT_ROOT
+    / "backend/apps/enterprise_document/config/grounded_generation_v1.yaml"
+)
 
 
-def _quality_context() -> dict:
+def _candidate(chunk_id: str, text: str) -> dict:
     return {
-        "quality_llm_generator": None,
-        "enable_quality_llm": False,
-        "quality_generation_params": {},
+        "chunk_id": chunk_id,
+        "parent_chunk_id": f"parent-{chunk_id}",
+        "text": text,
+        "parent_text": text,
+        "score": 0.8,
+        "rank": 1,
+        "metadata": {},
     }
 
 
-def _results() -> list[dict]:
-    return [
-        {
-            "chunk_id": "relevant-child",
-            "child_chunk_id": "relevant-child",
-            "parent_chunk_id": "relevant-parent",
-            "parent_text": "enterprise rag architecture retrieves documents for generation",
-            "text": "enterprise rag architecture retrieves documents for generation",
-            "score": 0.9,
-            "rank": 1,
-            "metadata": {"matched_child_count": 2},
-        },
-        {
-            "chunk_id": "irrelevant-child",
-            "child_chunk_id": "irrelevant-child",
-            "parent_chunk_id": "irrelevant-parent",
-            "parent_text": "tomato soup cooking recipe and kitchen utensils",
-            "text": "tomato soup cooking recipe and kitchen utensils",
-            "score": 0.0,
-            "rank": 2,
-            "metadata": {"matched_child_count": 1},
-        },
-    ]
+def test_static_spec_declares_three_independent_quality_components() -> None:
+    spec = StaticRetrievalSpecLoader().load(STATIC_SPEC)
+
+    assert spec.evidence_assessor.name == "crag"
+    assert spec.corrective_retrieval_gate.name == "evidence_sufficiency"
+    assert spec.corrective_query_planner.name == "section_gap"
+    assert {
+        "drop_irrelevant",
+        "keep_at_least",
+        "ranking_policy",
+    }.isdisjoint(spec.evidence_assessor.params)
+    assert {item.name for item in spec.query_transformers} == {
+        "identity",
+        "multi_query",
+        "hyde",
+    }
 
 
-def test_profiles_explicitly_declare_quality_plugins() -> None:
-    hybrid = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/rag_fusion_v1.yaml"
-    )
-    combined = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/c_rag_self_rag_v1.yaml"
-    )
-
-    assert hybrid.schema_version == "online_rag_pipeline_config_v5"
-    assert hybrid.evidence_grader.name == "noop_evidence"
-    assert hybrid.generation_checker.name == "noop_generation"
-    assert combined.evidence_grader.name == "crag_lite"
-    assert combined.generation_checker.name == "self_rag_lite"
-
-
-def test_pipeline_schema_requires_enabled_quality_plugins() -> None:
-    profile = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/hybrid_v1.yaml"
-    ).model_dump(mode="json")
-
-    profile["evidence_grader"]["enabled"] = False
-    with pytest.raises(ValidationError, match="requires enabled evidence_grader"):
-        OnlineRAGPipelineConfig.model_validate(profile)
-
-    profile = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/hybrid_v1.yaml"
-    ).model_dump(mode="json")
-    profile["generation_checker"]["enabled"] = False
-    with pytest.raises(ValidationError, match="requires enabled generation_checker"):
-        OnlineRAGPipelineConfig.model_validate(profile)
-
-
-def test_v3_profile_is_rejected_after_quality_migration() -> None:
-    profile = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/hybrid_v1.yaml"
-    ).model_dump(mode="json")
-    profile["schema_version"] = "online_rag_pipeline_config_v4"
-
-    with pytest.raises(ValidationError):
-        OnlineRAGPipelineConfig.model_validate(profile)
-
-
-def test_registry_builds_quality_plugins() -> None:
+def test_registry_builds_independent_retrieval_quality_plugins() -> None:
     registry = build_default_component_registry()
 
-    evidence = registry.build(
-        category="evidence_grader",
+    assessor = registry.build(
+        category="evidence_assessor",
         config=ComponentConfig(
-            name="crag_lite",
-            params={"use_llm": False, "max_judge_chunks": 3},
+            name="crag",
+            params={"use_llm": False, "confidence_threshold": 0.5},
         ),
-        build_context=_quality_context(),
     )
+    gate = registry.build(
+        category="corrective_retrieval_gate",
+        config=ComponentConfig(name="evidence_sufficiency"),
+    )
+    planner = registry.build(
+        category="corrective_query_planner",
+        config=ComponentConfig(
+            name="section_gap",
+            params={"use_llm": False, "max_queries": 2},
+        ),
+    )
+
+    assert isinstance(assessor, CRAGEvidenceAssessorPlugin)
+    assert isinstance(gate, EvidenceSufficiencyCorrectionGate)
+    assert isinstance(planner, SectionGapCorrectiveQueryPlanner)
+    assert assessor.plugin_metadata.category == "evidence_assessor"
+    assert gate.plugin_metadata.category == "corrective_retrieval_gate"
+    assert planner.plugin_metadata.category == "corrective_query_planner"
+
+
+def test_assessor_only_observes_and_cannot_carry_or_mutate_evidence() -> None:
+    assessor = CRAGEvidenceAssessorPlugin(
+        use_llm=False,
+        confidence_threshold=0.0,
+        min_relevant_chunks=0,
+    )
+    source = [
+        _candidate("a", "enterprise RAG architecture evidence"),
+        _candidate("b", "partially related deployment notes"),
+        _candidate("c", "unrelated cooking recipe"),
+    ]
+    for rank, item in enumerate(source, start=1):
+        item["rank"] = rank
+        item["metadata"] = {"nested": {"original_rank": rank}}
+    before = deepcopy(source)
+
+    assessment = assessor.assess(query="enterprise RAG", results=source)
+
+    assert assessment.sufficient is True
+    assert source == before
+    assert [item["parent_chunk_id"] for item in source] == [
+        "parent-a",
+        "parent-b",
+        "parent-c",
+    ]
+    assert [item.evidence_id for item in assessment.item_judgements] == [
+        "parent-a",
+        "parent-b",
+        "parent-c",
+    ]
+    assert "results" not in {item.name for item in fields(EvidenceAssessment)}
+    assert not hasattr(assessment, "correction")
+    assert not hasattr(assessment, "queries")
+
+
+def test_noop_assessor_is_an_explicit_nonempty_evidence_baseline() -> None:
+    assessor = NoOpEvidenceAssessorPlugin()
+
+    nonempty = assessor.assess(query="q", results=[_candidate("c1", "evidence")])
+    empty = assessor.assess(query="q", results=[])
+
+    assert nonempty.sufficient is True
+    assert empty.sufficient is False
+
+
+def test_generation_quality_policy_remains_outside_rag_static_spec() -> None:
+    policy = GroundedGenerationPolicyLoader().load(GENERATION_POLICY)
+    registry = build_generation_plugin_registry()
     checker = registry.build(
         category="generation_checker",
-        config=ComponentConfig(
-            name="self_rag_lite",
-            params={"use_llm": False},
-        ),
-        build_context=_quality_context(),
+        config=policy.generation_checker,
+        build_context={"enable_quality_llm": False},
+    )
+    repair = registry.build(
+        category="repair_strategy",
+        config=policy.repair_strategy,
+        build_context={"enable_quality_llm": False},
     )
 
-    assert isinstance(evidence, CRAGLiteEvidenceGraderPlugin)
-    assert evidence.plugin_metadata.name == "crag_lite"
-    assert evidence.max_judge_chunks == 3
-    assert isinstance(checker, SelfRAGLiteGenerationCheckerPlugin)
-    assert checker.plugin_metadata.name == "self_rag_lite"
-
-
-def test_crag_plugin_filters_irrelevant_candidate_and_preserves_parent_fields() -> None:
-    plugin = CRAGLiteEvidenceGraderPlugin(
-        build_context=_quality_context(),
-        use_llm=False,
-        max_judge_chunks=8,
-        drop_irrelevant=True,
-    )
-
-    output = plugin.grade(
-        query="enterprise rag architecture",
-        results=_results(),
-    )
-
-    assert [item["parent_chunk_id"] for item in output.results] == [
-        "relevant-parent"
-    ]
-    assert output.results[0]["metadata"]["matched_child_count"] == 2
-    assert output.results[0]["metadata"]["c_rag_judgement"]["decision"] in {
-        "keep",
-        "downrank",
-    }
-    assert output.report["enabled"] is True
-    assert output.report["original_count"] == 2
-    assert output.report["filtered_count"] == 1
-
-
-def test_noop_evidence_grader_is_explicit_pass_through() -> None:
-    plugin = NoOpEvidenceGraderPlugin()
-    source = _results()
-
-    output = plugin.grade(query="ignored", results=source)
-
-    assert output.results == source
-    assert output.results is not source
-    assert output.report is None
-    assert plugin.execution_metadata() == {"enabled": False, "mode": "noop"}
-
-
-def test_self_rag_checker_uses_configured_checker_independent_of_legacy_flag() -> None:
-    checker = SelfRAGLiteGenerationCheckerPlugin(
-        build_context=_quality_context(),
-        use_llm=False,
-    )
-
-    report = checker.check(
-        query="what does rag do",
-        answer="rag retrieves documents and augments generation",
-        context="rag retrieves documents and augments generation with evidence",
-        citations=[{"citation_id": "C1"}],
-    )
-
-    assert report["enabled"] is True
-    assert report["method"] == "deterministic_fallback"
-    assert report["metadata"]["checker"] == "SelfRAGJudge"
-    assert checker.execution_metadata()["mode"] == "self_rag_lite"
+    assert checker.plugin_metadata.category == "generation_checker"
+    assert repair.plugin_metadata.category == "repair_strategy"
+    assert policy.budget_scope == "section"
 
 
 def test_noop_generation_checker_returns_none() -> None:
-    checker = NoOpGenerationCheckerPlugin()
+    checker = build_generation_plugin_registry().build(
+        category="generation_checker",
+        config=GenerationPluginConfig(name="noop_generation"),
+    )
 
     assert checker.check(
         query="q",
-        answer="a",
-        context="c",
+        answer="answer",
+        context="context",
         citations=[],
     ) is None
-    assert checker.execution_metadata() == {"enabled": False, "mode": "noop"}
 
 
-class _StaticRetriever:
-    source_name = "static"
-
-    def retrieve(self, request):
-        return CandidateSet(
-            query=request.query,
-            source_name=self.source_name,
-            candidates=deepcopy(_results()),
-        )
-
-
-class _PassFusion:
-    def fuse(self, candidate_sets):
-        return candidate_sets[0]
-
-
-class _PassEnricher:
-    def enrich(self, candidate_set):
-        return candidate_set
-
-
-class _PassReranker:
-    def rerank(self, *, query, results):
-        del query
-        return list(results)
-
-    def execution_metadata(self):
-        return {"top_k": 5, "text_field": "parent_text"}
-
-
-class _NoAdaptiveRouter:
-    @staticmethod
-    def is_adaptive_strategy(strategy):
-        del strategy
-        return False
-
-
-def _identity_chain():
-    registry = build_default_component_registry()
-    identity = registry.build(
-        category="query_transformer",
-        config=ComponentConfig(name="identity"),
-    )
-    return QueryTransformChain([identity])
-
-
-def test_retrieval_pipeline_ignores_legacy_crag_flags_when_profile_uses_noop() -> None:
-    registry = build_default_component_registry()
-    evidence = registry.build(
-        category="evidence_grader",
-        config=ComponentConfig(name="noop_evidence"),
-    )
-    pipeline = ParentChildRetrievalPipeline(
-        retrievers=[_StaticRetriever()],
-        fusion=_PassFusion(),
-        query_fusion=_PassFusion(),
-        candidate_enricher=_PassEnricher(),
-        reranker=_PassReranker(),
-        query_transform_chain=_identity_chain(),
-        adaptive_router=_NoAdaptiveRouter(),
-        evidence_grader=evidence,
-        generation_checker_enabled=False,
-    )
-
-    output = pipeline.run(
-        "enterprise rag architecture",
-        dense_top_k=999,
-        keyword_top_k=999,
-        candidate_top_k=999,
-        rrf_k=999,
-        rerank_top_k=999,
-        filter_expr=None,
-        keyword_doc_ids=None,
-        retrieval_strategy="c_rag_self_rag",
-        num_rewrites=999,
-        enable_hyde=True,
-        enable_crag=True,
-        enable_self_rag=True,
-        crag_max_judge_chunks=1,
-        crag_drop_irrelevant=True,
-        extra_metadata=None,
-    )
-
-    assert len(output.results) == 2
-    assert output.crag_enabled is False
-    assert output.self_rag_enabled is False
-    assert output.query_expansion.metadata["legacy_quality_overrides"] == {
-        "enable_crag": True,
-        "enable_self_rag": True,
-        "crag_max_judge_chunks": 1,
-        "crag_drop_irrelevant": True,
-        "ignored_by_configured_quality_plugins": True,
-    }
-    configured = output.query_expansion.metadata["configured_evidence_grader"]
-    assert configured["name"] == "noop_evidence"
-    assert configured["input_count"] == 2
-    assert configured["output_count"] == 2
-
-
-class _ContextPacker:
-    def pack(self, results):
-        del results
-        return SimpleNamespace(
-            context="rag retrieves documents and augments generation with evidence",
-            citations=[{"citation_id": "C1"}],
-            to_dict=lambda: {},
-        )
-
-
-class _PromptBuilder:
-    def build(self, *, query, packed_context, citations):
-        del query, packed_context, citations
-        return SimpleNamespace(
-            prompt="prompt",
-            prompt_id="p",
-            prompt_version="v1",
-            to_dict=lambda: {},
-        )
-
-
-class _Generator:
-    model_name = "fake"
-
-    def generate(self, prompt, **kwargs):
-        del prompt, kwargs
-        return "rag retrieves documents and augments generation"
-
-
-def test_generation_pipeline_runs_configured_checker_when_legacy_flag_is_false() -> None:
-    checker = SelfRAGLiteGenerationCheckerPlugin(
-        build_context=_quality_context(),
-        use_llm=False,
-    )
-    pipeline = ParentChildGenerationPipeline(
-        context_packer=_ContextPacker(),
-        prompt_builder=_PromptBuilder(),
-        llm_generator=_Generator(),
-        generation_checker=checker,
-    )
-
-    output = pipeline.run(
-        "what does rag do",
-        [],
-        generate_answer=True,
-        generation_params={},
-        self_rag_enabled=False,
-    )
-
-    assert output.self_rag is not None
-    assert output.self_rag["enabled"] is True
-    assert output.generation_checker_metadata["mode"] == "self_rag_lite"
-    assert output.generation_checker_metadata["legacy_enable_self_rag"] is False
-    assert output.generation_checker_metadata["legacy_flag_ignored"] is True
-
-
-def test_runtime_factory_resolves_quality_plugins_from_registry() -> None:
-    source = (
-        PROJECT_ROOT / "backend/rag/runtime/parent_child_runtime_factory.py"
-    ).read_text(encoding="utf-8")
-    engine_source = (
-        PROJECT_ROOT / "backend/rag/rag_engine/parent_child_rag_engine.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'category="evidence_grader"' in source
-    assert 'category="generation_checker"' in source
-    assert "CRAGJudge(" not in source
-    assert "SelfRAGJudge(" not in source
-    assert "CRAGJudge(" not in engine_source
-    assert "SelfRAGJudge(" not in engine_source
-
-
-def test_unknown_quality_plugin_fails_during_composition() -> None:
+@pytest.mark.parametrize(
+    ("category", "name"),
+    [
+        ("evidence_assessor", "missing_assessor"),
+        ("corrective_retrieval_gate", "missing_gate"),
+        ("corrective_query_planner", "missing_planner"),
+    ],
+)
+def test_unknown_retrieval_quality_plugin_fails_at_composition(
+    category: str,
+    name: str,
+) -> None:
     registry = build_default_component_registry()
 
     with pytest.raises(ValueError, match="unknown RAG component"):
-        registry.build(
-            category="evidence_grader",
-            config=ComponentConfig(name="missing"),
-        )
-    with pytest.raises(ValueError, match="unknown RAG component"):
-        registry.build(
-            category="generation_checker",
-            config=ComponentConfig(name="missing"),
-        )
+        registry.build(category=category, config=ComponentConfig(name=name))

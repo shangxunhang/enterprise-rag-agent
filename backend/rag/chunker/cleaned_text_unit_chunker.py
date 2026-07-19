@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_row_to_dict、row_to_unit、should_skip_unit、expand_long_units、pick_language、compute_chunk_type、avg_quality_score、collect_quality_flags、_first_non_empty、_last_non_empty等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/chunker/cleaned_text_unit_chunker.py
 =================================================
@@ -29,7 +33,7 @@ from rag.configs.SchemaConfig import (
     DEFAULT_CLEANING_VERSION,
     DEFAULT_SOURCE_TYPE,
 )
-from rag.legacy.schema.Chunk_Schema import build_chunk_v1
+from rag.schema.Chunk_Schema import build_chunk_v1
 from rag.util.text_utils import (
     as_list,
     normalize_text,
@@ -45,7 +49,19 @@ from rag.util.text_utils import (
 # =========================================================
 
 
+# 阅读注释（函数）：处理 row to 字典 相关逻辑。
 def _row_to_dict(row: Any) -> Dict[str, Any]:
+    """处理 row to 字典 相关逻辑。
+
+    参数:
+        row: row，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：isinstance, hasattr, row.asDict, TypeError, type。
+    """
     if isinstance(row, dict):
         return row
     if hasattr(row, "asDict"):
@@ -53,6 +69,7 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     raise TypeError(f"Unsupported row type: {type(row)!r}")
 
 
+# 阅读注释（函数）：处理 row to unit 相关逻辑。
 def row_to_unit(row: Any) -> Dict[str, Any]:
     """把 Spark Row / dict 统一转换成 chunk 策略内部使用的 unit。"""
     d = _row_to_dict(row)
@@ -94,6 +111,7 @@ def row_to_unit(row: Any) -> Dict[str, Any]:
 # =========================================================
 
 
+# 阅读注释（函数）：判断是否应当执行 skip unit。
 def should_skip_unit(unit: Dict[str, Any]) -> bool:
     """判断 cleaned text unit 是否应该跳过。"""
     text = unit.get("text") or ""
@@ -114,6 +132,7 @@ def should_skip_unit(unit: Dict[str, Any]) -> bool:
     return False
 
 
+# 阅读注释（函数）：处理 expand long units 相关逻辑。
 def expand_long_units(units: List[Dict[str, Any]], chunk_size: int, overlap: int) -> List[Dict[str, Any]]:
     """对超长 unit 做兜底拆分，避免单个 unit 直接撑爆 chunk_size。"""
     expanded: List[Dict[str, Any]] = []
@@ -146,7 +165,19 @@ def expand_long_units(units: List[Dict[str, Any]], chunk_size: int, overlap: int
 # =========================================================
 
 
+# 阅读注释（函数）：处理 pick language 相关逻辑。
 def pick_language(units: List[Dict[str, Any]]) -> str:
+    """处理 pick language 相关逻辑。
+
+    参数:
+        units: units，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：u.get, counts.get, sorted, counts.items。
+    """
     counts: Dict[str, int] = {}
     for u in units:
         lang = u.get("language") or "unknown"
@@ -156,7 +187,19 @@ def pick_language(units: List[Dict[str, Any]]) -> str:
     return sorted(counts.items(), key=lambda x: x[1], reverse=True)[0][0]
 
 
+# 阅读注释（函数）：计算 文本块 类型。
 def compute_chunk_type(units: List[Dict[str, Any]]) -> str:
+    """计算 文本块 类型。
+
+    参数:
+        units: units，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：set, u.get。
+    """
     unit_types = set([u.get("unit_type") or "other" for u in units])
     if unit_types == {"table"}:
         return "table"
@@ -165,14 +208,40 @@ def compute_chunk_type(units: List[Dict[str, Any]]) -> str:
     return "text"
 
 
+# 阅读注释（函数）：处理 avg 质量 score 相关逻辑。
 def avg_quality_score(units: List[Dict[str, Any]]) -> Optional[float]:
+    """处理 avg 质量 score 相关逻辑。
+
+    参数:
+        units: units，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Optional[float]
+
+    阅读提示:
+        主要直接调用：u.get, round, sum, float, len。
+    """
     scores = [u.get("quality_score") for u in units if u.get("quality_score") is not None]
     if not scores:
         return None
     return round(sum(scores) / float(len(scores)), 4)
 
 
+# 阅读注释（函数）：收集 质量 flags。
 def collect_quality_flags(units: List[Dict[str, Any]], text_length: int, min_chunk_size: int) -> List[Any]:
+    """收集 质量 flags。
+
+    参数:
+        units: units，具体约束请结合类型标注和调用方确认。
+        text_length: 文本 length，具体约束请结合类型标注和调用方确认。
+        min_chunk_size: min 文本块 size，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Any]
+
+    阅读提示:
+        主要直接调用：flags.extend, u.get, unique_keep_order, flags.append。
+    """
     flags: List[Any] = []
     for u in units:
         flags.extend(u.get("quality_flags") or [])
@@ -183,7 +252,21 @@ def collect_quality_flags(units: List[Dict[str, Any]], text_length: int, min_chu
     return flags
 
 
+# 阅读注释（函数）：处理 first non empty 相关逻辑。
 def _first_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) -> Any:
+    """处理 first non empty 相关逻辑。
+
+    参数:
+        units: units，具体约束请结合类型标注和调用方确认。
+        key: key，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Any
+
+    阅读提示:
+        主要直接调用：u.get。
+    """
     for u in units:
         v = u.get(key)
         if v not in (None, ""):
@@ -191,7 +274,21 @@ def _first_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None)
     return default
 
 
+# 阅读注释（函数）：处理 last non empty 相关逻辑。
 def _last_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) -> Any:
+    """处理 last non empty 相关逻辑。
+
+    参数:
+        units: units，具体约束请结合类型标注和调用方确认。
+        key: key，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Any
+
+    阅读提示:
+        主要直接调用：reversed, u.get。
+    """
     for u in reversed(units):
         v = u.get(key)
         if v not in (None, ""):
@@ -204,6 +301,7 @@ def _last_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) 
 # =========================================================
 
 
+# 阅读注释（函数）：处理 overlap tail 相关逻辑。
 def overlap_tail(units: List[Dict[str, Any]], overlap: int) -> List[Dict[str, Any]]:
     """
     基于 unit 粒度实现 overlap。
@@ -224,6 +322,7 @@ def overlap_tail(units: List[Dict[str, Any]], overlap: int) -> List[Dict[str, An
     return tail
 
 
+# 阅读注释（函数）：构建 flat 文本块 v1。
 def build_flat_chunk_v1(
     *,
     doc_id: str,
@@ -284,6 +383,7 @@ def build_flat_chunk_v1(
     )
 
 
+# 阅读注释（函数）：处理 文本块 units for doc 相关逻辑。
 def chunk_units_for_doc(
     doc_id: str,
     units: List[Dict[str, Any]],
@@ -343,6 +443,7 @@ def chunk_units_for_doc(
     return chunks
 
 
+# 阅读注释（函数）：处理 文本块 partition 相关逻辑。
 def chunk_partition(
     rows_iter: Iterable[Any],
     chunk_size: int,
@@ -402,6 +503,7 @@ def chunk_partition(
             yield json.dumps(chunk, ensure_ascii=False)
 
 
+# 阅读注释（函数）：处理 文本块 记录集合 for doc 相关逻辑。
 def chunk_records_for_doc(
     records: List[Dict[str, Any]],
     chunk_size: int,

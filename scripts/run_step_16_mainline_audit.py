@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generate a pre-LangGraph audit of the current native mainline."""
 
 from __future__ import annotations
@@ -15,7 +19,16 @@ if str(BACKEND_ROOT) not in sys.path:
 from system_test.mainline_audit import audit_mainline
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, str, parser.parse_args, resolve, expanduser, Path, report_path.parent.mkdir。
+    """
     parser = argparse.ArgumentParser(description="Audit noop gates and SchemeWriter granularity.")
     parser.add_argument(
         "--report-path",
@@ -39,7 +52,7 @@ def main() -> int:
     print("Step 16主链静态审计已生成")
     print(f"Generation Checker：{report['summary']['generation_checker']}")
     print(f"Repair Strategy：{report['summary']['repair_strategy']}")
-    print(f"Evidence Grader：{report['summary']['evidence_grader']}")
+    print(f"Evidence Assessor：{report['summary']['evidence_assessor']}")
     print(f"活跃风险：{report['summary']['active_risk_count']}")
     print(f"审计报告：{report_path}")
     print("========================================")

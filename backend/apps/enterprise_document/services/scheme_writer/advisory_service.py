@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：SectionAdvisoryService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generated from the stable v7.5.1 SchemeWriter behavior."""
 
 
@@ -7,7 +11,6 @@ from typing import Any, Dict, List
 
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationSchema
-from .base import RuntimeBoundService
 
 from .citation_service import CitationService
 from .constants import (
@@ -21,14 +24,29 @@ from .constants import (
 )
 
 
-class SectionAdvisoryService(RuntimeBoundService):
+# 阅读注释（类）：封装 章节 advisory 服务，封装一组可复用的业务能力。
+class SectionAdvisoryService:
+    """封装 章节 advisory 服务，封装一组可复用的业务能力。"""
+    # 阅读注释（函数）：处理 项目 fact corpus 相关逻辑。
     @staticmethod
     def _project_fact_corpus(project_input: ProjectInputSchema) -> str:
         """Return only caller-supplied fact values, never schema field names."""
 
         values: list[str] = []
 
+        # 阅读注释（函数）：收集 _project_fact_corpus。
         def collect(value: Any) -> None:
+            """收集 _project_fact_corpus。
+
+            参数:
+                value: value，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                None
+
+            阅读提示:
+                主要直接调用：isinstance, value.strip, values.append, str, value.values, collect。
+            """
             if value is None or value is False:
                 return
             if isinstance(value, str):
@@ -70,6 +88,7 @@ class SectionAdvisoryService(RuntimeBoundService):
         collect(project_input.extra)
         return "\n".join(values)
 
+    # 阅读注释（函数）：处理 项目 fact violations 相关逻辑。
     @classmethod
     def _project_fact_violations(
         cls,

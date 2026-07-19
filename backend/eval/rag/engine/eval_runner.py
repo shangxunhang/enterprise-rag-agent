@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：load_eval_samples、normalize_retrieval_results、call_retriever、call_generator、_average、run_eval、_to_serializable、save_eval_report、run_and_save_eval。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 eval_runner.py
 ==============
@@ -53,6 +57,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 
+# 阅读注释（函数）：加载 评测 samples。
 def load_eval_samples(eval_dataset_path: str | Path) -> List[EvalSample]:
     """
     加载 eval_dataset.json，并转换为 EvalSample 列表。
@@ -105,6 +110,7 @@ def load_eval_samples(eval_dataset_path: str | Path) -> List[EvalSample]:
     return samples
 
 
+# 阅读注释（函数）：规范化 检索 结果集合。
 def normalize_retrieval_results(
         raw_results: List[Any],
 ) -> List[RetrievalResult]:
@@ -167,6 +173,7 @@ def normalize_retrieval_results(
     return normalized_results
 
 
+# 阅读注释（函数）：处理 call retriever 相关逻辑。
 def call_retriever(
         retriever: Any,
         query: str,
@@ -204,6 +211,7 @@ def call_retriever(
     return normalize_retrieval_results(raw_results)
 
 
+# 阅读注释（函数）：处理 call generator 相关逻辑。
 def call_generator(
         generator: Any,
         query: str,
@@ -265,6 +273,7 @@ def call_generator(
     )
 
 
+# 阅读注释（函数）：处理 average 相关逻辑。
 def _average(values: List[float]) -> float:
     """
     计算平均值。
@@ -277,6 +286,7 @@ def _average(values: List[float]) -> float:
     return sum(values) / len(values)
 
 
+# 阅读注释（函数）：执行 评测 runner 的主流程。
 def run_eval(
         retriever: Any,
         eval_dataset_path: str | Path,
@@ -401,6 +411,7 @@ def run_eval(
     return report
 
 
+# 阅读注释（函数）：把 评测 runner 转换为 serializable。
 def _to_serializable(obj: Any) -> Any:
     """
     将 dataclass / Path / 普通对象转换为可 JSON 序列化对象。
@@ -416,6 +427,7 @@ def _to_serializable(obj: Any) -> Any:
     return obj
 
 
+# 阅读注释（函数）：保存 评测 report。
 def save_eval_report(
         report: EvalReport,
         output_path: str | Path,
@@ -443,6 +455,7 @@ def save_eval_report(
         )
 
 
+# 阅读注释（函数）：执行 评测 runner 的主流程。
 def run_and_save_eval(
         retriever: Any,
         eval_dataset_path: str | Path,

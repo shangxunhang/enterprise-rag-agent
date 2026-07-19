@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_as_int、_resolve_artifact_path、_pick_evenly_spaced_indices、_normalize_search_hits、VerificationCheck、OfflineIndexVerificationResult、OfflineIndexVerifier。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Post-build verification for a versioned offline RAG index.
 
 Step 11.2 deliberately verifies the immutable index artifacts themselves.  It
@@ -25,21 +29,60 @@ from rag.store.parent_chunk_store import load_jsonl_dicts
 MilvusClientFactory = Callable[[str], Any]
 
 
+# 阅读注释（函数）：处理 as int 相关逻辑。
 def _as_int(value: Any, default: int = -1) -> int:
+    """处理 as int 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：int。
+    """
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
 
 
+# 阅读注释（函数）：解析并确定 artifact 路径。
 def _resolve_artifact_path(manifest_path: Path, raw_path: str) -> Path:
+    """解析并确定 artifact 路径。
+
+    参数:
+        manifest_path: manifest 路径，具体约束请结合类型标注和调用方确认。
+        raw_path: raw 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：expanduser, Path, candidate.is_absolute, candidate.resolve, resolve。
+    """
     candidate = Path(raw_path).expanduser()
     if candidate.is_absolute():
         return candidate.resolve()
     return (manifest_path.parent / candidate).resolve()
 
 
+# 阅读注释（函数）：处理 pick evenly spaced indices 相关逻辑。
 def _pick_evenly_spaced_indices(size: int, sample_count: int) -> list[int]:
+    """处理 pick evenly spaced indices 相关逻辑。
+
+    参数:
+        size: size，具体约束请结合类型标注和调用方确认。
+        sample_count: sample count，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        list[int]
+
+    阅读提示:
+        主要直接调用：list, range, sorted, round。
+    """
     if size <= 0 or sample_count <= 0:
         return []
     if sample_count >= size:
@@ -50,7 +93,19 @@ def _pick_evenly_spaced_indices(size: int, sample_count: int) -> list[int]:
     return sorted({round(i * last / (sample_count - 1)) for i in range(sample_count)})
 
 
+# 阅读注释（函数）：规范化 search hits。
 def _normalize_search_hits(raw: Any) -> list[dict[str, Any]]:
+    """规范化 search hits。
+
+    参数:
+        raw: raw，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        list[dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：isinstance, item.get, entity.get, normalized.append, str。
+    """
     if not raw:
         return []
     hits = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], list) else raw
@@ -76,18 +131,28 @@ def _normalize_search_hits(raw: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+# 阅读注释（类）：封装 verification check，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class VerificationCheck:
+    """封装 verification check，集中封装相关状态、依赖和行为。"""
     name: str
     status: str
     details: dict[str, Any] = field(default_factory=dict)
 
+    # 阅读注释（函数）：把 VerificationCheck 转换为 字典。
     def to_dict(self) -> dict[str, Any]:
+        """把 VerificationCheck 转换为 字典。
+
+        返回:
+            dict[str, Any]
+        """
         return {"name": self.name, "status": self.status, "details": self.details}
 
 
+# 阅读注释（类）：封装 离线 索引 verification 结果，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class OfflineIndexVerificationResult:
+    """封装 离线 索引 verification 结果，集中封装相关状态、依赖和行为。"""
     status: str
     manifest_path: str
     index_version: str | None
@@ -95,11 +160,26 @@ class OfflineIndexVerificationResult:
     metrics: dict[str, Any]
     self_retrieval: list[dict[str, Any]]
 
+    # 阅读注释（函数）：处理 passed 相关逻辑。
     @property
     def passed(self) -> bool:
+        """处理 passed 相关逻辑。
+
+        返回:
+            bool
+        """
         return self.status == "success"
 
+    # 阅读注释（函数）：把 OfflineIndexVerificationResult 转换为 字典。
     def to_dict(self) -> dict[str, Any]:
+        """把 OfflineIndexVerificationResult 转换为 字典。
+
+        返回:
+            dict[str, Any]
+
+        阅读提示:
+            主要直接调用：item.to_dict。
+        """
         return {
             "schema_version": "offline_index_verification_report_v1",
             "status": self.status,
@@ -110,7 +190,19 @@ class OfflineIndexVerificationResult:
             "self_retrieval": self.self_retrieval,
         }
 
+    # 阅读注释（函数）：写入 OfflineIndexVerificationResult。
     def write(self, path: str | Path) -> Path:
+        """写入 OfflineIndexVerificationResult。
+
+        参数:
+            path: 目标文件或目录路径。
+
+        返回:
+            Path
+
+        阅读提示:
+            主要直接调用：resolve, expanduser, Path, target.parent.mkdir, target.write_text, json.dumps, self.to_dict。
+        """
         target = Path(path).expanduser().resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -120,6 +212,7 @@ class OfflineIndexVerificationResult:
         return target
 
 
+# 阅读注释（类）：封装 离线 索引 verifier，集中封装相关状态、依赖和行为。
 class OfflineIndexVerifier:
     """Verify lineage, artifact integrity, vector shape, and Milvus consistency."""
 
@@ -130,14 +223,32 @@ class OfflineIndexVerifier:
         "vector_index_records",
     )
 
+    # 阅读注释（函数）：初始化 OfflineIndexVerifier，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         milvus_client_factory: MilvusClientFactory | None = None,
     ) -> None:
+        """初始化 OfflineIndexVerifier，保存运行所需的依赖、配置或状态。
+
+        参数:
+            milvus_client_factory: milvus 客户端 工厂，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self._milvus_client_factory = milvus_client_factory
 
+    # 阅读注释（函数）：处理 客户端 工厂 相关逻辑。
     def _client_factory(self) -> MilvusClientFactory:
+        """处理 客户端 工厂 相关逻辑。
+
+        返回:
+            MilvusClientFactory
+
+        阅读提示:
+            主要直接调用：RuntimeError。
+        """
         if self._milvus_client_factory is not None:
             return self._milvus_client_factory
         try:
@@ -149,6 +260,7 @@ class OfflineIndexVerifier:
             ) from exc
         return lambda uri: MilvusClient(uri)
 
+    # 阅读注释（函数）：检查 OfflineIndexVerifier。
     @staticmethod
     def _check(
         checks: list[VerificationCheck],
@@ -157,6 +269,20 @@ class OfflineIndexVerifier:
         condition: bool,
         details: dict[str, Any] | None = None,
     ) -> None:
+        """检查 OfflineIndexVerifier。
+
+        参数:
+            checks: checks，具体约束请结合类型标注和调用方确认。
+            name: 名称，具体约束请结合类型标注和调用方确认。
+            condition: condition，具体约束请结合类型标注和调用方确认。
+            details: details，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：checks.append, VerificationCheck。
+        """
         checks.append(
             VerificationCheck(
                 name=name,
@@ -165,6 +291,7 @@ class OfflineIndexVerifier:
             )
         )
 
+    # 阅读注释（函数）：验证 OfflineIndexVerifier。
     def verify(
         self,
         manifest_path: str | Path,
@@ -174,6 +301,21 @@ class OfflineIndexVerifier:
         self_retrieval_samples: int = 3,
         self_retrieval_top_k: int = 3,
     ) -> OfflineIndexVerificationResult:
+        """验证 OfflineIndexVerifier。
+
+        参数:
+            manifest_path: manifest 路径，具体约束请结合类型标注和调用方确认。
+            verify_artifact_hashes: verify artifact hashes，具体约束请结合类型标注和调用方确认。
+            verify_milvus: verify milvus，具体约束请结合类型标注和调用方确认。
+            self_retrieval_samples: Self 检索 samples，具体约束请结合类型标注和调用方确认。
+            self_retrieval_top_k: Self 检索 top k，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            OfflineIndexVerificationResult
+
+        阅读提示:
+            主要直接调用：resolve, expanduser, Path, manifest_file.is_file, self._check, str, OfflineIndexVerificationResult, IndexManifest.model_validate_json。
+        """
         manifest_file = Path(manifest_path).expanduser().resolve()
         checks: list[VerificationCheck] = []
         metrics: dict[str, Any] = {}
@@ -437,6 +579,7 @@ class OfflineIndexVerifier:
 
         return self._finish(manifest_file, manifest, checks, metrics, self_retrieval)
 
+    # 阅读注释（函数）：验证 milvus。
     def _verify_milvus(
         self,
         *,
@@ -450,6 +593,25 @@ class OfflineIndexVerifier:
         sample_count: int,
         top_k: int,
     ) -> None:
+        """验证 milvus。
+
+        参数:
+            manifest: manifest，具体约束请结合类型标注和调用方确认。
+            artifact_paths: artifact paths，具体约束请结合类型标注和调用方确认。
+            children: children，具体约束请结合类型标注和调用方确认。
+            vectors: vectors，具体约束请结合类型标注和调用方确认。
+            checks: checks，具体约束请结合类型标注和调用方确认。
+            metrics: 指标，具体约束请结合类型标注和调用方确认。
+            self_retrieval: Self 检索，具体约束请结合类型标注和调用方确认。
+            sample_count: sample count，具体约束请结合类型标注和调用方确认。
+            top_k: top k，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：str, manifest.index.get, self._client_factory, bool, client.has_collection, self._check, client.load_collection, client.get_collection_stats。
+        """
         db_path = artifact_paths["milvus_lite"]
         collection_name = str(manifest.index.get("collection_name") or "")
         client = None
@@ -534,6 +696,7 @@ class OfflineIndexVerifier:
                 except Exception:
                     pass
 
+    # 阅读注释（函数）：处理 finish 相关逻辑。
     @staticmethod
     def _finish(
         manifest_file: Path,
@@ -542,6 +705,21 @@ class OfflineIndexVerifier:
         metrics: dict[str, Any],
         self_retrieval: list[dict[str, Any]],
     ) -> OfflineIndexVerificationResult:
+        """处理 finish 相关逻辑。
+
+        参数:
+            manifest_file: manifest 文件，具体约束请结合类型标注和调用方确认。
+            manifest: manifest，具体约束请结合类型标注和调用方确认。
+            checks: checks，具体约束请结合类型标注和调用方确认。
+            metrics: 指标，具体约束请结合类型标注和调用方确认。
+            self_retrieval: Self 检索，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            OfflineIndexVerificationResult
+
+        阅读提示:
+            主要直接调用：OfflineIndexVerificationResult, str, list。
+        """
         failed = [item.name for item in checks if item.status != "passed"]
         metrics["failed_checks"] = failed
         return OfflineIndexVerificationResult(

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_parser、_hash_payload、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import argparse
@@ -19,12 +23,21 @@ from apps.enterprise_document.services.scheme_writer.evidence_service import (  
     SchemeEvidenceService,
 )
 from rag.offline.resolver import ActiveIndexResolver  # noqa: E402
-from rag.services.legacy_rag_service import LegacyRAGService  # noqa: E402
+from rag.services.rag_service import RAGService  # noqa: E402
 from schemas.rag import RAGEvidenceContractSchema, RAGToolInputSchema  # noqa: E402
 from schemas.tool import ToolResultSchema  # noqa: E402
 
 
+# 阅读注释（函数）：处理 parser 相关逻辑。
 def _parser() -> argparse.ArgumentParser:
+    """处理 parser 相关逻辑。
+
+    返回:
+        argparse.ArgumentParser
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument。
+    """
     parser = argparse.ArgumentParser(
         description="Step 12 Evidence / RAG Context Contract v1 acceptance"
     )
@@ -37,17 +50,28 @@ def _parser() -> argparse.ArgumentParser:
         default="data/processed/indexes/step_12_acceptance_report.json",
     )
     parser.add_argument(
-        "--pipeline-config",
+        "--static-retrieval-spec",
         default=None,
-        help="Optional RAG online profile path.",
+        help="Optional static retrieval specification path.",
     )
-    parser.add_argument("--skip-rerank", action="store_true")
     parser.add_argument("--max-context-items", type=int, default=3)
     parser.add_argument("--max-context-chars", type=int, default=6000)
     return parser
 
 
+# 阅读注释（函数）：处理 hash 载荷 相关逻辑。
 def _hash_payload(payload: Any) -> str:
+    """处理 hash 载荷 相关逻辑。
+
+    参数:
+        payload: 跨层传递的数据载荷。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：encode, json.dumps, hexdigest, hashlib.sha256。
+    """
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -58,11 +82,34 @@ def _hash_payload(payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：parse_args, _parser, resolve, ActiveIndexResolver, check, bool, resolved.get, LegacyRAGService。
+    """
     args = _parser().parse_args()
     checks: list[dict[str, Any]] = []
 
+    # 阅读注释（函数）：检查 main。
     def check(name: str, condition: bool, details: dict[str, Any]) -> None:
+        """检查 main。
+
+        参数:
+            name: 名称，具体约束请结合类型标注和调用方确认。
+            condition: condition，具体约束请结合类型标注和调用方确认。
+            details: details，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：checks.append, RuntimeError。
+        """
         checks.append(
             {
                 "name": name,
@@ -88,11 +135,9 @@ def main() -> int:
         },
     )
 
-    service = LegacyRAGService(
+    service = RAGService(
         rag_project_root=PROJECT_ROOT,
-        generate_answer=False,
-        skip_rerank=bool(args.skip_rerank),
-        pipeline_config_file=args.pipeline_config,
+        static_retrieval_spec_file=args.static_retrieval_spec,
     )
     output = service.retrieve(
         RAGToolInputSchema(
@@ -100,17 +145,9 @@ def main() -> int:
             run_id="step_12_acceptance_run",
             agent_name="Step12Acceptance",
             query=args.query,
-            retrieval_mode="hybrid",
-            top_k=10,
-            dense_top_k=10,
-            keyword_top_k=10,
-            candidate_top_k=10,
-            rerank_top_k=5,
             max_context_items=args.max_context_items,
             max_context_chars=args.max_context_chars,
-            need_context=True,
             need_citation=True,
-            mode="retrieve_only",
             extra={
                 "acceptance_stage": "step_12_evidence_context_contract_v1",
             },
@@ -127,10 +164,10 @@ def main() -> int:
     )
     check(
         "evidence_contract_present",
-        output.evidence is not None,
-        {"schema_version": output.evidence.schema_version if output.evidence else None},
+        output is not None,
+        {"schema_version": output.schema_version},
     )
-    contract = RAGEvidenceContractSchema.model_validate(output.evidence)
+    contract = RAGEvidenceContractSchema.model_validate(output)
     selected_items = [
         item
         for item in contract.items
@@ -252,7 +289,7 @@ def main() -> int:
             "index_version": contract.lineage.index_version,
             "dataset_version": contract.lineage.dataset_version,
             "embedding_model": contract.lineage.embedding_model,
-            "retrieval_strategy": contract.lineage.retrieval_strategy,
+            "retrieval_plan_id": contract.lineage.retrieval_plan_id,
         },
         "checks": checks,
         "failed_checks": failed,

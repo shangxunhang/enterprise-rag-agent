@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：应用层主链编排模块。
+# 主要定义：_derive_document_title、ProjectInputFactory。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Build canonical ProjectInput at an external application boundary."""
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ _DOCUMENT_TITLE_PATTERN = re.compile(
 )
 
 
+# 阅读注释（函数）：处理 derive 文档 title 相关逻辑。
 def _derive_document_title(payload: Dict[str, Any], user_input: str) -> str:
     """Derive a neutral title without injecting a fixed demo business domain."""
 
@@ -50,7 +55,10 @@ def _derive_document_title(payload: Dict[str, Any], user_input: str) -> str:
     return "项目建设方案"
 
 
+# 阅读注释（类）：封装 项目 输入 工厂，负责根据配置装配并返回运行实例。
 class ProjectInputFactory:
+    """封装 项目 输入 工厂，负责根据配置装配并返回运行实例。"""
+    # 阅读注释（函数）：构建 ProjectInputFactory。
     def build(
         self,
         task_id: str,
@@ -59,6 +67,20 @@ class ProjectInputFactory:
         *,
         allow_demo_defaults: bool = True,
     ) -> ProjectInputSchema:
+        """构建 ProjectInputFactory。
+
+        参数:
+            task_id: 任务唯一标识。
+            user_input: user 输入，具体约束请结合类型标注和调用方确认。
+            raw_project_input: raw 项目 输入，具体约束请结合类型标注和调用方确认。
+            allow_demo_defaults: allow 演示 defaults，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ProjectInputSchema
+
+        阅读提示:
+            主要直接调用：dict, strip, str, payload.get, ValueError, payload.setdefault, generation_requirements.setdefault, list。
+        """
         payload: Dict[str, Any] = dict(raw_project_input or {})
         if not allow_demo_defaults and not str(payload.get("task_id") or "").strip():
             raise ValueError("ProjectInput.task_id is required")

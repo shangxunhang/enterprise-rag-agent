@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：WorkflowTraceService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Workflow/run-level Trace v2 service."""
 
 from __future__ import annotations
@@ -13,11 +17,35 @@ from schemas.status import ExecutionStatus
 from schemas.task import TaskSchema
 
 
+# 阅读注释（类）：封装 工作流 Trace 服务，封装一组可复用的业务能力。
 class WorkflowTraceService:
+    """封装 工作流 Trace 服务，封装一组可复用的业务能力。"""
+    # 阅读注释（函数）：初始化 WorkflowTraceService，保存运行所需的依赖、配置或状态。
     def __init__(self, sink: Optional[TraceSink] = None) -> None:
+        """初始化 WorkflowTraceService，保存运行所需的依赖、配置或状态。
+
+        参数:
+            sink: sink，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.sink = sink
 
+    # 阅读注释（函数）：启动 run。
     def start_run(self, *, task: TaskSchema, component_name: str) -> TraceSpanHandle:
+        """启动 run。
+
+        参数:
+            task: 待执行的任务对象。
+            component_name: component 名称，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            TraceSpanHandle
+
+        阅读提示:
+            主要直接调用：new_span, current_span, self.sink.record, len, bool。
+        """
         handle = new_span(
             run_id=task.run_id,
             span_name=f"run:{component_name}",
@@ -51,6 +79,7 @@ class WorkflowTraceService:
             )
         return handle
 
+    # 阅读注释（函数）：处理 finish run 相关逻辑。
     def finish_run(
         self,
         *,
@@ -59,6 +88,20 @@ class WorkflowTraceService:
         handle: TraceSpanHandle,
         result: AgentResultSchema,
     ) -> None:
+        """处理 finish run 相关逻辑。
+
+        参数:
+            task: 待执行的任务对象。
+            component_name: component 名称，具体约束请结合类型标注和调用方确认。
+            handle: handle，具体约束请结合类型标注和调用方确认。
+            result: 待处理的结果对象。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：self.sink.record, handle.latency_ms。
+        """
         if self.sink is None:
             return
         error = result.error
@@ -90,6 +133,7 @@ class WorkflowTraceService:
             tags=["trace_v2", "run"],
         )
 
+    # 阅读注释（函数）：启动 工作流。
     def start_workflow(
         self,
         *,
@@ -97,6 +141,19 @@ class WorkflowTraceService:
         workflow: WorkflowDefinitionSchema,
         payload: Dict[str, Any],
     ) -> TraceSpanHandle:
+        """启动 工作流。
+
+        参数:
+            task: 待执行的任务对象。
+            workflow: 工作流，具体约束请结合类型标注和调用方确认。
+            payload: 跨层传递的数据载荷。
+
+        返回:
+            TraceSpanHandle
+
+        阅读提示:
+            主要直接调用：new_span, current_span, self.sink.record, len, bounded_summary, payload.get。
+        """
         handle = new_span(
             run_id=task.run_id,
             span_name=f"workflow:{workflow.workflow_id}",
@@ -132,6 +189,7 @@ class WorkflowTraceService:
             )
         return handle
 
+    # 阅读注释（函数）：处理 finish 工作流 相关逻辑。
     def finish_workflow(
         self,
         *,
@@ -140,6 +198,20 @@ class WorkflowTraceService:
         handle: TraceSpanHandle,
         result: AgentResultSchema,
     ) -> None:
+        """处理 finish 工作流 相关逻辑。
+
+        参数:
+            task: 待执行的任务对象。
+            workflow: 工作流，具体约束请结合类型标注和调用方确认。
+            handle: handle，具体约束请结合类型标注和调用方确认。
+            result: 待处理的结果对象。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：get, self.sink.record, handle.latency_ms, len, sum, lower, str, item.get。
+        """
         if self.sink is None:
             return
         error = result.error
@@ -176,6 +248,7 @@ class WorkflowTraceService:
             tags=["trace_v2", "workflow"],
         )
 
+    # 阅读注释（函数）：记录 WorkflowTraceService。
     def record(
         self,
         *,

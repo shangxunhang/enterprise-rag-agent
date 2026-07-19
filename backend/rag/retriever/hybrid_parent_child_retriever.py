@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_safe_float、HybridParentChildRetriever。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/retriever/hybrid_parent_child_retriever.py
 ======================================================
@@ -17,13 +21,26 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from rag.ranker.rrf_fusion import rrf_fuse
-from rag.legacy.schema.Retrieval_Result_Schema import build_retrieval_result_v2
+from rag.schema.Retrieval_Result_Schema import build_retrieval_result_v2
 from rag.store.parent_chunk_store import ParentChunkStore
 from rag.retriever.milvus_child_retriever import MilvusChildRetriever
 from rag.retriever.bm25_child_retriever import BM25ChildRetriever
 
 
+# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """处理 safe float 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：float。
+    """
     try:
         if value is None:
             return default
@@ -32,9 +49,11 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# 阅读注释（类）：封装 hybrid 父块 子块 retriever，集中封装相关状态、依赖和行为。
 class HybridParentChildRetriever:
     """Dense + keyword hybrid retrieval over child chunks, with parent backfill."""
 
+    # 阅读注释（函数）：初始化 HybridParentChildRetriever，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -45,6 +64,22 @@ class HybridParentChildRetriever:
         rrf_k: int = 60,
         dedup_parent: bool = True,
     ):
+        """初始化 HybridParentChildRetriever，保存运行所需的依赖、配置或状态。
+
+        参数:
+            dense_retriever: dense retriever，具体约束请结合类型标注和调用方确认。
+            keyword_retriever: keyword retriever，具体约束请结合类型标注和调用方确认。
+            parent_store: 父块 store，具体约束请结合类型标注和调用方确认。
+            context_granularity: 上下文 granularity，具体约束请结合类型标注和调用方确认。
+            rrf_k: rrf k，具体约束请结合类型标注和调用方确认。
+            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：ValueError, int, bool。
+        """
         if dense_retriever is None and keyword_retriever is None:
             raise ValueError("At least one retriever is required")
         if context_granularity not in {"parent", "child"}:
@@ -56,6 +91,7 @@ class HybridParentChildRetriever:
         self.rrf_k = int(rrf_k)
         self.dedup_parent = bool(dedup_parent)
 
+    # 阅读注释（函数）：处理 group by 父块 相关逻辑。
     @staticmethod
     def _group_by_parent(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Deduplicate fused child candidates by parent_chunk_id.
@@ -137,6 +173,7 @@ class HybridParentChildRetriever:
             candidate["score"] = _safe_float(candidate.get("fusion_score") or candidate.get("score"))
         return deduped
 
+    # 阅读注释（函数）：检索 HybridParentChildRetriever。
     def retrieve(
         self,
         query: str,
@@ -151,6 +188,26 @@ class HybridParentChildRetriever:
         use_keyword: bool = True,
         dedup_parent: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
+        """检索 HybridParentChildRetriever。
+
+        参数:
+            query: 当前检索或生成查询。
+            final_top_k: final top k，具体约束请结合类型标注和调用方确认。
+            dense_top_k: dense top k，具体约束请结合类型标注和调用方确认。
+            keyword_top_k: keyword top k，具体约束请结合类型标注和调用方确认。
+            filter_expr: filter expr，具体约束请结合类型标注和调用方确认。
+            keyword_doc_id: keyword doc 标识，具体约束请结合类型标注和调用方确认。
+            keyword_doc_ids: keyword doc 标识集合，具体约束请结合类型标注和调用方确认。
+            use_dense: use dense，具体约束请结合类型标注和调用方确认。
+            use_keyword: use keyword，具体约束请结合类型标注和调用方确认。
+            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：strip, str, ValueError, self.dense_retriever.search, int, self.keyword_retriever.search, rrf_fuse, bool。
+        """
         if not query or not str(query).strip():
             raise ValueError("query cannot be empty")
 

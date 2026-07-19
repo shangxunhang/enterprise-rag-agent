@@ -1,179 +1,120 @@
+"""Adaptive intent planning over one static retrieval topology."""
+
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from bootstrap.agent_quality_factory import AgentQualityFactory
 from bootstrap.runtime_options import RuntimeOptions
 from model_gateway.fake_llm_client import FakeLLMClient
 from model_gateway.model_gateway import ModelGateway
-from rag.adapters.legacy.backend import LegacyRAGBackend
-from rag.routing.runtime import AdaptiveProfileRouterRuntime
+from rag.planning.retrieval_planner import AdaptiveRetrievalPlanner
+from rag.services.rag_service import RAGService
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ROUTER_CONFIG = PROJECT_ROOT / "backend/rag/routing/adaptive_router_v1.yaml"
+STATIC_SPEC = PROJECT_ROOT / "backend/rag/config/static_retrieval_v1.yaml"
+INTENT_POLICY = PROJECT_ROOT / "backend/rag/config/intent_policy_v1.yaml"
+GATE_POLICY = PROJECT_ROOT / "backend/rag/config/retrieval_gate_policy_v1.yaml"
+GENERATION_POLICY = (
+    PROJECT_ROOT
+    / "backend/apps/enterprise_document/config/grounded_generation_v1.yaml"
+)
 
 
-def _runtime() -> AdaptiveProfileRouterRuntime:
-    return AdaptiveProfileRouterRuntime(
-        config_file=ROUTER_CONFIG,
-        project_root=PROJECT_ROOT,
+def test_short_query_selects_exactly_one_multi_query_mode() -> None:
+    plan = AdaptiveRetrievalPlanner().plan(query="how?")
+
+    assert plan.query_transform_mode == "multi_query"
+    assert plan.correction_budget == 1
+
+
+def test_abstract_query_selects_exactly_one_hyde_mode() -> None:
+    plan = AdaptiveRetrievalPlanner().plan(
+        query="Explain the architecture mechanism behind transformer attention"
     )
 
-
-def test_router_config_and_profile_references_validate() -> None:
-    report = _runtime().validation_report()
-
-    assert report["status"] == "success"
-    assert report["profile_count"] == 6
-    assert report["rule_count"] == 5
-    assert report["default_profile_id"] == "hybrid_v1"
-    assert report["agent_quality_profile_id"] == "self_rag_v1"
+    assert plan.query_transform_mode == "hyde"
 
 
-def test_formal_grounded_generation_routes_to_corrective_self_rag() -> None:
-    decision = _runtime().route(
-        {
-            "query": "根据资料生成企业级 RAG-Agent 系统建设方案",
-            "extra_metadata": {
-                "task_type": "scheme_generation",
-                "required_sections": ["项目概述", "建设内容", "技术方案", "安全设计"],
-                "citation_required_sections": ["建设内容", "技术方案", "安全设计"],
-                "need_citation": True,
+def test_planner_does_not_predict_crag_from_citation_requirement() -> None:
+    plan = AdaptiveRetrievalPlanner().plan(
+        query="What is the deployment model?",
+        request_context={"need_citation": True},
+    )
+
+    assert plan.query_transform_mode == "identity"
+    assert "enable_corrective_retrieval" not in plan.to_dict()
+    assert "evidence_sufficient" not in plan.to_dict()
+
+
+def test_formal_task_changes_query_transform_but_not_correction_budget() -> None:
+    plan = AdaptiveRetrievalPlanner(correction_budget=2).plan(
+        query="Create an enterprise implementation report according to evidence",
+        request_context={
+            "task_type": "scheme_generation",
+            "need_citation": True,
+        },
+    )
+
+    assert plan.query_transform_mode == "multi_query"
+    assert plan.correction_budget == 2
+
+
+def test_request_override_is_mutually_exclusive_and_budget_only() -> None:
+    plan = AdaptiveRetrievalPlanner().plan(
+        query="short",
+        request_context={
+            "retrieval_plan_overrides": {
+                "query_transform_mode": "hyde",
+                "correction_budget": 0,
+            }
+        },
+    )
+
+    assert plan.query_transform_mode == "hyde"
+    assert plan.correction_budget == 0
+
+    with pytest.raises(ValueError, match="query_transform_mode"):
+        AdaptiveRetrievalPlanner().plan(
+            query="short",
+            request_context={
+                "retrieval_plan_overrides": {
+                    "query_transform_mode": "multi_query+hyde"
+                }
             },
-        }
-    )
-
-    assert decision.selected_profile_id == "c_rag_corrective_self_rag_v1"
-    assert decision.matched_rule_id == "formal_grounded_generation"
-    assert decision.signals["uses_retrieval_confidence"] is False
-    assert decision.signals["uses_quality_threshold"] is False
+        )
 
 
-def test_router_selects_fusion_hyde_and_default_profiles() -> None:
-    runtime = _runtime()
-
-    short = runtime.route({"query": "这个怎么搞", "extra_metadata": {"need_citation": False}})
-    abstract = runtime.route(
-        {
-            "query": "Transformer 注意力机制的本质是什么",
-            "extra_metadata": {"need_citation": False},
-        }
-    )
-    factual = runtime.route(
-        {
-            "query": "请从现有项目资料中明确给出项目正式名称、建设单位名称以及项目建设地点",
-            "extra_metadata": {"need_citation": False},
-        }
-    )
-
-    assert short.selected_profile_id == "rag_fusion_v1"
-    assert abstract.selected_profile_id == "hyde_v1"
-    assert factual.selected_profile_id == "hybrid_v1"
-
-
-def test_explicit_profile_request_is_allowlisted_and_unknown_falls_back() -> None:
-    runtime = _runtime()
-
-    allowed = runtime.route(
-        {
-            "query": "test",
-            "extra_metadata": {"requested_profile_id": "hyde_v1"},
-        }
-    )
-    denied = runtime.route(
-        {
-            "query": "test",
-            "extra_metadata": {"requested_profile_id": "not_registered"},
-        }
-    )
-
-    assert allowed.selected_profile_id == "hyde_v1"
-    assert allowed.method == "explicit_profile_request"
-    assert denied.selected_profile_id == "hybrid_v1"
-    assert denied.fallback_used is True
-
-
-class _FakeRAGTool:
-    def __init__(self, profile_path: Path) -> None:
-        self.profile_path = profile_path
-        self.calls: list[dict] = []
-
-    def run(self, payload: dict) -> dict:
-        self.calls.append(payload)
-        return {
-            "success": True,
-            "data": {"query": payload["query"]},
-            "metadata": {"pipeline_config_file": str(self.profile_path)},
-        }
-
-
-def test_backend_routes_before_building_selected_profile_and_attaches_decision() -> None:
-    built: list[Path] = []
-
-    def builder(path: Path) -> _FakeRAGTool:
-        built.append(path)
-        return _FakeRAGTool(path)
-
-    backend = LegacyRAGBackend(
+def test_service_uses_one_static_spec_and_two_small_policies() -> None:
+    service = RAGService(
         PROJECT_ROOT,
-        pipeline_config_file=ROUTER_CONFIG,
-        tool_builder=builder,
-    )
-    result = backend.run(
-        {
-            "query": "根据资料生成企业级 RAG-Agent 系统建设方案",
-            "extra_metadata": {
-                "task_type": "scheme_generation",
-                "required_sections": ["项目概述", "建设内容", "技术方案", "安全设计"],
-                "citation_required_sections": ["建设内容", "技术方案", "安全设计"],
-            },
-        }
+        static_retrieval_spec_file=STATIC_SPEC,
+        intent_policy_file=INTENT_POLICY,
+        retrieval_gate_policy_file=GATE_POLICY,
     )
 
-    decision = result["data"]["adaptive_profile_router"]
-    assert decision["selected_profile_id"] == "c_rag_corrective_self_rag_v1"
-    assert built == [
-        (PROJECT_ROOT / "backend/rag/profiles/c_rag_corrective_self_rag_v1.yaml").resolve()
-    ]
-    selected_tool = backend._routed_tools["c_rag_corrective_self_rag_v1"]
-    routed_payload = selected_tool.calls[0]
-    assert routed_payload["retrieval_strategy"] == "c_rag_corrective_self_rag_v1"
-    assert "adaptive_profile_router" in routed_payload["extra_metadata"]
+    config = service.retrieval_runtime.config
+    assert Path(config.static_retrieval_spec_file) == STATIC_SPEC
+    assert Path(config.intent_policy_file) == INTENT_POLICY
+    assert Path(config.retrieval_gate_policy_file) == GATE_POLICY
 
 
-def test_backend_caches_one_runtime_per_selected_profile() -> None:
-    built: list[Path] = []
-
-    def builder(path: Path) -> _FakeRAGTool:
-        built.append(path)
-        return _FakeRAGTool(path)
-
-    backend = LegacyRAGBackend(
-        PROJECT_ROOT,
-        pipeline_config_file=ROUTER_CONFIG,
-        tool_builder=builder,
-    )
-    payload = {"query": "这个怎么搞", "extra_metadata": {"need_citation": False}}
-    backend.run(payload)
-    backend.run(payload)
-
-    assert len(built) == 1
-    assert built[0].name == "rag_fusion_v1.yaml"
-
-
-def test_agent_quality_factory_uses_router_declared_static_quality_profile() -> None:
+def test_generation_quality_policy_is_independent_from_static_retrieval_spec() -> None:
     gateway = ModelGateway(default_model_name="fake_llm")
     gateway.register_client(FakeLLMClient())
     options = RuntimeOptions(
         use_real_rag=True,
         rag_project_root=PROJECT_ROOT,
-        rag_skip_rerank=False,
-        retrieval_strategy="hybrid",
         enable_agent_self_rag=True,
         enable_semantic_gate=False,
         semantic_gate_model_name="fake_llm",
-        rag_pipeline_config_file=ROUTER_CONFIG,
+        rag_static_retrieval_spec_file=STATIC_SPEC,
+        rag_intent_policy_file=INTENT_POLICY,
+        rag_retrieval_gate_policy_file=GATE_POLICY,
+        grounded_generation_policy_file=GENERATION_POLICY,
     )
 
     runtime = AgentQualityFactory().build(
@@ -182,9 +123,6 @@ def test_agent_quality_factory_uses_router_declared_static_quality_profile() -> 
         model_name="fake_llm",
     )
 
-    assert runtime.metadata["profile_id"] == "self_rag_v1"
-    assert (
-        runtime.metadata["adaptive_profile_router"]["agent_quality_selection_mode"]
-        == "static_router_profile_v1"
-    )
-    assert runtime.generation_checker.execution_metadata()["enabled"] is True
+    assert runtime.metadata["policy_id"] == "grounded_generation_v1"
+    assert runtime.metadata["schema_version"] == "grounded_generation_policy_v1"
+    assert "static_retrieval_spec" not in runtime.metadata

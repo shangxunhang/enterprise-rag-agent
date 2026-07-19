@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：MultiQueryFusion。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Multi-query RRF fusion independent from the RAG engine shell."""
 
 from __future__ import annotations
@@ -5,9 +9,23 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+# 阅读注释（类）：封装 multi 查询 融合，集中封装相关状态、依赖和行为。
 class MultiQueryFusion:
+    """封装 multi 查询 融合，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：处理 结果 key 相关逻辑。
     @staticmethod
     def result_key(result: Dict[str, Any]) -> str:
+        """处理 结果 key 相关逻辑。
+
+        参数:
+            result: 待处理的结果对象。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：str, result.get。
+        """
         return str(
             result.get("parent_chunk_id")
             or result.get("context_chunk_id")
@@ -17,20 +35,47 @@ class MultiQueryFusion:
             or ""
         )
 
+    # 阅读注释（函数）：处理 safe rank 相关逻辑。
     @staticmethod
     def safe_rank(value: Any, fallback: int) -> int:
+        """处理 safe rank 相关逻辑。
+
+        参数:
+            value: value，具体约束请结合类型标注和调用方确认。
+            fallback: fallback，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            int
+
+        阅读提示:
+            主要直接调用：int。
+        """
         try:
             return fallback if value is None else int(value)
         except Exception:
             return fallback
 
+    # 阅读注释（函数）：处理 safe score 相关逻辑。
     @staticmethod
     def safe_score(value: Any, default: float = 0.0) -> float:
+        """处理 safe score 相关逻辑。
+
+        参数:
+            value: value，具体约束请结合类型标注和调用方确认。
+            default: default，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            float
+
+        阅读提示:
+            主要直接调用：float。
+        """
         try:
             return default if value is None else float(value)
         except Exception:
             return default
 
+    # 阅读注释（函数）：融合 MultiQueryFusion。
     def fuse(
         self,
         query_results: Dict[str, List[Dict[str, Any]]],
@@ -38,6 +83,19 @@ class MultiQueryFusion:
         rrf_k: int,
         top_k: int,
     ) -> List[Dict[str, Any]]:
+        """融合 MultiQueryFusion。
+
+        参数:
+            query_results: 查询 结果集合，具体约束请结合类型标注和调用方确认。
+            rrf_k: rrf k，具体约束请结合类型标注和调用方确认。
+            top_k: top k，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：query_results.items, enumerate, isinstance, self.result_key, self.safe_rank, raw_result.get, float, dict。
+        """
         if not query_results:
             return []
         fused: Dict[str, Dict[str, Any]] = {}

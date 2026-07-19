@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：test_project_input_preserves_caller_defined_sections、test_production_project_input_rejects_demo_defaults、test_task_and_rag_filters_preserve_source_material_ids、test_document_plan_is_derived_from_project_input_without_fixed_sections、test_project_input_rejects_inconsistent_section_contracts、test_production_entry_does_not_import_demo_module、test_demo_partial_success_never_fabricates_sub_agent_failure、test_demo_failed_status_can_still_recover_real_sub_agent_error。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Stage-1 regression tests split by responsibility."""
 
 from __future__ import annotations
@@ -5,7 +9,6 @@ from __future__ import annotations
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
 from agent.runtime.shared_state_schema import SharedStateSchema
-from agent.runtime.workflow_executor import WorkflowExecutor
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
@@ -15,6 +18,9 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     TruncationCheckSchema,
 )
 from apps.enterprise_document.services.output_validation import detect_truncation
+from apps.enterprise_document.services.scheme_writer.document_planning_service import (
+    DocumentPlanningService,
+)
 from eval.agent.hard_gate import evaluate_scheme_draft
 from schemas.agent import AgentResultSchema
 from schemas.citation import CitationBindingSchema
@@ -24,7 +30,16 @@ from schemas.status import ExecutionStatus
 
 NOW = "2026-07-14T00:00:00+00:00"
 
+# 阅读注释（函数）：处理 测试 项目 输入 preserves caller defined sections 相关逻辑。
 def test_project_input_preserves_caller_defined_sections() -> None:
+    """处理 测试 项目 输入 preserves caller defined sections 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate。
+    """
     item = ProjectInputSchema.model_validate(
         {
             "task_id": "task_custom",
@@ -51,11 +66,20 @@ def test_project_input_preserves_caller_defined_sections() -> None:
     assert item.output_schema.document_title == "自定义报告"
 
 
+# 阅读注释（函数）：处理 测试 production 项目 输入 rejects 演示 defaults 相关逻辑。
 def test_production_project_input_rejects_demo_defaults() -> None:
+    """处理 测试 production 项目 输入 rejects 演示 defaults 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module.build_project_input, str, AssertionError。
+    """
     import importlib.util
     from pathlib import Path
 
-    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -94,14 +118,23 @@ def test_production_project_input_rejects_demo_defaults() -> None:
     assert item.output_schema.document_title == "自定义报告"
 
 
+# 阅读注释（函数）：处理 测试 任务 and RAG filters preserve source material 标识集合 相关逻辑。
 def test_task_and_rag_filters_preserve_source_material_ids() -> None:
+    """处理 测试 任务 and RAG filters preserve source material 标识集合 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module.build_task, ExecutorStub, SchemeWriterAgent。
+    """
     import importlib.util
     from pathlib import Path
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
-    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo_sources", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -134,16 +167,36 @@ def test_task_and_rag_filters_preserve_source_material_ids() -> None:
     assert task.doc_ids == ["doc_1", "doc_2"]
     assert task.kb_ids == ["kb_1"]
 
+    # 阅读注释（类）：封装 executor stub，集中封装相关状态、依赖和行为。
     class ExecutorStub:
+        """封装 executor stub，集中封装相关状态、依赖和行为。"""
+        # 阅读注释（函数）：初始化 ExecutorStub，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 ExecutorStub，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+            """
             self.call = None
 
-        def execute(self, call):
+        # 阅读注释（函数）：执行 ExecutorStub。
+        def retrieve(self, call):
+            """执行 ExecutorStub。
+
+            参数:
+                call: call，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：SimpleNamespace。
+            """
             self.call = call
             return SimpleNamespace(model_dump=lambda: {}, success=False)
 
     executor = ExecutorStub()
-    agent = SchemeWriterAgent(tool_executor=executor)
+    agent = SchemeWriterAgent(rag_service=executor)
     state = SimpleNamespace(
         run_id="run_sources",
         task_id="task_sources",
@@ -153,14 +206,23 @@ def test_task_and_rag_filters_preserve_source_material_ids() -> None:
         tool_results={},
     )
     project_input = ProjectInputSchema.model_validate(payload)
-    agent._call_rag_tool(state, project_input)
+    agent.evidence_service._call_rag_tool(state, project_input)
 
-    assert executor.call.tool_input["filters"]["doc_ids"] == ["doc_1", "doc_2"]
-    assert executor.call.tool_input["filters"]["file_ids"] == ["file_1"]
-    assert executor.call.tool_input["kb_ids"] == ["kb_1"]
+    assert executor.call.filters["doc_ids"] == ["doc_1", "doc_2"]
+    assert executor.call.filters["file_ids"] == ["file_1"]
+    assert executor.call.kb_ids == ["kb_1"]
 
 
+# 阅读注释（函数）：处理 测试 文档 计划 is derived from 项目 输入 without fixed sections 相关逻辑。
 def test_document_plan_is_derived_from_project_input_without_fixed_sections() -> None:
+    """处理 测试 文档 计划 is derived from 项目 输入 without fixed sections 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SchemeWriterAgent._build_document_plan。
+    """
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
 
     item = ProjectInputSchema.model_validate(
@@ -178,7 +240,7 @@ def test_document_plan_is_derived_from_project_input_without_fixed_sections() ->
             },
         }
     )
-    plan = SchemeWriterAgent._build_document_plan(
+    plan = DocumentPlanningService._build_document_plan(
         run_id="run_plan",
         document_id="document_plan",
         project_input=item,
@@ -191,7 +253,16 @@ def test_document_plan_is_derived_from_project_input_without_fixed_sections() ->
     assert plan.planning_source == "project_input"
 
 
+# 阅读注释（函数）：处理 测试 项目 输入 rejects inconsistent 章节 contracts 相关逻辑。
 def test_project_input_rejects_inconsistent_section_contracts() -> None:
+    """处理 测试 项目 输入 rejects inconsistent 章节 contracts 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, str, AssertionError。
+    """
     try:
         ProjectInputSchema.model_validate(
             {
@@ -208,7 +279,16 @@ def test_project_input_rejects_inconsistent_section_contracts() -> None:
         raise AssertionError("inconsistent section contracts must fail")
 
 
+# 阅读注释（函数）：处理 测试 production entry does not import 演示 module 相关逻辑。
 def test_production_entry_does_not_import_demo_module() -> None:
+    """处理 测试 production entry does not import 演示 module 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, read_text。
+    """
     from pathlib import Path
 
     project_root = Path(__file__).resolve().parents[3]
@@ -220,11 +300,20 @@ def test_production_entry_does_not_import_demo_module() -> None:
     assert "from mainline_runtime import run_mainline" in pipeline_source
 
 
+# 阅读注释（函数）：处理 测试 演示 partial success never fabricates sub Agent failure 相关逻辑。
 def test_demo_partial_success_never_fabricates_sub_agent_failure() -> None:
+    """处理 测试 演示 partial success never fabricates sub Agent failure 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module._effective_runtime_error。
+    """
     import importlib.util
     from pathlib import Path
 
-    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo_status_contract", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -254,11 +343,20 @@ def test_demo_partial_success_never_fabricates_sub_agent_failure() -> None:
     assert module._effective_runtime_error(summary) == {}
 
 
+# 阅读注释（函数）：处理 测试 演示 failed 状态 can still recover real sub Agent 错误 相关逻辑。
 def test_demo_failed_status_can_still_recover_real_sub_agent_error() -> None:
+    """处理 测试 演示 failed 状态 can still recover real sub Agent 错误 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, importlib.util.spec_from_file_location, importlib.util.module_from_spec, spec.loader.exec_module, module._effective_runtime_error。
+    """
     import importlib.util
     from pathlib import Path
 
-    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo_back.py"
+    script = Path(__file__).resolve().parents[3] / "scripts" / "run_demo.py"
     spec = importlib.util.spec_from_file_location("stage1_run_demo_failed_contract", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -292,4 +390,3 @@ def test_demo_failed_status_can_still_recover_real_sub_agent_error() -> None:
     error = module._effective_runtime_error(summary)
     assert error["error_code"] == "DOCUMENT_HARD_GATE_FAILED"
     assert error["failed_node"] == "document_hard_gate"
-

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：SectionPromptService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Section prompt construction through the Step 14 Context Manager."""
 
 from __future__ import annotations
@@ -11,12 +15,40 @@ from apps.enterprise_document.schemas.scheme_writer_schema import SchemeSectionS
 from schemas.citation import CitationSchema
 from schemas.prompt import PromptRenderResultSchema
 from schemas.rag import RAGContextSchema
-from .base import RuntimeBoundService
+from context_manager import LLMContextManager, SectionGenerationContextPolicy
+from prompt_manager.prompt_manager import PromptManager
 
 
-class SectionPromptService(RuntimeBoundService):
+# 阅读注释（类）：封装 章节 提示词 服务，封装一组可复用的业务能力。
+class SectionPromptService:
+    """封装 章节 提示词 服务，封装一组可复用的业务能力。"""
+
+    def __init__(
+        self,
+        *,
+        context_manager: LLMContextManager,
+        context_policy: SectionGenerationContextPolicy,
+        prompt_manager: PromptManager | None,
+        prompt_id: str,
+    ) -> None:
+        self.context_manager = context_manager
+        self.context_policy = context_policy
+        self.prompt_manager = prompt_manager
+        self.prompt_id = prompt_id
+    # 阅读注释（函数）：处理 引用 catalog 相关逻辑。
     @staticmethod
     def _citation_catalog(citations: Iterable[CitationSchema]) -> str:
+        """处理 引用 catalog 相关逻辑。
+
+        参数:
+            citations: 引用信息集合。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：json.dumps。
+        """
         return json.dumps(
             [
                 {
@@ -34,6 +66,7 @@ class SectionPromptService(RuntimeBoundService):
             indent=2,
         )
 
+    # 阅读注释（函数）：处理 target 章节 chars 相关逻辑。
     @staticmethod
     def _target_section_chars(project_input: ProjectInputSchema) -> int:
         """Return a conservative Chinese-character budget for one section."""
@@ -41,8 +74,20 @@ class SectionPromptService(RuntimeBoundService):
         max_tokens = max(256, int(project_input.generation_requirements.max_tokens_per_section))
         return max(600, min(1200, max_tokens))
 
+    # 阅读注释（函数）：判断是否存在 concrete resource 输入。
     @staticmethod
     def _has_concrete_resource_input(project_input: ProjectInputSchema) -> bool:
+        """判断是否存在 concrete resource 输入。
+
+        参数:
+            project_input: 规范化后的项目输入。
+
+        返回:
+            bool
+
+        阅读提示:
+            主要直接调用：bool, project_input.extra.get。
+        """
         return bool(
             project_input.hardware_resources
             or project_input.total_staff is not None
@@ -53,12 +98,25 @@ class SectionPromptService(RuntimeBoundService):
             or project_input.extra.get("capacity_requirements")
         )
 
+    # 阅读注释（函数）：处理 章节 生成 contract 相关逻辑。
     @classmethod
     def _section_generation_contract(
         cls,
         section_title: str,
         project_input: ProjectInputSchema,
     ) -> str:
+        """处理 章节 生成 contract 相关逻辑。
+
+        参数:
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：list, dict.fromkeys, strip, str, join, cls._has_concrete_resource_input。
+        """
         required_sections = list(
             dict.fromkeys(
                 project_input.generation_requirements.required_sections
@@ -84,13 +142,24 @@ class SectionPromptService(RuntimeBoundService):
             f"{resource_instruction}输入不足时明确标注待补充或需项目方确认。"
         )
 
+    # 阅读注释（函数）：处理 章节 scope violations 相关逻辑。
     @staticmethod
     def _section_scope_violations(
         content: str,
         section_title: str,
     ) -> List[Dict[str, Any]]:
+        """处理 章节 scope violations 相关逻辑。
+
+        参数:
+            content: 待处理内容。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Dict[str, Any]]
+        """
         return []
 
+    # 阅读注释（函数）：渲染 章节 提示词。
     def _render_section_prompt(
         self,
         shared_state: SharedStateSchema,
@@ -102,6 +171,24 @@ class SectionPromptService(RuntimeBoundService):
         citations: List[CitationSchema],
         previous_sections: List[SchemeSectionSchema],
     ) -> PromptRenderResultSchema:
+        """渲染 章节 提示词。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
+            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
+            citations: 引用信息集合。
+            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            PromptRenderResultSchema
+
+        阅读提示:
+            主要直接调用：self._target_section_chars, self.context_policy.build_request, self._section_generation_contract, self.context_manager.build, self.prompt_manager.exists, self.prompt_manager.render, PromptRenderResultSchema, dict。
+        """
         target_chars = self._target_section_chars(project_input)
         build_request = self.context_policy.build_request(
             task_id=shared_state.task_id,

@@ -1,9 +1,17 @@
+# =============================================================================
+# 中文阅读说明：方案生成用例总编排：文档规划、文档级/章节级检索、逐章生成、恢复检索、组装与硬门禁。
+# 主要定义：SchemeGenerationUseCase。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generated from the stable v7.5.1 SchemeWriter behavior."""
 
 
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.state_access import SharedStateWriter
+from apps.enterprise_document.quality.budget import (
+    WorkflowBudget,
+    activate_workflow_budget,
+)
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeDraftSchema,
     SchemeGenerationOptionsSchema,
@@ -17,16 +25,62 @@ from schemas.agent import AgentResultSchema
 from schemas.common import ErrorSourceSchema, WarningSchema
 from schemas.status import ExecutionStatus
 from core.runtime.timing import MonotonicTimer, elapsed_ms
-from .base import RuntimeBoundService
-from .evidence_service import DocumentCitationRegistry
+from .capture_service import SchemeCaptureService
+from .document_planning_service import DocumentPlanningService
+from .evidence_service import DocumentCitationRegistry, SchemeEvidenceService
+from .input_service import SchemeInputService
+from .runtime_support import SchemeWriterRuntimeSupport
+from .section_generation_service import SectionGenerationService
 
 
-class SchemeGenerationUseCase(RuntimeBoundService):
+# 阅读注释（类）：封装 scheme 生成 use case，集中封装相关状态、依赖和行为。
+class SchemeGenerationUseCase:
+    """封装 scheme 生成 use case，集中封装相关状态、依赖和行为。"""
+
+    def __init__(
+        self,
+        *,
+        input_service: SchemeInputService,
+        evidence_service: SchemeEvidenceService,
+        section_generation_service: SectionGenerationService,
+        document_planning_service: DocumentPlanningService,
+        capture_service: SchemeCaptureService,
+        runtime_support: SchemeWriterRuntimeSupport,
+        agent_name: str,
+        agent_type: str,
+        rag_service_name: str,
+        enable_semantic_gate: bool,
+    ) -> None:
+        self.input_service = input_service
+        self.evidence_service = evidence_service
+        self.section_generation_service = section_generation_service
+        self.document_planning_service = document_planning_service
+        self.capture_service = capture_service
+        self.runtime_support = runtime_support
+        self.agent_name = agent_name
+        self.agent_type = agent_type
+        self.rag_service_name = rag_service_name
+        self.enable_semantic_gate = enable_semantic_gate
+    # 阅读注释（函数）：执行 SchemeGenerationUseCase 的主流程。
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:
-        started_at = self._now_iso()
+        """执行 SchemeGenerationUseCase 的主流程。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            AgentResultSchema
+
+        阅读提示:
+            主要直接调用：self._now_iso, SharedStateWriter, self._read_inputs, list, ValueError, SchemeGenerationOptionsSchema, self._build_document_plan, print。
+        """
+        started_at = self.runtime_support._now_iso()
         state_writer = SharedStateWriter()
         try:
-            project_input, table_analysis, structured_facts = self._read_inputs(shared_state)
+            # 阶段 A：从 Workflow 共享状态读取并校验规范化后的项目输入、表格分析和结构化事实。
+            project_input, table_analysis, structured_facts = self.input_service._read_inputs(
+                shared_state
+            )
             required_sections = list(
                 project_input.generation_requirements.required_sections
                 or project_input.output_schema.required_sections
@@ -46,7 +100,8 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 min_section_chars=project_input.generation_requirements.min_section_chars,
             )
             document_id = f"document_{shared_state.run_id}"
-            document_plan = self._build_document_plan(
+            # 阶段 B：根据 required_sections 构建确定性的 DocumentPlan；当前不是 LLM 自主规划章节。
+            document_plan = self.document_planning_service._build_document_plan(
                 run_id=shared_state.run_id,
                 document_id=document_id,
                 project_input=project_input,
@@ -74,22 +129,26 @@ class SchemeGenerationUseCase(RuntimeBoundService):
             )
 
             print(
-                f"[RAG] START strategy={self.rag_retrieval_mode} query={project_input.user_query[:80]!r}",
+                f"[RAG] START query={project_input.user_query[:80]!r}",
                 flush=True,
             )
             timer = MonotonicTimer()
             rag_started = timer.now()
-            rag_result = self._call_rag_tool(shared_state, project_input)
+            # 阶段 C：执行一次文档级 RAG，为整篇方案取得可复用的通用证据。
+            rag_result = self.evidence_service._call_rag_tool(
+                shared_state, project_input
+            )
             rag_elapsed_ms = elapsed_ms(timer, rag_started)
             print(
                 f"[RAG] END   success={bool(rag_result and rag_result.success)} latency_ms={rag_elapsed_ms}",
                 flush=True,
             )
-            rag_context, chunks, citations, rag_output = self._extract_rag_output(
+            rag_context, chunks, citations, rag_output = self.evidence_service._extract_rag_output(
                 shared_state, rag_result
             )
+            # 创建全局引用注册表，把文档级和章节级检索结果映射到稳定且不冲突的引用编号。
             citation_registry = DocumentCitationRegistry()
-            rag_context, chunks, citations, rag_output = self._remap_bundle_citations(
+            rag_context, chunks, citations, rag_output = self.evidence_service._remap_bundle_citations(
                 context=rag_context,
                 chunks=chunks,
                 citations=citations,
@@ -109,7 +168,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
             section_retrieval_enabled = bool(
                 project_input.generation_requirements.extra.get(
                     "enable_section_aware_retrieval",
-                    self.rag_tool_name == "RealRAGTool",
+                    self.rag_service_name == "RAGService",
                 )
             )
             corrective_retrieval_enabled = bool(
@@ -154,7 +213,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
 
             if rag_result is None or not rag_result.success:
                 underlying = rag_result.error if rag_result else None
-                error = underlying or self._error(
+                error = underlying or self.runtime_support._error(
                     "RAG_TOOL_FAILED",
                     rag_result.error_message if rag_result else "RAG tool is not configured",
                     node="evidence_retrieval",
@@ -174,7 +233,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                     error=error,
                     error_message=error.message,
                     started_at=started_at,
-                    finished_at=self._now_iso(),
+                    finished_at=self.runtime_support._now_iso(),
                     need_human_review=True,
                 )
 
@@ -189,10 +248,14 @@ class SchemeGenerationUseCase(RuntimeBoundService):
             total_sections = len(required_sections)
             citation_required_titles = set(options.citation_required_sections)
             print(f"[SchemeWriter] 开始逐章节生成，共 {total_sections} 章", flush=True)
+            # 阶段 D：逐章节循环。每个章节可以单独构造 Query、调用 RAG、生成、绑定引用和质检。
             for section_plan in document_plan.sections:
                 order = section_plan.section_order
                 title = section_plan.section_title
                 section_id = f"section_{shared_state.run_id}_{order:03d}"
+                section_budget = WorkflowBudget.from_policy_metadata(
+                    self.section_generation_service.generation_quality_metadata
+                )
                 citation_required = bool(
                     section_plan.citation_required or title in citation_required_titles
                 )
@@ -211,7 +274,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 active_citations = list(citations)
                 active_query = project_input.user_query
                 active_scope = "document"
-                tool_call_ids = [rag_result.tool_call_id] if rag_result else []
+                tool_call_ids = [rag_result.retrieval_trace_id] if rag_result else []
                 recovery_count = 0
                 retrieval_metadata: dict = {
                     "section_retrieval_enabled": section_retrieval_enabled,
@@ -219,7 +282,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 }
 
                 if section_retrieval_enabled and citation_required:
-                    section_query = self._build_section_query(
+                    section_query = self.evidence_service._build_section_query(
                         project_input, title, recovery=False
                     )
                     print(
@@ -227,7 +290,8 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                         f"query={section_query[:100]!r}",
                         flush=True,
                     )
-                    section_result = self._call_rag_tool(
+                    # 章节级 RAG：针对当前章节单独检索，避免整篇文档只使用一次粗粒度检索结果。
+                    section_result = self.evidence_service._call_rag_tool(
                         shared_state,
                         project_input,
                         query=section_query,
@@ -237,13 +301,13 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                         call_suffix=f"section_{order:03d}",
                     )
                     if section_result is not None:
-                        tool_call_ids.append(section_result.tool_call_id)
+                        tool_call_ids.append(section_result.retrieval_trace_id)
                     if section_result is not None and section_result.success:
                         section_context, section_chunks, section_citations, section_output = (
-                            self._extract_rag_output(shared_state, section_result)
+                            self.evidence_service._extract_rag_output(shared_state, section_result)
                         )
                         section_context, section_chunks, section_citations, section_output = (
-                            self._remap_bundle_citations(
+                            self.evidence_service._remap_bundle_citations(
                                 context=section_context,
                                 chunks=section_chunks,
                                 citations=section_citations,
@@ -281,18 +345,149 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                             flush=True,
                         )
 
-                section = self._generate_section(
-                    shared_state,
-                    document_id=document_id,
-                    project_input=project_input,
-                    section_title=title,
-                    section_order=order,
-                    rag_context=active_context,
-                    citations=active_citations,
-                    structured_facts=structured_facts,
-                    previous_sections=sections,
-                    generation_attempt=1,
+                with activate_workflow_budget(section_budget):
+                    section = self.section_generation_service._generate_section(
+                        shared_state,
+                        document_id=document_id,
+                        project_input=project_input,
+                        section_title=title,
+                        section_order=order,
+                        rag_context=active_context,
+                        citations=active_citations,
+                        structured_facts=structured_facts,
+                        previous_sections=sections,
+                        generation_attempt=1,
+                    )
+
+                generation_check = dict(
+                    (section.extra or {}).get("generation_check") or {}
                 )
+                self_rag_rounds: list[dict] = []
+                while (
+                    bool(generation_check.get("need_retrieve_more"))
+                    and section_budget.retrieval_rounds
+                    < section_budget.max_retrieval_rounds
+                ):
+                    section_budget.consume_retrieval_round()
+                    recovery_count += 1
+                    round_number = section_budget.retrieval_rounds
+                    self_rag_query = self.evidence_service._build_section_query(
+                        project_input,
+                        title,
+                        recovery=True,
+                    )
+                    round_trace = {
+                        "round": round_number,
+                        "query": self_rag_query,
+                        "check_before": dict(generation_check),
+                        "success": False,
+                    }
+                    print(
+                        f"[SelfRAGRetrieveMore] START section={title} "
+                        f"round={round_number} query={self_rag_query[:100]!r}",
+                        flush=True,
+                    )
+                    self_rag_result = self.evidence_service._call_rag_tool(
+                        shared_state,
+                        project_input,
+                        query=self_rag_query,
+                        scope="self_rag_recovery",
+                        section_id=section_id,
+                        section_title=title,
+                        call_suffix=(
+                            f"section_{order:03d}_self_rag_{recovery_count}"
+                        ),
+                    )
+                    if self_rag_result is not None:
+                        tool_call_ids.append(self_rag_result.retrieval_trace_id)
+                    if self_rag_result is None or not self_rag_result.success:
+                        round_trace["error"] = (
+                            self_rag_result.error_message
+                            if self_rag_result is not None
+                            else "not_configured"
+                        )
+                        self_rag_rounds.append(round_trace)
+                        break
+
+                    (
+                        recovered_context,
+                        recovered_chunks,
+                        recovered_citations,
+                        recovered_output,
+                    ) = self.evidence_service._extract_rag_output(
+                        shared_state,
+                        self_rag_result,
+                    )
+                    (
+                        recovered_context,
+                        recovered_chunks,
+                        recovered_citations,
+                        recovered_output,
+                    ) = self.evidence_service._remap_bundle_citations(
+                        context=recovered_context,
+                        chunks=recovered_chunks,
+                        citations=recovered_citations,
+                        normalized=recovered_output,
+                        registry=citation_registry,
+                        scope="self_rag_recovery",
+                        query=self_rag_query,
+                    )
+                    all_chunks.extend(recovered_chunks)
+                    all_rag_outputs.append(recovered_output)
+                    if not recovered_context.context_text.strip():
+                        round_trace["error"] = "empty_recovered_context"
+                        self_rag_rounds.append(round_trace)
+                        break
+
+                    active_context = recovered_context
+                    active_chunks = recovered_chunks
+                    active_citations = recovered_citations
+                    active_query = self_rag_query
+                    active_scope = "self_rag_recovery"
+                    with activate_workflow_budget(section_budget):
+                        section = self.section_generation_service._generate_section(
+                            shared_state,
+                            document_id=document_id,
+                            project_input=project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=active_context,
+                            citations=active_citations,
+                            structured_facts=structured_facts,
+                            previous_sections=sections,
+                            generation_attempt=round_number + 1,
+                        )
+                    generation_check = dict(
+                        (section.extra or {}).get("generation_check") or {}
+                    )
+                    round_trace.update(
+                        {
+                            "success": True,
+                            "check_after": dict(generation_check),
+                            "retrieved_chunk_count": len(recovered_chunks),
+                            "citation_count": len(recovered_citations),
+                        }
+                    )
+                    self_rag_rounds.append(round_trace)
+                    print(
+                        f"[SelfRAGRetrieveMore] END   section={title} "
+                        f"round={round_number} success=True "
+                        f"need_more={generation_check.get('need_retrieve_more')}",
+                        flush=True,
+                    )
+
+                if self_rag_rounds:
+                    retrieval_metadata["self_rag_retrieval_rounds"] = self_rag_rounds
+                    retrieval_metadata["self_rag_retrieve_more_success"] = bool(
+                        self_rag_rounds[-1].get("success")
+                    )
+                    retrieval_metadata["self_rag_recheck"] = dict(generation_check)
+                if bool(generation_check.get("need_retrieve_more")):
+                    retrieval_metadata["self_rag_retrieve_more_unresolved"] = True
+                    retrieval_metadata["self_rag_retrieve_more_budget_exhausted"] = (
+                        section_budget.retrieval_rounds
+                        >= section_budget.max_retrieval_rounds
+                    )
 
                 citation_bound = bool(
                     section.eval_result
@@ -302,9 +497,12 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                     citation_required
                     and not citation_bound
                     and corrective_retrieval_enabled
+                    and section_budget.retrieval_rounds
+                    < section_budget.max_retrieval_rounds
                 ):
-                    recovery_count = 1
-                    recovery_query = self._build_section_query(
+                    section_budget.consume_retrieval_round()
+                    recovery_count += 1
+                    recovery_query = self.evidence_service._build_section_query(
                         project_input, title, recovery=True
                     )
                     print(
@@ -312,23 +510,24 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                         f"query={recovery_query[:100]!r}",
                         flush=True,
                     )
-                    recovery_result = self._call_rag_tool(
+                    # Agent 外层恢复检索：章节要求引用但绑定失败时，再次调用完整 RAGTool。它不同于 CRAG 内部回检。
+                    recovery_result = self.evidence_service._call_rag_tool(
                         shared_state,
                         project_input,
                         query=recovery_query,
                         scope="recovery",
                         section_id=section_id,
                         section_title=title,
-                        call_suffix=f"section_{order:03d}_recovery_1",
+                        call_suffix=f"section_{order:03d}_recovery_{recovery_count}",
                     )
                     if recovery_result is not None:
-                        tool_call_ids.append(recovery_result.tool_call_id)
+                        tool_call_ids.append(recovery_result.retrieval_trace_id)
                     if recovery_result is not None and recovery_result.success:
                         recovery_context, recovery_chunks, recovery_citations, recovery_output = (
-                            self._extract_rag_output(shared_state, recovery_result)
+                            self.evidence_service._extract_rag_output(shared_state, recovery_result)
                         )
                         recovery_context, recovery_chunks, recovery_citations, recovery_output = (
-                            self._remap_bundle_citations(
+                            self.evidence_service._remap_bundle_citations(
                                 context=recovery_context,
                                 chunks=recovery_chunks,
                                 citations=recovery_citations,
@@ -346,18 +545,19 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                             active_citations = recovery_citations
                             active_query = recovery_query
                             active_scope = "recovery"
-                            section = self._generate_section(
-                                shared_state,
-                                document_id=document_id,
-                                project_input=project_input,
-                                section_title=title,
-                                section_order=order,
-                                rag_context=active_context,
-                                citations=active_citations,
-                                structured_facts=structured_facts,
-                                previous_sections=sections,
-                                generation_attempt=2,
-                            )
+                            with activate_workflow_budget(section_budget):
+                                section = self.section_generation_service._generate_section(
+                                    shared_state,
+                                    document_id=document_id,
+                                    project_input=project_input,
+                                    section_title=title,
+                                    section_order=order,
+                                    rag_context=active_context,
+                                    citations=active_citations,
+                                    structured_facts=structured_facts,
+                                    previous_sections=sections,
+                                    generation_attempt=recovery_count + 1,
+                                )
                         retrieval_metadata["corrective_retrieval_success"] = True
                         retrieval_metadata["corrective_citation_count"] = len(
                             recovery_citations
@@ -403,6 +603,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                     "evidence_tool_call_ids": list(dict.fromkeys(tool_call_ids)),
                     "evidence_contract_sha256": contract_sha,
                     "corrective_retrieval_count": recovery_count,
+                    "workflow_budget": section_budget.snapshot(),
                 }
                 sections.append(section)
                 print(
@@ -454,7 +655,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 truncation_detected=any(item.truncation.truncated for item in sections),
                 summary=f"共生成{len(sections)}个章节。",
                 created_at=started_at,
-                updated_at=self._now_iso(),
+                updated_at=self.runtime_support._now_iso(),
             )
             known_chunk_ids = {
                 value
@@ -479,6 +680,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 evidence_available
                 or any(bundle.citations for bundle in section_evidence_bundles)
             )
+            # 阶段 E：文档级硬门禁，检查章节完整性、引用约束、关键字段和输出 Schema。
             hard_gate = evaluate_scheme_draft(
                 draft,
                 citation_required=options.need_citation,
@@ -514,7 +716,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 status = ExecutionStatus.SUCCESS
             output_error = None
             if not hard_gate.passed:
-                output_error = self._error(
+                output_error = self.runtime_support._error(
                     "DOCUMENT_HARD_GATE_FAILED",
                     "; ".join(hard_gate.failures),
                     node="document_hard_gate",
@@ -532,7 +734,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                         agent_name="SchemeWriterAgent",
                         step_name="document_hard_gate",
                     ),
-                    created_at=self._now_iso(),
+                    created_at=self.runtime_support._now_iso(),
                 )
                 for message in hard_gate.warnings
             ]
@@ -584,7 +786,10 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 rag_tool_output=enriched_rag_output,
             )
             state_writer.set_final_result(shared_state, output.model_dump())
-            self._capture(shared_state, scheme_input, output, enriched_rag_output)
+            # 阶段 F：沉淀任务输入、检索证据、章节结果和质量信息，为评测及后训练数据构建提供原始记录。
+            self.capture_service._capture(
+                shared_state, scheme_input, output, enriched_rag_output
+            )
 
             return AgentResultSchema(
                 result_id=f"result_{shared_state.run_id}_scheme",
@@ -602,7 +807,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 error=output_error,
                 error_message=output_error.message if output_error else None,
                 started_at=started_at,
-                finished_at=self._now_iso(),
+                finished_at=self.runtime_support._now_iso(),
                 need_human_review=True,
                 metadata={
                     "output_schema": output.schema_version,
@@ -612,7 +817,7 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 },
             )
         except Exception as exc:
-            error = self._error(
+            error = self.runtime_support._error(
                 "SCHEME_WRITER_FAILED",
                 exc,
                 node=shared_state.current_step or self.agent_name,
@@ -632,6 +837,6 @@ class SchemeGenerationUseCase(RuntimeBoundService):
                 error=error,
                 error_message=error.message,
                 started_at=started_at,
-                finished_at=self._now_iso(),
+                finished_at=self.runtime_support._now_iso(),
                 need_human_review=True,
             )

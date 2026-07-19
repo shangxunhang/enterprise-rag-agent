@@ -1,14 +1,28 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：test_full_selected_record_preserves_child_and_parent_text、test_citations_expand_all_matched_child_evidence、test_weak_topical_overlap_is_not_grounding、test_supported_binding_is_marked_grounding_verified、_LegacyToolStub、test_legacy_service_prefers_full_selected_records_over_compact_preview、test_bm25_retriever_filters_multiple_doc_ids、test_legacy_adapter_propagates_document_filters、test_real_project_data_keeps_security_child_as_citation。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Regression tests for parent-context / child-evidence translation."""
 
 from __future__ import annotations
 
-from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
-from rag.services.legacy_rag_service import LegacyRAGService
+from apps.enterprise_document.services.scheme_writer.citation_service import CitationService
+from rag.mapping.evidence_mapper import EvidenceMapper
+from rag.services.rag_service import RAGService
 from schemas.citation import CitationBindingSchema, CitationSchema
 
 
+# 阅读注释（函数）：处理 测试 full selected 记录 preserves 子块 and 父块 文本 相关逻辑。
 def test_full_selected_record_preserves_child_and_parent_text() -> None:
-    service = LegacyRAGService(rag_project_root=".")
+    """处理 测试 full selected 记录 preserves 子块 and 父块 文本 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：LegacyRAGService, service._convert_retrieved_chunks, len, match_text.startswith。
+    """
+    mapper = EvidenceMapper()
     records = [
         {
             "rank": 1,
@@ -24,7 +38,7 @@ def test_full_selected_record_preserves_child_and_parent_text() -> None:
         }
     ]
 
-    chunks = service._convert_retrieved_chunks(records)
+    chunks = mapper.chunks(records)
 
     assert len(chunks) == 1
     assert chunks[0].match_text.startswith("八、安全设计")
@@ -32,8 +46,17 @@ def test_full_selected_record_preserves_child_and_parent_text() -> None:
     assert chunks[0].match_text != chunks[0].context_text
 
 
+# 阅读注释（函数）：处理 测试 citations expand all matched 子块 证据 相关逻辑。
 def test_citations_expand_all_matched_child_evidence() -> None:
-    service = LegacyRAGService(rag_project_root=".")
+    """处理 测试 citations expand all matched 子块 证据 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：LegacyRAGService, service._convert_retrieved_chunks, service._build_citations, set。
+    """
+    mapper = EvidenceMapper()
     records = [
         {
             "rank": 1,
@@ -67,8 +90,8 @@ def test_citations_expand_all_matched_child_evidence() -> None:
             },
         }
     ]
-    chunks = service._convert_retrieved_chunks(records)
-    citations = service._build_citations(chunks)
+    chunks = mapper.chunks(records)
+    citations = mapper.citations(chunks)
 
     by_chunk = {item.chunk_id: item for item in citations}
     assert set(by_chunk) == {"child_finance", "child_security"}
@@ -76,7 +99,16 @@ def test_citations_expand_all_matched_child_evidence() -> None:
     assert "输出敏感字段脱敏" in (by_chunk["child_security"].quote_text or "")
 
 
+# 阅读注释（函数）：处理 测试 weak topical overlap is not grounding 相关逻辑。
 def test_weak_topical_overlap_is_not_grounding() -> None:
+    """处理 测试 weak topical overlap is not grounding 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：CitationSchema, CitationBindingSchema, SchemeWriterAgent._binding_is_supported。
+    """
     evidence = CitationSchema(
         citation_id="C3",
         source_type="document",
@@ -100,10 +132,19 @@ def test_weak_topical_overlap_is_not_grounding() -> None:
         quote_text=evidence.quote_text,
     )
 
-    assert not SchemeWriterAgent._binding_is_supported(binding, {"C3": evidence})
+    assert not CitationService._binding_is_supported(binding, {"C3": evidence})
 
 
+# 阅读注释（函数）：处理 测试 supported 绑定关系 is marked grounding verified 相关逻辑。
 def test_supported_binding_is_marked_grounding_verified() -> None:
+    """处理 测试 supported 绑定关系 is marked grounding verified 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：CitationSchema, CitationBindingSchema, SchemeWriterAgent._supported_bindings, len。
+    """
     evidence = CitationSchema(
         citation_id="C1",
         source_type="document",
@@ -131,14 +172,25 @@ def test_supported_binding_is_marked_grounding_verified() -> None:
         quote_text=evidence.quote_text,
     )
 
-    supported = SchemeWriterAgent._supported_bindings([binding], [evidence])
+    supported = CitationService._supported_bindings([binding], [evidence])
 
     assert len(supported) == 1
     assert supported[0].metadata["grounding_verified"] is True
     assert supported[0].metadata["grounding_policy"] == "lexical_strict_v2"
 
+# 阅读注释（类）：封装 legacy 工具 stub，集中封装相关状态、依赖和行为。
 class _LegacyToolStub:
-    def run(self, tool_input):
+    """封装 legacy 工具 stub，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：执行 _LegacyToolStub 的主流程。
+    def retrieve(self, tool_input):
+        """执行 _LegacyToolStub 的主流程。
+
+        参数:
+            tool_input: 工具调用输入。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         parent_text = "前置内容。" * 200 + "八、安全设计：JWT、权限控制、Schema验证和输出脱敏。"
         selected = {
             "rank": 1,
@@ -197,11 +249,21 @@ class _LegacyToolStub:
         }
 
 
+# 阅读注释（函数）：处理 测试 legacy 服务 prefers full selected 记录集合 over compact preview 相关逻辑。
 def test_legacy_service_prefers_full_selected_records_over_compact_preview() -> None:
+    """处理 测试 legacy 服务 prefers full selected 记录集合 over compact preview 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：LegacyRAGService, _LegacyToolStub, service.retrieve, RAGToolInputSchema。
+    """
     from schemas.rag import RAGToolInputSchema
 
-    service = LegacyRAGService(rag_project_root=".")
-    service._rag_tool = _LegacyToolStub()
+    service = RAGService(
+        rag_project_root=".", retrieval_runtime=_LegacyToolStub()
+    )
     output = service.retrieve(
         RAGToolInputSchema(
             task_id="task_1",
@@ -220,7 +282,16 @@ def test_legacy_service_prefers_full_selected_records_over_compact_preview() -> 
     assert "JWT" in (citation_by_chunk["child_security"].quote_text or "")
 
 
+# 阅读注释（函数）：处理 测试 bm25 retriever filters multiple doc 标识集合 相关逻辑。
 def test_bm25_retriever_filters_multiple_doc_ids() -> None:
+    """处理 测试 bm25 retriever filters multiple doc 标识集合 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：BM25ChildRetriever, retriever.search。
+    """
     from rag.retriever.bm25_child_retriever import BM25ChildRetriever
 
     retriever = BM25ChildRetriever(
@@ -235,14 +306,40 @@ def test_bm25_retriever_filters_multiple_doc_ids() -> None:
     assert {item["doc_id"] for item in hits} == {"d1", "d3"}
 
 
+# 阅读注释（函数）：处理 测试 legacy 适配器 propagates 文档 filters 相关逻辑。
 def test_legacy_adapter_propagates_document_filters() -> None:
+    """处理 测试 legacy 适配器 propagates 文档 filters 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：FilterCaptureTool, LegacyRAGService, service.retrieve, RAGToolInputSchema。
+    """
     from schemas.rag import RAGToolInputSchema
 
+    # 阅读注释（类）：封装 filter capture 工具，集中封装相关状态、依赖和行为。
     class FilterCaptureTool:
+        """封装 filter capture 工具，集中封装相关状态、依赖和行为。"""
+        # 阅读注释（函数）：初始化 FilterCaptureTool，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 FilterCaptureTool，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+            """
             self.last_input = None
 
-        def run(self, tool_input):
+        # 阅读注释（函数）：执行 FilterCaptureTool 的主流程。
+        def retrieve(self, tool_input):
+            """执行 FilterCaptureTool 的主流程。
+
+            参数:
+                tool_input: 工具调用输入。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+            """
             self.last_input = tool_input
             return {
                 "success": True,
@@ -255,8 +352,7 @@ def test_legacy_adapter_propagates_document_filters() -> None:
             }
 
     tool = FilterCaptureTool()
-    service = LegacyRAGService(rag_project_root=".")
-    service._rag_tool = tool
+    service = RAGService(rag_project_root=".", retrieval_runtime=tool)
     service.retrieve(
         RAGToolInputSchema(
             task_id="task_filter",
@@ -271,7 +367,16 @@ def test_legacy_adapter_propagates_document_filters() -> None:
     assert tool.last_input["filter_expr"] == 'doc_id in ["doc_a", "doc_b"]'
 
 
+# 阅读注释（函数）：处理 测试 real 项目 数据 keeps security 子块 as 引用 相关逻辑。
 def test_real_project_data_keeps_security_child_as_citation() -> None:
+    """处理 测试 real 项目 数据 keeps security 子块 as 引用 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：resolve, Path, child_file.is_file, pytest.skip, child_file.open, json.loads, item.get, RetrievedChunkSchema。
+    """
     import json
     from pathlib import Path
 
@@ -306,7 +411,7 @@ def test_real_project_data_keeps_security_child_as_citation() -> None:
         context_text=target["text"],
         metadata={"matched_child_chunks": [target]},
     )
-    citations = LegacyRAGService._build_citations([chunk])
+    citations = EvidenceMapper.citations([chunk])
     by_chunk = {item.chunk_id: item for item in citations}
 
     assert target_id in by_chunk

@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：safe_str、safe_int、safe_list、safe_dict、json_dumps_compact、truncate_text、sha256_text、build_embedding_key、_json_field_length、build_milvus_schema_for_child_chunk_v1等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/vector_store/milvus_child_chunk_store.py
 ====================================================
@@ -33,7 +37,20 @@ from rag.configs.SchemaConfig import DEFAULT_INDEX_VERSION
 DEFAULT_INDEXED_GRANULARITY = "child"
 
 
+# 阅读注释（函数）：处理 safe str 相关逻辑。
 def safe_str(value: Any, default: str = "") -> str:
+    """处理 safe str 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：isinstance, str。
+    """
     if value is None:
         return default
     if isinstance(value, str):
@@ -41,7 +58,20 @@ def safe_str(value: Any, default: str = "") -> str:
     return str(value)
 
 
+# 阅读注释（函数）：处理 safe int 相关逻辑。
 def safe_int(value: Any, default: int = -1) -> int:
+    """处理 safe int 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：int。
+    """
     if value is None or value == "":
         return default
     try:
@@ -50,7 +80,19 @@ def safe_int(value: Any, default: int = -1) -> int:
         return default
 
 
+# 阅读注释（函数）：处理 safe 列表 相关逻辑。
 def safe_list(value: Any) -> List[Any]:
+    """处理 safe 列表 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Any]
+
+    阅读提示:
+        主要直接调用：isinstance, list。
+    """
     if value is None:
         return []
     if isinstance(value, list):
@@ -60,24 +102,74 @@ def safe_list(value: Any) -> List[Any]:
     return [value]
 
 
+# 阅读注释（函数）：处理 safe 字典 相关逻辑。
 def safe_dict(value: Any) -> Dict[str, Any]:
+    """处理 safe 字典 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：isinstance。
+    """
     return value if isinstance(value, dict) else {}
 
 
+# 阅读注释（函数）：处理 JSON dumps compact 相关逻辑。
 def json_dumps_compact(value: Any) -> str:
+    """处理 JSON dumps compact 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：json.dumps。
+    """
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+# 阅读注释（函数）：处理 truncate 文本 相关逻辑。
 def truncate_text(text: str, max_chars: int) -> str:
+    """处理 truncate 文本 相关逻辑。
+
+    参数:
+        text: 待处理文本。
+        max_chars: max chars，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：len。
+    """
     if len(text) <= max_chars:
         return text
     return text[:max_chars]
 
 
+# 阅读注释（函数）：处理 sha256 文本 相关逻辑。
 def sha256_text(text: str) -> str:
+    """处理 sha256 文本 相关逻辑。
+
+    参数:
+        text: 待处理文本。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：hexdigest, hashlib.sha256, encode。
+    """
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+# 阅读注释（函数）：构建 embedding key。
 def build_embedding_key(
     *,
     indexed_chunk_id: str,
@@ -87,6 +179,22 @@ def build_embedding_key(
     index_name: str,
     index_version: str,
 ) -> str:
+    """构建 embedding key。
+
+    参数:
+        indexed_chunk_id: indexed 文本块 标识，具体约束请结合类型标注和调用方确认。
+        text_hash: 文本 hash，具体约束请结合类型标注和调用方确认。
+        embedding_model: embedding 模型，具体约束请结合类型标注和调用方确认。
+        embedding_version: embedding 版本，具体约束请结合类型标注和调用方确认。
+        index_name: 索引 名称，具体约束请结合类型标注和调用方确认。
+        index_version: 索引 版本，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：join, hexdigest, hashlib.sha256, raw.encode。
+    """
     raw = "|".join([
         indexed_chunk_id or "",
         text_hash or "",
@@ -98,11 +206,24 @@ def build_embedding_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# 阅读注释（函数）：处理 JSON field length 相关逻辑。
 def _json_field_length(max_text_chars: int) -> int:
     # Milvus VARCHAR 最大 65535。给 JSON 字段保守一点，避免 schema 过大。
+    """处理 JSON field length 相关逻辑。
+
+    参数:
+        max_text_chars: max 文本 chars，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：min, max。
+    """
     return min(max(max_text_chars, 4096), 65535)
 
 
+# 阅读注释（函数）：构建 milvus Schema for 子块 文本块 v1。
 def build_milvus_schema_for_child_chunk_v1(dim: int, max_text_chars: int):
     """Build physical Milvus schema for child_chunk_v1 indexing."""
     schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
@@ -157,6 +278,7 @@ def build_milvus_schema_for_child_chunk_v1(dim: int, max_text_chars: int):
     return schema
 
 
+# 阅读注释（函数）：创建 or reset 子块 文本块 collection。
 def create_or_reset_child_chunk_collection(
     client: MilvusClient,
     collection_name: str,
@@ -190,6 +312,7 @@ def create_or_reset_child_chunk_collection(
     print(f"Vector index created: AUTOINDEX / {metric_type}")
 
 
+# 阅读注释（函数）：构建 milvus 子块 文本块 记录。
 def build_milvus_child_chunk_record(
     child_chunk: Dict[str, Any],
     vector: np.ndarray,
@@ -260,12 +383,27 @@ def build_milvus_child_chunk_record(
     }
 
 
+# 阅读注释（函数）：处理 insert 子块 文本块 记录集合 相关逻辑。
 def insert_child_chunk_records(
     client: MilvusClient,
     collection_name: str,
     records: Sequence[Dict[str, Any]],
     batch_size: int,
 ) -> int:
+    """处理 insert 子块 文本块 记录集合 相关逻辑。
+
+    参数:
+        client: 下游客户端。
+        collection_name: collection 名称，具体约束请结合类型标注和调用方确认。
+        records: 记录集合，具体约束请结合类型标注和调用方确认。
+        batch_size: batch size，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：range, len, list, client.insert, print。
+    """
     total = 0
     for start in range(0, len(records), batch_size):
         batch = list(records[start:start + batch_size])
@@ -275,6 +413,7 @@ def insert_child_chunk_records(
     return total
 
 
+# 阅读注释（函数）：搜索 子块 文本块 smoke 测试。
 def search_child_chunk_smoke_test(
     client: MilvusClient,
     collection_name: str,

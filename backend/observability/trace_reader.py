@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：后端业务模块。
+# 主要定义：load_trace_events、validate_trace_v2。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Trace v2 reader and invariant validator."""
 
 from __future__ import annotations
@@ -12,7 +16,19 @@ START_PHASES = {"start"}
 TERMINAL_PHASES = {"end", "error"}
 
 
+# 阅读注释（函数）：加载 Trace events。
 def load_trace_events(path: str | Path) -> List[Dict[str, Any]]:
+    """加载 Trace events。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        List[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：Path, trace_path.open, enumerate, line.strip, json.loads, ValueError, isinstance, events.append。
+    """
     trace_path = Path(path)
     events: List[Dict[str, Any]] = []
     with trace_path.open("r", encoding="utf-8") as handle:
@@ -31,7 +47,19 @@ def load_trace_events(path: str | Path) -> List[Dict[str, Any]]:
     return events
 
 
+# 阅读注释（函数）：校验 Trace v2。
 def validate_trace_v2(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """校验 Trace v2。
+
+    参数:
+        events: events，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：list, row.get, int, require, sorted, str, len, range。
+    """
     rows = list(events)
     failures: List[Dict[str, Any]] = []
     if not rows:
@@ -50,7 +78,21 @@ def validate_trace_v2(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     schemas = {row.get("schema_version") for row in rows}
     sequences = [int(row.get("event_sequence") or 0) for row in rows]
 
+    # 阅读注释（函数）：处理 require 相关逻辑。
     def require(name: str, condition: bool, details: Dict[str, Any]) -> None:
+        """处理 require 相关逻辑。
+
+        参数:
+            name: 名称，具体约束请结合类型标注和调用方确认。
+            condition: condition，具体约束请结合类型标注和调用方确认。
+            details: details，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：failures.append。
+        """
         if not condition:
             failures.append({"name": name, "details": details})
 

@@ -1,9 +1,14 @@
+# =============================================================================
+# 中文阅读说明：方案章节生成主流程：组装上下文、调用模型、处理截断、绑定引用，并执行 Self-RAG 检查与修复。
+# 主要定义：SectionGenerationService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generated from the stable v7.5.1 SchemeWriter behavior."""
 
 
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.runtime.shared_state_schema import SharedStateSchema
+from apps.enterprise_document.quality.budget import current_workflow_budget
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import SemanticGateResultSchema, SchemeSectionSchema, SectionEvalSchema
 from apps.enterprise_document.schemas.table_agent_schema import StructuredFactSchema
@@ -13,11 +18,48 @@ from schemas.common import ErrorSourceSchema, WarningSchema
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
 from schemas.status import ExecutionStatus
-from .base import RuntimeBoundService
+from apps.enterprise_document.services.semantic_section_judge import SemanticSectionJudge
+from .advisory_service import SectionAdvisoryService
+from .citation_service import CitationService
 from .constants import CITATION_PATTERN as _CITATION_PATTERN
+from .model_service import SectionModelService
+from .prompt_service import SectionPromptService
+from .runtime_support import SchemeWriterRuntimeSupport
 
 
-class SectionGenerationService(RuntimeBoundService):
+# 阅读注释（类）：封装 章节 生成 服务，封装一组可复用的业务能力。
+class SectionGenerationService:
+    """封装 章节 生成 服务，封装一组可复用的业务能力。"""
+
+    def __init__(
+        self,
+        *,
+        runtime_support: SchemeWriterRuntimeSupport,
+        prompt_service: SectionPromptService,
+        model_service: SectionModelService,
+        citation_service: CitationService,
+        advisory_service: SectionAdvisoryService,
+        semantic_judge: SemanticSectionJudge,
+        enable_semantic_gate: bool,
+        semantic_gate_model_name: str,
+        generation_checker: object | None,
+        repair_strategy: object | None,
+        generation_quality_metadata: Dict[str, Any] | None,
+    ) -> None:
+        self.runtime_support = runtime_support
+        self.prompt_service = prompt_service
+        self.model_service = model_service
+        self.citation_service = citation_service
+        self.advisory_service = advisory_service
+        self.semantic_judge = semantic_judge
+        self.enable_semantic_gate = enable_semantic_gate
+        self.semantic_gate_model_name = semantic_gate_model_name
+        self.generation_checker = generation_checker
+        self.repair_strategy = repair_strategy
+        self.generation_quality_metadata = dict(
+            generation_quality_metadata or {}
+        )
+    # 阅读注释（函数）：生成 章节。
     def _generate_section(
         self,
         shared_state: SharedStateSchema,
@@ -32,14 +74,35 @@ class SectionGenerationService(RuntimeBoundService):
         previous_sections: List[SchemeSectionSchema],
         generation_attempt: int = 1,
     ) -> SchemeSectionSchema:
-        started_at = self._now_iso()
+        """生成 章节。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+            document_id: 文档 标识，具体约束请结合类型标注和调用方确认。
+            project_input: 规范化后的项目输入。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
+            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
+            citations: 引用信息集合。
+            structured_facts: structured facts，具体约束请结合类型标注和调用方确认。
+            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
+            generation_attempt: 生成 attempt，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            SchemeSectionSchema
+
+        阅读提示:
+            主要直接调用：self._now_iso, self._render_section_prompt, dict, get, self._call_model, self._error, SchemeSectionSchema, project_input.model_dump。
+        """
+        started_at = self.runtime_support._now_iso()
         section_id = f"section_{shared_state.run_id}_{section_order:03d}"
         model_section_id = (
             section_id
             if generation_attempt <= 1
             else f"{section_id}_attempt_{generation_attempt}"
         )
-        prompt_result = self._render_section_prompt(
+        # 生成阶段 1：组装章节边界、项目事实、RAG 证据和历史章节，并渲染 Prompt。
+        prompt_result = self.prompt_service._render_section_prompt(
             shared_state,
             project_input,
             section_id,
@@ -52,7 +115,8 @@ class SectionGenerationService(RuntimeBoundService):
         context_package = dict(
             (prompt_result.extra or {}).get("llm_context_package") or {}
         )
-        response = self._call_model(
+        # 生成阶段 2：通过 ModelGateway 调用 LLM 生成章节。
+        response = self.model_service._call_model(
             shared_state,
             prompt=prompt_result.rendered_text,
             section_id=model_section_id,
@@ -64,7 +128,7 @@ class SectionGenerationService(RuntimeBoundService):
             prompt_version=prompt_result.prompt_version,
         )
         if not response.success:
-            error = response.error or self._error(
+            error = response.error or self.runtime_support._error(
                 "SECTION_MODEL_CALL_FAILED",
                 response.error_message or "model call failed",
                 node=section_id,
@@ -91,7 +155,7 @@ class SectionGenerationService(RuntimeBoundService):
                     failures=["模型调用失败"],
                 ),
                 started_at=started_at,
-                finished_at=self._now_iso(),
+                finished_at=self.runtime_support._now_iso(),
             )
 
         content = response.content.strip()
@@ -106,7 +170,9 @@ class SectionGenerationService(RuntimeBoundService):
         remaining_retries = max(
             0, project_input.generation_requirements.max_section_retries
         )
-        target_section_chars = self._target_section_chars(project_input)
+        target_section_chars = self.prompt_service._target_section_chars(
+            project_input
+        )
         max_section_chars = int(target_section_chars * 1.5)
         overlong = len(content) > max_section_chars
         retry_index = 1
@@ -114,7 +180,7 @@ class SectionGenerationService(RuntimeBoundService):
         # a continuation: small local models tend to keep expanding and hit the
         # limit again, producing a longer but still incomplete section.
         while truncation.truncated and remaining_retries > 0:
-            retry_response = self._retry_truncated_section(
+            retry_response = self.model_service._retry_truncated_section(
                 shared_state,
                 section_id=model_section_id,
                 section_title=section_title,
@@ -142,7 +208,7 @@ class SectionGenerationService(RuntimeBoundService):
         # sufficiently long prefix ending at a complete sentence/list item.
         # This is explicit recovery and is recorded for traceability.
         if truncation.truncated:
-            recovered = self._recover_complete_prefix(
+            recovered = self.model_service._recover_complete_prefix(
                 content,
                 min_chars=project_input.generation_requirements.min_section_chars,
                 max_chars=max_section_chars,
@@ -170,7 +236,7 @@ class SectionGenerationService(RuntimeBoundService):
                 f"limit={max_section_chars}",
                 flush=True,
             )
-            compression_response = self._compress_overlong_section(
+            compression_response = self.model_service._compress_overlong_section(
                 shared_state,
                 original_content=content,
                 section_id=model_section_id,
@@ -190,7 +256,7 @@ class SectionGenerationService(RuntimeBoundService):
                     truncation = candidate_truncation
                     overlong = len(content) > max_section_chars
                 elif candidate_truncation.truncated:
-                    recovered_candidate = self._recover_complete_prefix(
+                    recovered_candidate = self.model_service._recover_complete_prefix(
                         candidate,
                         min_chars=project_input.generation_requirements.min_section_chars,
                         max_chars=max_section_chars,
@@ -205,7 +271,7 @@ class SectionGenerationService(RuntimeBoundService):
                         overlong = len(content) > max_section_chars
                         compression_fallback_strategy = "compressed_complete_sentence_prefix"
             if overlong:
-                deterministic = self._recover_complete_prefix(
+                deterministic = self.model_service._recover_complete_prefix(
                     content,
                     min_chars=project_input.generation_requirements.min_section_chars,
                     max_chars=max_section_chars,
@@ -244,7 +310,7 @@ class SectionGenerationService(RuntimeBoundService):
         deterministic_fact_candidates: list[Dict[str, Any]] = []
         semantic_gate_response: Optional[ModelResponseSchema] = None
         if self.enable_semantic_gate:
-            deterministic_fact_candidates = self._project_fact_violations(
+            deterministic_fact_candidates = self.advisory_service._project_fact_violations(
                 content, project_input, citations
             )
             print(
@@ -256,7 +322,7 @@ class SectionGenerationService(RuntimeBoundService):
             semantic_gate, semantic_gate_response = self.semantic_judge.judge(
                 task_id=shared_state.task_id,
                 run_id=shared_state.run_id,
-                created_at=self._now_iso(),
+                created_at=self.runtime_support._now_iso(),
                 section_id=model_section_id,
                 section_title=section_title,
                 content=content,
@@ -303,11 +369,11 @@ class SectionGenerationService(RuntimeBoundService):
         content = _CITATION_PATTERN.sub("", content)
         deterministic_matches: list[Tuple[str, str, float]] = []
         if citations:
-            content, deterministic_matches = self._insert_deterministic_citations(
+            content, deterministic_matches = self.citation_service._insert_deterministic_citations(
                 content, citations
             )
-        bindings = self._supported_bindings(
-            self._bind_citations(
+        bindings = self.citation_service._supported_bindings(
+            self.citation_service._bind_citations(
                 document_id=document_id,
                 section_id=section_id,
                 content=content,
@@ -331,7 +397,7 @@ class SectionGenerationService(RuntimeBoundService):
                 f"[CitationRepair] START section={section_title} available={len(citations)}",
                 flush=True,
             )
-            repaired_content, citation_repair_response = self._repair_section_citations(
+            repaired_content, citation_repair_response = self.citation_service._repair_section_citations(
                 shared_state,
                 content=content,
                 section_id=model_section_id,
@@ -339,8 +405,8 @@ class SectionGenerationService(RuntimeBoundService):
                 project_input=project_input,
                 citations=citations,
             )
-            repaired_bindings = self._supported_bindings(
-                self._bind_citations(
+            repaired_bindings = self.citation_service._supported_bindings(
+                self.citation_service._bind_citations(
                     document_id=document_id,
                     section_id=section_id,
                     content=repaired_content,
@@ -371,7 +437,7 @@ class SectionGenerationService(RuntimeBoundService):
                 f"available={len(citations)}",
                 flush=True,
             )
-            grounded_regeneration_response = self._regenerate_section_from_evidence(
+            grounded_regeneration_response = self.citation_service._regenerate_section_from_evidence(
                 shared_state,
                 original_content=content,
                 section_id=model_section_id,
@@ -389,8 +455,8 @@ class SectionGenerationService(RuntimeBoundService):
                     grounded_regeneration_response.finish_reason,
                     project_input.generation_requirements.min_section_chars,
                 )
-                candidate_bindings = self._supported_bindings(
-                    self._bind_citations(
+                candidate_bindings = self.citation_service._supported_bindings(
+                    self.citation_service._bind_citations(
                         document_id=document_id,
                         section_id=section_id,
                         content=candidate_content,
@@ -416,11 +482,11 @@ class SectionGenerationService(RuntimeBoundService):
         repair_result: Optional[Dict[str, Any]] = None
         repair_recheck_result: Optional[Dict[str, Any]] = None
         repair_accepted = False
-        generation_checker = getattr(self, "generation_checker", None)
-        repair_strategy = getattr(self, "repair_strategy", None)
+        generation_checker = self.generation_checker
+        repair_strategy = self.repair_strategy
         quality_query = (
             f"{project_input.user_query}\n当前章节：{section_title}\n"
-            f"章节边界：{self._section_generation_contract(section_title, project_input)}"
+            f"章节边界：{self.prompt_service._section_generation_contract(section_title, project_input)}"
         )
         citation_payload = [item.model_dump() for item in citations]
         binding_payload = [item.model_dump() for item in bindings]
@@ -438,6 +504,7 @@ class SectionGenerationService(RuntimeBoundService):
                 "document_title": project_input.output_schema.document_title,
             },
         }
+        # 生成阶段 5：GroundedGenerationPolicy 启用 Self-RAG-lite 时检查证据支持。
         if generation_checker is not None:
             print(
                 f"[GenerationChecker] START section={section_title} "
@@ -474,11 +541,16 @@ class SectionGenerationService(RuntimeBoundService):
             repair_strategy is not None
             and generation_check_result is not None
             and bool(generation_check_result.get("need_rewrite"))
+            and not bool(generation_check_result.get("need_retrieve_more"))
         ):
+            budget = current_workflow_budget()
+            if budget is not None:
+                budget.consume_rewrite_round()
             print(
                 f"[RepairStrategy] START section={section_title}",
                 flush=True,
             )
+            # 生成阶段 6：need_rewrite 为真时执行局部改写；修复结果不能直接放行。
             repair_output = repair_strategy.repair(
                 query=quality_query,
                 answer=content,
@@ -498,11 +570,11 @@ class SectionGenerationService(RuntimeBoundService):
                     "", repair_output.answer.strip()
                 )
                 if citations:
-                    candidate_content, _ = self._insert_deterministic_citations(
+                    candidate_content, _ = self.citation_service._insert_deterministic_citations(
                         candidate_content, citations
                     )
-                candidate_bindings = self._supported_bindings(
-                    self._bind_citations(
+                candidate_bindings = self.citation_service._supported_bindings(
+                    self.citation_service._bind_citations(
                         document_id=document_id,
                         section_id=section_id,
                         content=candidate_content,
@@ -523,6 +595,7 @@ class SectionGenerationService(RuntimeBoundService):
                     and not candidate_truncation.truncated
                     and candidate_citation_ok
                 ):
+                    # 改写后重新绑定引用并再次执行 Self-RAG 检查，只有复检通过才接受候选文本。
                     candidate_check = generation_checker.check(
                         query=quality_query,
                         answer=candidate_content,
@@ -578,13 +651,13 @@ class SectionGenerationService(RuntimeBoundService):
             "", semantic_gate_evaluated_content
         ).strip()
         if self.enable_semantic_gate and final_semantic_plain != evaluated_semantic_plain:
-            deterministic_fact_candidates = self._project_fact_violations(
+            deterministic_fact_candidates = self.advisory_service._project_fact_violations(
                 content, project_input, citations
             )
             semantic_gate, final_semantic_response = self.semantic_judge.judge(
                 task_id=shared_state.task_id,
                 run_id=shared_state.run_id,
-                created_at=self._now_iso(),
+                created_at=self.runtime_support._now_iso(),
                 section_id=model_section_id,
                 section_title=section_title,
                 content=content,
@@ -700,7 +773,7 @@ class SectionGenerationService(RuntimeBoundService):
 
         error = None
         if failures:
-            error = self._error(
+            error = self.runtime_support._error(
                 "SECTION_HARD_GATE_FAILED",
                 "; ".join(failures),
                 node=section_id,
@@ -739,7 +812,7 @@ class SectionGenerationService(RuntimeBoundService):
                     "generation_check": generation_check_result,
                     "repair_result": repair_result,
                 },
-                created_at=self._now_iso(),
+                created_at=self.runtime_support._now_iso(),
             )
             for name in warning_names
         ]
@@ -772,7 +845,7 @@ class SectionGenerationService(RuntimeBoundService):
             ),
             warnings=section_warnings,
             started_at=started_at,
-            finished_at=self._now_iso(),
+            finished_at=self.runtime_support._now_iso(),
             extra={
                 "context_package_id": context_package.get("package_id"),
                 "context_sha256": context_package.get("context_sha256"),
@@ -821,7 +894,7 @@ class SectionGenerationService(RuntimeBoundService):
                     else None
                 ),
                 "generation_quality_pipeline": dict(
-                    getattr(self, "generation_quality_metadata", {}) or {}
+                    self.generation_quality_metadata
                 ),
                 "generation_check": generation_check_result,
                 "repair_result": repair_result,

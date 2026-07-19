@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_latest_eval_samples、_infer_run_id、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Run lightweight RAG evaluation from Agent capture eval_samples."""
 
 from __future__ import annotations
@@ -21,7 +25,19 @@ from core.config import get_settings
 from eval.rag.capture.rag_eval_runner import RAGEvalRunner
 
 
+# 阅读注释（函数）：处理 latest 评测 samples 相关逻辑。
 def _latest_eval_samples(captures_dir: Path) -> Path:
+    """处理 latest 评测 samples 相关逻辑。
+
+    参数:
+        captures_dir: captures dir，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：list, eval_dir.glob, FileNotFoundError, max。
+    """
     eval_dir = captures_dir / "eval_samples"
     files = list(eval_dir.glob("*_eval_samples.jsonl"))
 
@@ -33,14 +49,35 @@ def _latest_eval_samples(captures_dir: Path) -> Path:
     return max(files, key=lambda path: path.stat().st_mtime)
 
 
+# 阅读注释（函数）：处理 infer run 标识 相关逻辑。
 def _infer_run_id(path: Path) -> str:
+    """处理 infer run 标识 相关逻辑。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：path.name.endswith, len。
+    """
     suffix = "_eval_samples.jsonl"
     if path.name.endswith(suffix):
         return path.name[: -len(suffix)]
     return path.stem
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, parser.parse_args, get_settings, resolve, expanduser, Path, _latest_eval_samples。
+    """
     parser = argparse.ArgumentParser(
         description="Run lightweight RAG eval from eval_samples capture.",
     )

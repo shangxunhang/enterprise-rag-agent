@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：RAGToolInputSchema、RetrievedChunkSchema、RAGContextSchema、RAGTraceSchema、EvidenceDisposition、EvidenceAssessmentStatus、RAGEvidenceLineageSchema、RAGEvidenceItemSchema、RAGEvidenceAssessmentSchema、RAGEvidenceContractSchema等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """RAGTool boundary schemas.
 
 These schemas are the Agent-facing contract of RAGTool. They intentionally do
@@ -16,7 +20,9 @@ from schemas.common import ErrorSchema, SchemaBase, WarningSchema
 from schemas.status import ExecutionStatus
 
 
+# 阅读注释（类）：封装 ragtool 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGToolInputSchema(SchemaBase):
+    """封装 ragtool 输入 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_tool_input_v1"
 
     task_id: str
@@ -28,31 +34,19 @@ class RAGToolInputSchema(SchemaBase):
 
     kb_ids: List[str] = Field(default_factory=list)
 
-    retrieval_mode: str = "hybrid"  # dense | keyword | hybrid
-
-    top_k: int = 10
-    dense_top_k: Optional[int] = 10
-    keyword_top_k: Optional[int] = 10
-    candidate_top_k: Optional[int] = 10
-    rerank_top_k: Optional[int] = 5
-
     filters: Dict[str, Any] = Field(default_factory=dict)
 
-    need_context: bool = True
     need_citation: bool = True
 
     max_context_chars: Optional[int] = 6000
     max_context_items: Optional[int] = 3
 
-    score_threshold: Optional[float] = None
-
-    # retrieve_only: return chunks/context only; qa_generate: RAGTool generates answer internally.
-    mode: str = "retrieve_only"
-
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 retrieved 文本块 Schema，定义跨模块传递的数据结构与字段约束。
 class RetrievedChunkSchema(SchemaBase):
+    """封装 retrieved 文本块 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "retrieved_chunk_v1"
 
     rank: int
@@ -88,7 +82,9 @@ class RetrievedChunkSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 ragcontext Schema，定义跨模块传递的数据结构与字段约束。
 class RAGContextSchema(SchemaBase):
+    """封装 ragcontext Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_context_v1"
 
     context_text: str
@@ -100,13 +96,18 @@ class RAGContextSchema(SchemaBase):
     max_context_chars: int = 6000
     used_context_chars: int = 0
     context_item_count: int = 0
+    token_budget: Optional[int] = None
+    tokens_used: int = 0
+    truncated_item_ids: List[str] = Field(default_factory=list)
 
     context_format: str = "markdown"  # plain_text | markdown | structured
 
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 ragtrace Schema，定义跨模块传递的数据结构与字段约束。
 class RAGTraceSchema(SchemaBase):
+    """封装 ragtrace Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_trace_v1"
 
     retrieval_mode: str
@@ -140,6 +141,7 @@ class RAGTraceSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 证据 disposition，集中封装相关状态、依赖和行为。
 class EvidenceDisposition(str, Enum):
     """Whether a retrieved evidence item entered the final LLM context."""
 
@@ -147,6 +149,7 @@ class EvidenceDisposition(str, Enum):
     DROPPED = "dropped"
 
 
+# 阅读注释（类）：封装 证据 assessment 状态，集中封装相关状态、依赖和行为。
 class EvidenceAssessmentStatus(str, Enum):
     """Semantic sufficiency is not inferred merely from retrieval presence."""
 
@@ -156,6 +159,7 @@ class EvidenceAssessmentStatus(str, Enum):
     INSUFFICIENT = "insufficient"
 
 
+# 阅读注释（类）：封装 ragevidence lineage Schema，定义跨模块传递的数据结构与字段约束。
 class RAGEvidenceLineageSchema(SchemaBase):
     """Versions that produced the evidence bundle."""
 
@@ -173,14 +177,15 @@ class RAGEvidenceLineageSchema(SchemaBase):
     reranker_model: Optional[str] = None
     reranker_version: Optional[str] = None
 
-    retrieval_strategy: Optional[str] = None
-    pipeline_profile_id: Optional[str] = None
-    pipeline_profile_version: Optional[str] = None
-    pipeline_config_hash: Optional[str] = None
+    retrieval_plan_id: Optional[str] = None
+    static_retrieval_spec_id: Optional[str] = None
+    static_retrieval_spec_version: Optional[str] = None
+    static_retrieval_spec_hash: Optional[str] = None
 
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 ragevidence 数据项 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGEvidenceItemSchema(SchemaBase):
     """One normalized evidence item.
 
@@ -222,6 +227,7 @@ class RAGEvidenceItemSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 ragevidence assessment Schema，定义跨模块传递的数据结构与字段约束。
 class RAGEvidenceAssessmentSchema(SchemaBase):
     """Evidence availability and optional semantic sufficiency judgment."""
 
@@ -240,7 +246,8 @@ class RAGEvidenceAssessmentSchema(SchemaBase):
     details: Dict[str, Any] = Field(default_factory=dict)
 
 
-class RAGEvidenceContractSchema(SchemaBase):
+# 阅读注释（类）：封装 ragevidence contract Schema，定义跨模块传递的数据结构与字段约束。
+class EvidenceBundleSchema(SchemaBase):
     """Canonical evidence package crossing the RAG/Agent boundary.
 
     The structured items are the source of truth. ``context`` and the legacy
@@ -252,6 +259,11 @@ class RAGEvidenceContractSchema(SchemaBase):
     query: str
     rewritten_queries: List[str] = Field(default_factory=list)
 
+    task_id: Optional[str] = None
+    run_id: Optional[str] = None
+    status: ExecutionStatus = ExecutionStatus.SUCCESS
+    retrieval_trace_id: Optional[str] = None
+
     items: List[RAGEvidenceItemSchema] = Field(default_factory=list)
     selected_evidence_ids: List[str] = Field(default_factory=list)
     dropped_evidence_ids: List[str] = Field(default_factory=list)
@@ -261,10 +273,25 @@ class RAGEvidenceContractSchema(SchemaBase):
     lineage: RAGEvidenceLineageSchema = Field(default_factory=RAGEvidenceLineageSchema)
     assessment: RAGEvidenceAssessmentSchema = Field(default_factory=RAGEvidenceAssessmentSchema)
 
+    correction_trace: List[Dict[str, Any]] = Field(default_factory=list)
+    budget_usage: Dict[str, Any] = Field(default_factory=dict)
+    trace: Optional[RAGTraceSchema] = None
+    warnings: List[WarningSchema] = Field(default_factory=list)
+    error: Optional[ErrorSchema] = None
+
     extra: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：校验 contract。
     @model_validator(mode="after")
-    def validate_contract(self) -> "RAGEvidenceContractSchema":
+    def validate_contract(self) -> "EvidenceBundleSchema":
+        """校验 contract。
+
+        返回:
+            'RAGEvidenceContractSchema'
+
+        阅读提示:
+            主要直接调用：len, ValueError, set, sorted, bool, model_validator。
+        """
         item_by_id = {item.evidence_id: item for item in self.items}
         if len(item_by_id) != len(self.items):
             raise ValueError("evidence_id values must be unique")
@@ -301,6 +328,11 @@ class RAGEvidenceContractSchema(SchemaBase):
             raise ValueError("context used_context_chars must equal rendered text length")
         if self.context.used_context_chars > self.context.max_context_chars:
             raise ValueError("rendered context exceeds max_context_chars")
+        if (
+            self.context.token_budget is not None
+            and self.context.tokens_used > self.context.token_budget
+        ):
+            raise ValueError("rendered context exceeds token_budget")
         if self.context.context_item_count != len(self.selected_evidence_ids):
             raise ValueError("context item count must match selected evidence count")
 
@@ -310,8 +342,26 @@ class RAGEvidenceContractSchema(SchemaBase):
         self.assessment.citation_count = len(self.citations)
         return self
 
+    @property
+    def success(self) -> bool:
+        return self.status in {
+            ExecutionStatus.SUCCESS,
+            ExecutionStatus.PARTIAL_SUCCESS,
+        }
 
+    @property
+    def error_message(self) -> Optional[str]:
+        return self.error.message if self.error is not None else None
+
+
+# Temporary import alias for callers that still use the Step-12 name.  There is
+# one runtime schema, not two competing evidence contracts.
+RAGEvidenceContractSchema = EvidenceBundleSchema
+
+
+# 阅读注释（类）：封装 ragtool 输出 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGToolOutputSchema(SchemaBase):
+    """封装 ragtool 输出 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_tool_output_v1"
 
     task_id: str
@@ -324,7 +374,7 @@ class RAGToolOutputSchema(SchemaBase):
 
     # Step 12 canonical contract. The fields below remain compatibility
     # projections for current Agent/business consumers.
-    evidence: Optional[RAGEvidenceContractSchema] = None
+    evidence: Optional[EvidenceBundleSchema] = None
 
     retrieved_chunks: List[RetrievedChunkSchema] = Field(default_factory=list)
     context: Optional[RAGContextSchema] = None
@@ -340,8 +390,17 @@ class RAGToolOutputSchema(SchemaBase):
 
     extra: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：处理 项目 证据 contract 相关逻辑。
     @model_validator(mode="after")
     def project_evidence_contract(self) -> "RAGToolOutputSchema":
+        """处理 项目 证据 contract 相关逻辑。
+
+        返回:
+            'RAGToolOutputSchema'
+
+        阅读提示:
+            主要直接调用：list, model_validator。
+        """
         if self.evidence is None:
             return self
         if not self.context:

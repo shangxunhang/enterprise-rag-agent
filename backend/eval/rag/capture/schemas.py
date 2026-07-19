@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：RAGEvalMetricSchema、RAGEvalResultSchema、RAGEvalReportSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Schemas for RAGAS-style lightweight RAG evaluation."""
 
 from __future__ import annotations
@@ -8,7 +12,9 @@ from pydantic import Field
 from schemas.common import SchemaBase
 
 
+# 阅读注释（类）：封装 rageval 指标 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGEvalMetricSchema(SchemaBase):
+    """封装 rageval 指标 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_eval_metric_v1"
     name: str
     score: float = 0.0
@@ -16,7 +22,9 @@ class RAGEvalMetricSchema(SchemaBase):
     details: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 rageval 结果 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGEvalResultSchema(SchemaBase):
+    """封装 rageval 结果 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_eval_result_v1"
 
     sample_id: str
@@ -47,7 +55,9 @@ class RAGEvalResultSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 rageval report Schema，定义跨模块传递的数据结构与字段约束。
 class RAGEvalReportSchema(SchemaBase):
+    """封装 rageval report Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "rag_eval_report_v1"
 
     report_id: str

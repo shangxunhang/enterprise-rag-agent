@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：DepartmentGroupSchema、HardwareResourceSchema、SourceMaterialSchema、ManualBoundarySchema、GenerationRequirementsSchema、OutputSchemaDefinition、ProjectInputSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Normalized project input contract for enterprise-document workflows."""
 
 from __future__ import annotations
@@ -9,7 +13,9 @@ from pydantic import Field, model_validator
 from schemas.common import SchemaBase
 
 
+# 阅读注释（类）：封装 department group Schema，定义跨模块传递的数据结构与字段约束。
 class DepartmentGroupSchema(SchemaBase):
+    """封装 department group Schema，定义跨模块传递的数据结构与字段约束。"""
     group_name: str
     department_count: int
     approximate_staff_per_department: Optional[int] = None
@@ -17,7 +23,9 @@ class DepartmentGroupSchema(SchemaBase):
     description: Optional[str] = None
 
 
+# 阅读注释（类）：封装 hardware resource Schema，定义跨模块传递的数据结构与字段约束。
 class HardwareResourceSchema(SchemaBase):
+    """封装 hardware resource Schema，定义跨模块传递的数据结构与字段约束。"""
     resource_type: str
     device_model: str
     server_count: int
@@ -28,7 +36,9 @@ class HardwareResourceSchema(SchemaBase):
     description: Optional[str] = None
 
 
+# 阅读注释（类）：封装 source material Schema，定义跨模块传递的数据结构与字段约束。
 class SourceMaterialSchema(SchemaBase):
+    """封装 source material Schema，定义跨模块传递的数据结构与字段约束。"""
     material_type: str
     material_name: Optional[str] = None
     status: str = "unknown"
@@ -38,13 +48,17 @@ class SourceMaterialSchema(SchemaBase):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 manual boundary Schema，定义跨模块传递的数据结构与字段约束。
 class ManualBoundarySchema(SchemaBase):
+    """封装 manual boundary Schema，定义跨模块传递的数据结构与字段约束。"""
     item: str
     handled_by: str = "human"
     description: Optional[str] = None
 
 
+# 阅读注释（类）：封装 生成 requirements Schema，定义跨模块传递的数据结构与字段约束。
 class GenerationRequirementsSchema(SchemaBase):
+    """封装 生成 requirements Schema，定义跨模块传递的数据结构与字段约束。"""
     required_sections: List[str] = Field(default_factory=list)
     need_citation: bool = True
     citation_required_sections: List[str] = Field(default_factory=list)
@@ -59,7 +73,9 @@ class GenerationRequirementsSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 输出 Schema definition，集中封装相关状态、依赖和行为。
 class OutputSchemaDefinition(SchemaBase):
+    """封装 输出 Schema definition，集中封装相关状态、依赖和行为。"""
     document_title: Optional[str] = None
     output_format: str = "markdown"
     required_sections: List[str] = Field(default_factory=list)
@@ -68,6 +84,7 @@ class OutputSchemaDefinition(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 项目 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class ProjectInputSchema(SchemaBase):
     """Single business input object entering the main workflow.
 
@@ -112,8 +129,17 @@ class ProjectInputSchema(SchemaBase):
     conflicting_information: List[str] = Field(default_factory=list)
     extra: Dict[str, Any] = Field(default_factory=dict)
 
+    # 阅读注释（函数）：处理 align 生成 and 输出 sections 相关逻辑。
     @model_validator(mode="after")
     def align_generation_and_output_sections(self) -> "ProjectInputSchema":
+        """处理 align 生成 and 输出 sections 相关逻辑。
+
+        返回:
+            'ProjectInputSchema'
+
+        阅读提示:
+            主要直接调用：strip, str, len, set, ValueError, list, join, model_validator。
+        """
         generation_sections = [
             str(item).strip()
             for item in self.generation_requirements.required_sections

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：_FakeCrossEncoderBackend、_FakeResourcePool、_context、_candidates、test_profiles_declare_configured_reranker、test_registry_builds_bge_reranker_plugin、test_bge_plugin_applies_profile_top_k_and_text_field、test_bge_plugin_can_override_runtime_resource_fields、test_noop_reranker_is_explicit_plugin_and_preserves_parent_metadata、test_invalid_rerank_text_field_fails_during_composition等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 from copy import deepcopy
@@ -7,10 +11,10 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from rag.config.pipeline_config import (
+from rag.config.static_retrieval import (
     ComponentConfig,
-    OnlineRAGPipelineConfig,
-    PipelineConfigLoader,
+    StaticRetrievalSpec,
+    StaticRetrievalSpecLoader,
 )
 from rag.plugins.rerankers import (
     BGEParentCrossEncoderRerankerPlugin,
@@ -22,17 +26,40 @@ from rag.registry.default_registrations import build_default_component_registry
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+# 阅读注释（类）：封装 fake cross encoder 后端实现，集中封装相关状态、依赖和行为。
 class _FakeCrossEncoderBackend:
+    """封装 fake cross encoder 后端实现，集中封装相关状态、依赖和行为。"""
     model_name = "fake-bge-reranker"
     device = "cpu"
     batch_size = 4
     max_length = 256
     local_files_only = True
 
+    # 阅读注释（函数）：初始化 _FakeCrossEncoderBackend，保存运行所需的依赖、配置或状态。
     def __init__(self) -> None:
+        """初始化 _FakeCrossEncoderBackend，保存运行所需的依赖、配置或状态。
+
+        返回:
+            None
+        """
         self.calls: list[dict] = []
 
+    # 阅读注释（函数）：对 _FakeCrossEncoderBackend 重新排序。
     def rerank(self, query, results, *, top_k=None, text_field="parent_text"):
+        """对 _FakeCrossEncoderBackend 重新排序。
+
+        参数:
+            query: 当前检索或生成查询。
+            results: 待处理的结果集合。
+            top_k: top k，具体约束请结合类型标注和调用方确认。
+            text_field: 文本 field，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：self.calls.append, len, deepcopy, items.sort, int, enumerate, float, item.get。
+        """
         self.calls.append(
             {
                 "query": query,
@@ -53,21 +80,59 @@ class _FakeCrossEncoderBackend:
         return items
 
 
+# 阅读注释（类）：封装 fake resource pool，集中封装相关状态、依赖和行为。
 class _FakeResourcePool:
+    """封装 fake resource pool，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 _FakeResourcePool，保存运行所需的依赖、配置或状态。
     def __init__(self) -> None:
+        """初始化 _FakeResourcePool，保存运行所需的依赖、配置或状态。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：_FakeCrossEncoderBackend。
+        """
         self.backend = _FakeCrossEncoderBackend()
         self.calls: list[dict] = []
 
+    # 阅读注释（函数）：获取 父块 reranker。
     def get_parent_reranker(self, **kwargs):
+        """获取 父块 reranker。
+
+        参数:
+            **kwargs: 额外关键字参数。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：self.calls.append, dict。
+        """
         self.calls.append(dict(kwargs))
         return self.backend
 
 
+# 阅读注释（函数）：处理 上下文 相关逻辑。
 def _context() -> dict:
+    """处理 上下文 相关逻辑。
+
+    返回:
+        dict
+
+    阅读提示:
+        主要直接调用：_FakeResourcePool。
+    """
     return {"resource_pool": _FakeResourcePool()}
 
 
+# 阅读注释（函数）：处理 candidates 相关逻辑。
 def _candidates() -> list[dict]:
+    """处理 candidates 相关逻辑。
+
+    返回:
+        list[dict]
+    """
     return [
         {
             "chunk_id": "child-1",
@@ -102,12 +167,21 @@ def _candidates() -> list[dict]:
     ]
 
 
-def test_profiles_declare_configured_reranker() -> None:
-    profile = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/rag_fusion_v1.yaml"
+# 阅读注释（函数）：处理 测试 profiles declare configured reranker 相关逻辑。
+def test_static_spec_declares_configured_reranker() -> None:
+    """处理 测试 profiles declare configured reranker 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：load, PipelineConfigLoader。
+    """
+    profile = StaticRetrievalSpecLoader().load(
+        PROJECT_ROOT / "backend/rag/config/static_retrieval_v1.yaml"
     )
 
-    assert profile.schema_version == "online_rag_pipeline_config_v5"
+    assert profile.schema_version == "static_retrieval_spec_v1"
     assert profile.reranker.name == "bge_parent_cross_encoder"
     assert profile.reranker.version == "v1"
     assert profile.reranker.params == {
@@ -116,7 +190,16 @@ def test_profiles_declare_configured_reranker() -> None:
     }
 
 
+# 阅读注释（函数）：处理 测试 注册表 builds bge reranker 插件 相关逻辑。
 def test_registry_builds_bge_reranker_plugin() -> None:
+    """处理 测试 注册表 builds bge reranker 插件 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_default_component_registry, _context, registry.build, ComponentConfig, isinstance。
+    """
     registry = build_default_component_registry()
     context = _context()
 
@@ -135,7 +218,16 @@ def test_registry_builds_bge_reranker_plugin() -> None:
     assert reranker.text_field == "parent_text"
 
 
+# 阅读注释（函数）：处理 测试 bge 插件 applies 策略配置 top k and 文本 field 相关逻辑。
 def test_bge_plugin_applies_profile_top_k_and_text_field() -> None:
+    """处理 测试 bge 插件 applies 策略配置 top k and 文本 field 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_context, BGEParentCrossEncoderRerankerPlugin, reranker.rerank, _candidates。
+    """
     context = _context()
     reranker = BGEParentCrossEncoderRerankerPlugin(
         build_context=context,
@@ -161,7 +253,16 @@ def test_bge_plugin_applies_profile_top_k_and_text_field() -> None:
     ]
 
 
+# 阅读注释（函数）：处理 测试 bge 插件 can override 运行时 resource fields 相关逻辑。
 def test_bge_plugin_can_override_runtime_resource_fields() -> None:
+    """处理 测试 bge 插件 can override 运行时 resource fields 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_context, BGEParentCrossEncoderRerankerPlugin。
+    """
     context = _context()
     BGEParentCrossEncoderRerankerPlugin(
         build_context=context,
@@ -183,7 +284,16 @@ def test_bge_plugin_can_override_runtime_resource_fields() -> None:
     ]
 
 
+# 阅读注释（函数）：处理 测试 noop reranker is explicit 插件 and preserves 父块 元数据 相关逻辑。
 def test_noop_reranker_is_explicit_plugin_and_preserves_parent_metadata() -> None:
+    """处理 测试 noop reranker is explicit 插件 and preserves 父块 元数据 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_default_component_registry, registry.build, ComponentConfig, reranker.rerank, _candidates, isinstance。
+    """
     registry = build_default_component_registry()
     reranker = registry.build(
         category="reranker",
@@ -205,7 +315,16 @@ def test_noop_reranker_is_explicit_plugin_and_preserves_parent_metadata() -> Non
     assert output[0]["metadata"]["reranker"] == "noop"
 
 
+# 阅读注释（函数）：处理 测试 invalid 重排 文本 field fails during composition 相关逻辑。
 def test_invalid_rerank_text_field_fails_during_composition() -> None:
+    """处理 测试 invalid 重排 文本 field fails during composition 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_default_component_registry, pytest.raises, registry.build, ComponentConfig。
+    """
     registry = build_default_component_registry()
 
     with pytest.raises(ValueError, match="unsupported rerank text_field"):
@@ -218,27 +337,54 @@ def test_invalid_rerank_text_field_fails_during_composition() -> None:
         )
 
 
+# 阅读注释（函数）：处理 测试 pipeline Schema requires enabled reranker 相关逻辑。
 def test_pipeline_schema_requires_enabled_reranker() -> None:
-    profile = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/hybrid_v1.yaml"
+    """处理 测试 pipeline Schema requires enabled reranker 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：model_dump, load, PipelineConfigLoader, pytest.raises, OnlineRAGPipelineConfig.model_validate。
+    """
+    profile = StaticRetrievalSpecLoader().load(
+        PROJECT_ROOT / "backend/rag/config/static_retrieval_v1.yaml"
     ).model_dump(mode="json")
     profile["reranker"]["enabled"] = False
 
     with pytest.raises(ValidationError, match="requires enabled reranker"):
-        OnlineRAGPipelineConfig.model_validate(profile)
+        StaticRetrievalSpec.model_validate(profile)
 
 
-def test_v3_profile_is_rejected_after_quality_migration() -> None:
-    profile = PipelineConfigLoader().load(
-        PROJECT_ROOT / "backend/rag/profiles/hybrid_v1.yaml"
+# 阅读注释（函数）：处理 测试 v3 策略配置 is rejected after 质量 migration 相关逻辑。
+def test_old_profile_schema_is_rejected_by_static_spec() -> None:
+    """处理 测试 v3 策略配置 is rejected after 质量 migration 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：model_dump, load, PipelineConfigLoader, pytest.raises, OnlineRAGPipelineConfig.model_validate。
+    """
+    profile = StaticRetrievalSpecLoader().load(
+        PROJECT_ROOT / "backend/rag/config/static_retrieval_v1.yaml"
     ).model_dump(mode="json")
-    profile["schema_version"] = "online_rag_pipeline_config_v4"
+    profile["schema_version"] = "online_retrieval_pipeline_config_v2"
 
     with pytest.raises(ValidationError):
-        OnlineRAGPipelineConfig.model_validate(profile)
+        StaticRetrievalSpec.model_validate(profile)
 
 
+# 阅读注释（函数）：处理 测试 运行时 工厂 builds reranker from 注册表 only 相关逻辑。
 def test_runtime_factory_builds_reranker_from_registry_only() -> None:
+    """处理 测试 运行时 工厂 builds reranker from 注册表 only 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：read_text。
+    """
     source = (
         PROJECT_ROOT / "backend/rag/runtime/parent_child_runtime_factory.py"
     ).read_text(encoding="utf-8")
@@ -249,19 +395,37 @@ def test_runtime_factory_builds_reranker_from_registry_only() -> None:
     assert "if cfg.skip_rerank" not in source
 
 
+# 阅读注释（函数）：处理 测试 检索 pipeline does not pass legacy 重排 controls 相关逻辑。
 def test_retrieval_pipeline_does_not_pass_legacy_rerank_controls() -> None:
+    """处理 测试 检索 pipeline does not pass legacy 重排 controls 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：read_text, split, source.split。
+    """
     source = (
         PROJECT_ROOT / "backend/rag/application/parent_child_retrieval.py"
     ).read_text(encoding="utf-8")
-    call = source.split("results = self.reranker.rerank(", 1)[1].split(")", 1)[0]
+    call = source.split("reranked = self.reranker.rerank(", 1)[1].split(")", 1)[0]
 
     assert "rerank_top_k" not in call
     assert "text_field" not in call
-    assert "ignored_by_configured_reranker" in source
+    assert "legacy_reranker_overrides" not in source
     assert 'expansion.metadata["configured_reranker"]' in source
 
 
+# 阅读注释（函数）：处理 测试 reranker execution 元数据 exposes effective configuration 相关逻辑。
 def test_reranker_execution_metadata_exposes_effective_configuration() -> None:
+    """处理 测试 reranker execution 元数据 exposes effective configuration 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_context, BGEParentCrossEncoderRerankerPlugin, reranker.execution_metadata。
+    """
     context = _context()
     reranker = BGEParentCrossEncoderRerankerPlugin(
         build_context=context,
@@ -280,10 +444,24 @@ def test_reranker_execution_metadata_exposes_effective_configuration() -> None:
     }
 
 
+# 阅读注释（类）：封装 static retriever，集中封装相关状态、依赖和行为。
 class _StaticRetriever:
+    """封装 static retriever，集中封装相关状态、依赖和行为。"""
     source_name = "static"
 
+    # 阅读注释（函数）：检索 _StaticRetriever。
     def retrieve(self, request):
+        """检索 _StaticRetriever。
+
+        参数:
+            request: 当前请求对象。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：CandidateSet, _candidates。
+        """
         from rag.schema.candidate import CandidateSet
 
         return CandidateSet(
@@ -293,72 +471,54 @@ class _StaticRetriever:
         )
 
 
+# 阅读注释（类）：封装 pass 融合，集中封装相关状态、依赖和行为。
 class _PassFusion:
+    """封装 pass 融合，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：融合 _PassFusion。
     def fuse(self, candidate_sets):
+        """融合 _PassFusion。
+
+        参数:
+            candidate_sets: candidate sets，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         return candidate_sets[0]
 
 
+# 阅读注释（类）：封装 pass enricher，集中封装相关状态、依赖和行为。
 class _PassEnricher:
+    """封装 pass enricher，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：补充并丰富 _PassEnricher。
     def enrich(self, candidate_set):
+        """补充并丰富 _PassEnricher。
+
+        参数:
+            candidate_set: candidate set，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         return candidate_set
 
 
+# 阅读注释（类）：封装 no Adaptive 路由器，集中封装相关状态、依赖和行为。
 class _NoAdaptiveRouter:
+    """封装 no Adaptive 路由器，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：判断 Adaptive strategy。
     @staticmethod
     def is_adaptive_strategy(strategy):
+        """判断 Adaptive strategy。
+
+        参数:
+            strategy: strategy，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         del strategy
         return False
 
 
-class _NoCragJudge:
-    def evaluate_and_filter(self, **kwargs):
-        raise AssertionError(f"CRAG should not run: {kwargs}")
-
-
-def test_full_pipeline_ignores_legacy_rerank_top_k() -> None:
-    from rag.application.parent_child_retrieval import ParentChildRetrievalPipeline
-    from rag.query.query_transform_chain import QueryTransformChain
-
-    registry = build_default_component_registry()
-    identity = registry.build(
-        category="query_transformer",
-        config=ComponentConfig(name="identity"),
-    )
-    reranker = NoOpParentRerankerPlugin(top_k=2, text_field="parent_text")
-    pipeline = ParentChildRetrievalPipeline(
-        retrievers=[_StaticRetriever()],
-        fusion=_PassFusion(),
-        query_fusion=_PassFusion(),
-        candidate_enricher=_PassEnricher(),
-        reranker=reranker,
-        query_transform_chain=QueryTransformChain([identity]),
-        adaptive_router=_NoAdaptiveRouter(),
-        crag_judge=_NoCragJudge(),
-    )
-
-    result = pipeline.run(
-        "query",
-        dense_top_k=999,
-        keyword_top_k=999,
-        candidate_top_k=999,
-        rrf_k=999,
-        rerank_top_k=99,
-        filter_expr=None,
-        keyword_doc_ids=None,
-        retrieval_strategy="hybrid",
-        num_rewrites=999,
-        enable_hyde=True,
-        enable_crag=False,
-        enable_self_rag=False,
-        crag_max_judge_chunks=8,
-        crag_drop_irrelevant=True,
-        extra_metadata=None,
-    )
-
-    assert len(result.results) == 2
-    assert result.query_expansion.metadata["legacy_reranker_overrides"] == {
-        "rerank_top_k": 99,
-        "ignored_by_configured_reranker": True,
-    }
-    assert result.query_expansion.metadata["configured_reranker"]["top_k"] == 2
-    assert result.query_expansion.metadata["configured_reranker"]["output_count"] == 2
+# 阅读注释（函数）：处理 测试 full pipeline ignores legacy 重排 top k 相关逻辑。

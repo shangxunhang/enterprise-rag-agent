@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：StateWriteContractViolation、GraphStateWriteContract、GraphStateProjector、GraphStateDiffer、GraphStateApplier。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Projection, write-contract validation, diff and commit operations."""
 
 from __future__ import annotations
@@ -57,15 +61,29 @@ _DEFAULT_WRITE_ALIASES: Dict[str, List[str]] = {
 }
 
 
+# 阅读注释（类）：封装 状态 write contract violation，集中封装相关状态、依赖和行为。
 class StateWriteContractViolation(ValueError):
     """Raised when a node mutates GraphState outside its declared boundary."""
 
+    # 阅读注释（函数）：初始化 StateWriteContractViolation，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         changed_paths: Iterable[str],
         allowed_paths: Iterable[str],
     ) -> None:
+        """初始化 StateWriteContractViolation，保存运行所需的依赖、配置或状态。
+
+        参数:
+            changed_paths: changed paths，具体约束请结合类型标注和调用方确认。
+            allowed_paths: allowed paths，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：sorted, set, join, __init__, super。
+        """
         self.changed_paths = sorted(set(changed_paths))
         self.allowed_paths = sorted(set(allowed_paths))
         message = (
@@ -77,15 +95,29 @@ class StateWriteContractViolation(ValueError):
         super().__init__(message)
 
 
+# 阅读注释（类）：封装 graph 状态 write contract，集中封装相关状态、依赖和行为。
 class GraphStateWriteContract:
     """Resolve logical outputs and enforce physical GraphState write paths."""
 
+    # 阅读注释（函数）：解析并确定 allowed paths。
     def resolve_allowed_paths(
         self,
         *,
         declared_write_keys: Iterable[str],
         declared_write_paths: Iterable[str] = (),
     ) -> List[str]:
+        """解析并确定 allowed paths。
+
+        参数:
+            declared_write_keys: declared write keys，具体约束请结合类型标注和调用方确认。
+            declared_write_paths: declared write paths，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[str]
+
+        阅读提示:
+            主要直接调用：strip, str, set, _DEFAULT_WRITE_ALIASES.get, allowed.update, allowed.add, sorted。
+        """
         allowed = {
             str(item).strip()
             for item in declared_write_paths
@@ -106,19 +138,45 @@ class GraphStateWriteContract:
                 allowed.add(f"contexts.{key}")
         return sorted(allowed)
 
+    # 阅读注释（函数）：处理 路径 is allowed 相关逻辑。
     @staticmethod
     def path_is_allowed(path: str, allowed_paths: Iterable[str]) -> bool:
+        """处理 路径 is allowed 相关逻辑。
+
+        参数:
+            path: 目标文件或目录路径。
+            allowed_paths: allowed paths，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            bool
+
+        阅读提示:
+            主要直接调用：any, path.startswith。
+        """
         return any(
             path == prefix or path.startswith(f"{prefix}.")
             for prefix in allowed_paths
         )
 
+    # 阅读注释（函数）：校验 GraphStateWriteContract。
     def validate(
         self,
         *,
         changed_paths: Iterable[str],
         allowed_paths: Iterable[str],
     ) -> None:
+        """校验 GraphStateWriteContract。
+
+        参数:
+            changed_paths: changed paths，具体约束请结合类型标注和调用方确认。
+            allowed_paths: allowed paths，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：list, self.path_is_allowed, StateWriteContractViolation。
+        """
         allowed = list(allowed_paths)
         violations = [
             path
@@ -132,9 +190,11 @@ class GraphStateWriteContract:
             )
 
 
+# 阅读注释（类）：封装 graph 状态 projector，集中封装相关状态、依赖和行为。
 class GraphStateProjector:
     """Resolve declared node read keys to a deterministic state projection."""
 
+    # 阅读注释（函数）：构建 node 输入。
     def build_node_input(
         self,
         *,
@@ -142,6 +202,19 @@ class GraphStateProjector:
         step: WorkflowStepSchema,
         state: GraphStateSchema,
     ) -> GraphNodeInputSchema:
+        """构建 node 输入。
+
+        参数:
+            workflow: 工作流，具体约束请结合类型标注和调用方确认。
+            step: step，具体约束请结合类型标注和调用方确认。
+            state: 工作流共享状态。
+
+        返回:
+            GraphNodeInputSchema
+
+        阅读提示:
+            主要直接调用：self.resolve, deepcopy, missing.append, list, GraphNodeInputSchema, stable_graph_hash。
+        """
         values: Dict[str, Any] = {}
         missing: List[str] = []
         for key in step.input_keys:
@@ -180,6 +253,7 @@ class GraphStateProjector:
             },
         )
 
+    # 阅读注释（函数）：解析并确定 GraphStateProjector。
     def resolve(self, state: GraphStateSchema, key: str) -> Tuple[bool, Any]:
         """Resolve current workflow aliases without exposing the whole state."""
 
@@ -214,16 +288,30 @@ class GraphStateProjector:
         return False, None
 
 
+# 阅读注释（类）：封装 graph 状态 differ，集中封装相关状态、依赖和行为。
 class GraphStateDiffer:
     """Create validated deltas and support path-restricted failure commits."""
 
+    # 阅读注释（函数）：初始化 GraphStateDiffer，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         write_contract: GraphStateWriteContract | None = None,
     ) -> None:
+        """初始化 GraphStateDiffer，保存运行所需的依赖、配置或状态。
+
+        参数:
+            write_contract: write contract，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：GraphStateWriteContract。
+        """
         self.write_contract = write_contract or GraphStateWriteContract()
 
+    # 阅读注释（函数）：处理 diff 相关逻辑。
     def diff(
         self,
         *,
@@ -233,6 +321,21 @@ class GraphStateDiffer:
         declared_write_keys: Iterable[str],
         declared_write_paths: Iterable[str] = (),
     ) -> GraphStateDeltaSchema:
+        """处理 diff 相关逻辑。
+
+        参数:
+            node_id: node 标识，具体约束请结合类型标注和调用方确认。
+            before: before，具体约束请结合类型标注和调用方确认。
+            after: after，具体约束请结合类型标注和调用方确认。
+            declared_write_keys: declared write keys，具体约束请结合类型标注和调用方确认。
+            declared_write_paths: declared write paths，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            GraphStateDeltaSchema
+
+        阅读提示:
+            主要直接调用：before.model_dump, after.model_dump, self._discard_legacy_engine_owned_mutations, sorted, set, before_data.get, after_data.get, deepcopy。
+        """
         before_data = before.model_dump(mode="python")
         after_data = after.model_dump(mode="python")
         self._discard_legacy_engine_owned_mutations(before_data, after_data)
@@ -290,6 +393,7 @@ class GraphStateDiffer:
             },
         )
 
+    # 阅读注释（函数）：处理 discard legacy engine owned mutations 相关逻辑。
     @staticmethod
     def _discard_legacy_engine_owned_mutations(
         before_data: Dict[str, Any],
@@ -312,6 +416,7 @@ class GraphStateDiffer:
         )
         after_runtime["errors"] = deepcopy(before_runtime.get("errors", []))
 
+    # 阅读注释（函数）：处理 restrict delta 相关逻辑。
     def restrict_delta(
         self,
         *,
@@ -344,8 +449,22 @@ class GraphStateDiffer:
             declared_write_paths=allowed_paths,
         )
 
+    # 阅读注释（函数）：处理 copy 路径 相关逻辑。
     @staticmethod
     def _copy_path(source: Dict[str, Any], target: Dict[str, Any], path: str) -> None:
+        """处理 copy 路径 相关逻辑。
+
+        参数:
+            source: source，具体约束请结合类型标注和调用方确认。
+            target: target，具体约束请结合类型标注和调用方确认。
+            path: 目标文件或目录路径。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：path.split, isinstance, target_cursor.get, deepcopy, target_cursor.pop。
+        """
         parts = path.split(".")
         source_cursor: Any = source
         target_cursor: Any = target
@@ -367,7 +486,21 @@ class GraphStateDiffer:
         elif isinstance(target_cursor, dict):
             target_cursor.pop(leaf, None)
 
+    # 阅读注释（函数）：处理 changed paths 相关逻辑。
     def _changed_paths(self, before: Any, after: Any, prefix: str) -> List[str]:
+        """处理 changed paths 相关逻辑。
+
+        参数:
+            before: before，具体约束请结合类型标注和调用方确认。
+            after: after，具体约束请结合类型标注和调用方确认。
+            prefix: prefix，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[str]
+
+        阅读提示:
+            主要直接调用：isinstance, sorted, set, paths.append, paths.extend, self._changed_paths。
+        """
         if before == after:
             return []
         if isinstance(before, dict) and isinstance(after, dict):
@@ -384,21 +517,47 @@ class GraphStateDiffer:
         return [prefix]
 
 
+# 阅读注释（类）：封装 graph 状态 applier，集中封装相关状态、依赖和行为。
 class GraphStateApplier:
     """Atomically validate and commit one node delta."""
 
+    # 阅读注释（函数）：初始化 GraphStateApplier，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         write_contract: GraphStateWriteContract | None = None,
     ) -> None:
+        """初始化 GraphStateApplier，保存运行所需的依赖、配置或状态。
+
+        参数:
+            write_contract: write contract，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：GraphStateWriteContract。
+        """
         self.write_contract = write_contract or GraphStateWriteContract()
 
+    # 阅读注释（函数）：应用 GraphStateApplier。
     def apply(
         self,
         state: GraphStateSchema,
         delta: GraphStateDeltaSchema,
     ) -> None:
+        """应用 GraphStateApplier。
+
+        参数:
+            state: 工作流共享状态。
+            delta: delta，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：ValueError, self.write_contract.validate, state.model_dump, merged.update, deepcopy, state.__class__.model_validate, setattr, getattr。
+        """
         if state.graph_revision != delta.base_revision:
             raise ValueError(
                 "graph revision conflict: "

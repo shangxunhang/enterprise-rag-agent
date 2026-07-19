@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：GraphStateSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Canonical state used by native and future LangGraph workflow engines."""
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from agent.runtime.shared_state_schema import SharedStateSchema
 from schemas.graph import GraphNodeExecutionRecordSchema
 
 
+# 阅读注释（类）：封装 graph 状态 Schema，定义跨模块传递的数据结构与字段约束。
 class GraphStateSchema(SharedStateSchema):
     """Framework-neutral graph state.
 

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：TextEmbedder。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/embedder.py
 ===============
@@ -21,6 +25,7 @@ from sentence_transformers import SentenceTransformer
 from rag.configs.RAGConfig import *
 
 
+# 阅读注释（类）：封装 文本 embedder，集中封装相关状态、依赖和行为。
 class TextEmbedder:
     """
     文本向量化器。
@@ -28,6 +33,7 @@ class TextEmbedder:
     使用 sentence-transformers 模型将文本编码为 dense embedding。
     """
 
+    # 阅读注释（函数）：初始化 TextEmbedder，保存运行所需的依赖、配置或状态。
     def __init__(
             self,
             model_name: str,
@@ -51,6 +57,7 @@ class TextEmbedder:
             device=device,
         )
 
+    # 阅读注释（函数）：处理 encode texts 相关逻辑。
     def encode_texts(self, texts: List[str]) -> np.ndarray:
         """
         批量编码文本。
@@ -74,6 +81,7 @@ class TextEmbedder:
 
         return embeddings.astype("float32")
 
+    # 阅读注释（函数）：处理 encode 查询 相关逻辑。
     def encode_query(self, query: str) -> np.ndarray:
         """
         编码单个 query。

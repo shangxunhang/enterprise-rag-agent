@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：print_eval_report、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Run evaluation for the current Agent-RAG main pipeline."""
 
 from __future__ import annotations
@@ -22,11 +26,24 @@ from eval.agent.eval_runner import (
     build_default_eval_samples,
 )
 
-# run_demo_back.py is in the same scripts directory, so direct script execution works.
-from run_demo_back import run_demo
+# The evaluation adapter reuses the public demo entry instead of a legacy copy.
+from run_demo import run_demo
 
 
+# 阅读注释（函数）：处理 print 评测 report 相关逻辑。
 def print_eval_report(report: dict, output_paths: dict) -> None:
+    """处理 print 评测 report 相关逻辑。
+
+    参数:
+        report: report，具体约束请结合类型标注和调用方确认。
+        output_paths: 输出 paths，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：print, output_paths.items, enumerate, get, metrics.get, json.dumps。
+    """
     summary = report["summary"]
 
     print("\nAgent-RAG eval finished.")
@@ -53,7 +70,16 @@ def print_eval_report(report: dict, output_paths: dict) -> None:
         print(f"checks: {json.dumps(checks, ensure_ascii=False)}")
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, str, parser.parse_args, build_default_eval_samples, EvalRunner, runner.evaluate_samples, strftime。
+    """
     parser = argparse.ArgumentParser(description="Run Agent-RAG eval.")
     parser.add_argument(
         "--output-root",

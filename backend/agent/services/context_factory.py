@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：ContextBundleFactory。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Construction of canonical workflow context from TaskSchema."""
 
 from __future__ import annotations
@@ -14,8 +18,22 @@ from schemas.status import ExecutionStatus
 from schemas.task import TaskSchema
 
 
+# 阅读注释（类）：封装 上下文 bundle 工厂，负责根据配置装配并返回运行实例。
 class ContextBundleFactory:
+    """封装 上下文 bundle 工厂，负责根据配置装配并返回运行实例。"""
+    # 阅读注释（函数）：构建 ContextBundleFactory。
     def build(self, task: TaskSchema) -> ContextBundleSchema:
+        """构建 ContextBundleFactory。
+
+        参数:
+            task: 待执行的任务对象。
+
+        返回:
+            ContextBundleSchema
+
+        阅读提示:
+            主要直接调用：ContextBundleSchema, UserContextSchema, TaskContextSchema, BusinessContextSchema, project_input.get, GenerationContextSchema, get, RuntimeContextSchema。
+        """
         project_input = task.project_input or {}
         return ContextBundleSchema(
             user=UserContextSchema(

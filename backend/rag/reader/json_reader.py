@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：JsonReader。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/rag_template/reader/json_reader.py
 =====================================
@@ -15,14 +19,16 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from rag.reader.base_reader import BaseReader
-from rag.legacy.schema.document_schema import build_document
+from rag.schema.document_schema import build_document
 
 
+# 阅读注释（类）：封装 JSON reader，集中封装相关状态、依赖和行为。
 class JsonReader(BaseReader):
     """
     JSON 文件读取器。
     """
 
+    # 阅读注释（函数）：读取 JsonReader。
     def read(self, path: Path) -> List[Dict]:
         """
         读取 json 文件，并转换为 Document Schema 列表。
@@ -61,6 +67,7 @@ class JsonReader(BaseReader):
 
         return documents
 
+    # 阅读注释（函数）：记录 to 文档。
     def _record_to_document(
         self,
         record: Dict[str, Any],

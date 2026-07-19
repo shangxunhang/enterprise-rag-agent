@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：build_default_component_registry。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Built-in plugin registration for the current RAG runtime."""
 
 from __future__ import annotations
@@ -14,18 +18,11 @@ from rag.plugins.context_packers import (
     LostInMiddleContextPacker,
 )
 from rag.plugins.fusions import ChildRRFFusionPlugin, ParentRRFFusionPlugin
-from rag.plugins.evidence_graders import (
-    CRAGCorrectiveEvidenceGraderPlugin,
-    CRAGLiteEvidenceGraderPlugin,
-    NoOpEvidenceGraderPlugin,
-)
-from rag.plugins.generation_checkers import (
-    NoOpGenerationCheckerPlugin,
-    SelfRAGLiteGenerationCheckerPlugin,
-)
-from rag.plugins.repair_strategies import (
-    LocalRewriteRepairStrategyPlugin,
-    NoOpRepairStrategyPlugin,
+from rag.plugins.correction_gates import EvidenceSufficiencyCorrectionGate
+from rag.plugins.corrective_query_planners import SectionGapCorrectiveQueryPlanner
+from rag.plugins.evidence_assessors import (
+    CRAGEvidenceAssessorPlugin,
+    NoOpEvidenceAssessorPlugin,
 )
 from rag.plugins.query_transformers import (
     HyDEQueryTransformer,
@@ -41,10 +38,18 @@ from rag.plugins.rerankers import (
     NoOpParentRerankerPlugin,
 )
 from rag.registry.component_registry import ComponentRegistry
-from rag.routing.policy import ExplainableRuleProfileRouterPlugin
 
 
+# 阅读注释（函数）：构建 default component 注册表。
 def build_default_component_registry() -> ComponentRegistry[object]:
+    """构建 default component 注册表。
+
+    返回:
+        ComponentRegistry[object]
+
+    阅读提示:
+        主要直接调用：ComponentRegistry, registry.register。
+    """
     registry: ComponentRegistry[object] = ComponentRegistry()
 
     registry.register(
@@ -70,13 +75,6 @@ def build_default_component_registry() -> ComponentRegistry[object]:
         name="paragraph_parent_child",
         version="v1",
         builder=ParagraphParentChildChunkerPlugin,
-    )
-
-    registry.register(
-        category="profile_router",
-        name="explainable_rules",
-        version="v1",
-        builder=ExplainableRuleProfileRouterPlugin,
     )
 
     registry.register(
@@ -112,7 +110,7 @@ def build_default_component_registry() -> ComponentRegistry[object]:
     )
 
     registry.register(
-        category="fusion",
+        category="source_fusion",
         name="rrf_child",
         version="v1",
         builder=ChildRRFFusionPlugin,
@@ -146,48 +144,28 @@ def build_default_component_registry() -> ComponentRegistry[object]:
 
 
     registry.register(
-        category="evidence_grader",
-        name="crag_lite",
+        category="evidence_assessor",
+        name="crag",
         version="v1",
-        builder=CRAGLiteEvidenceGraderPlugin,
+        builder=CRAGEvidenceAssessorPlugin,
     )
     registry.register(
-        category="evidence_grader",
-        name="crag_corrective",
-        version="v1",
-        builder=CRAGCorrectiveEvidenceGraderPlugin,
-    )
-    registry.register(
-        category="evidence_grader",
+        category="evidence_assessor",
         name="noop_evidence",
         version="v1",
-        builder=NoOpEvidenceGraderPlugin,
-    )
-
-    registry.register(
-        category="generation_checker",
-        name="self_rag_lite",
-        version="v1",
-        builder=SelfRAGLiteGenerationCheckerPlugin,
+        builder=NoOpEvidenceAssessorPlugin,
     )
     registry.register(
-        category="generation_checker",
-        name="noop_generation",
+        category="corrective_retrieval_gate",
+        name="evidence_sufficiency",
         version="v1",
-        builder=NoOpGenerationCheckerPlugin,
-    )
-
-    registry.register(
-        category="repair_strategy",
-        name="local_rewrite",
-        version="v1",
-        builder=LocalRewriteRepairStrategyPlugin,
+        builder=EvidenceSufficiencyCorrectionGate,
     )
     registry.register(
-        category="repair_strategy",
-        name="noop_repair",
+        category="corrective_query_planner",
+        name="section_gap",
         version="v1",
-        builder=NoOpRepairStrategyPlugin,
+        builder=SectionGapCorrectiveQueryPlanner,
     )
 
     registry.register(

@@ -1,4 +1,8 @@
-"""Run a reproducible online RAG profile experiment matrix."""
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
+"""Run a reproducible online RAG static-spec experiment matrix."""
 from __future__ import annotations
 
 import argparse
@@ -15,9 +19,18 @@ for path in (BACKEND_ROOT, PROJECT_ROOT):
 from eval.rag.strategy import StrategyEvalRunner
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, parser.parse_args, StrategyEvalRunner, runner.validate_from_file, print, json.dumps, runner.run_from_file。
+    """
     parser = argparse.ArgumentParser(
-        description="Run the same RAG eval set against multiple pipeline profiles."
+        description="Run one RAG eval set with static-spec plan variants."
     )
     parser.add_argument("--experiment-config", required=True)
     parser.add_argument("--output-dir", default=None)
@@ -47,7 +60,7 @@ def main() -> None:
     print("\nResults:")
     for row in report.rows:
         print(
-            f"- {row.experiment_id}: profile={row.profile_id} "
+            f"- {row.experiment_id}: static_spec={row.static_spec_id} "
             f"status={row.status} metrics={json.dumps(row.metrics, ensure_ascii=False)}"
         )
     print("\nOutput files:")

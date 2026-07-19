@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_now_iso、_status_value、_build_span_tree、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Step 13 Trace v2 acceptance on the complete mainline with fake dependencies.
 
 This script validates observability only.  It deliberately uses FakeRAGTool and
@@ -26,21 +30,54 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 from core.config import get_settings
 from observability.trace_reader import load_trace_events, validate_trace_v2
-from run_demo_back import run_demo
+from run_demo import run_demo
 
 
+# 阅读注释（函数）：处理 now iso 相关逻辑。
 def _now_iso() -> str:
+    """处理 now iso 相关逻辑。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：isoformat, datetime.now。
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
+# 阅读注释（函数）：处理 状态 value 相关逻辑。
 def _status_value(value: Any) -> str:
+    """处理 状态 value 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：hasattr, lower, str, text.startswith, text.split。
+    """
     if hasattr(value, "value"):
         value = value.value
     text = str(value or "").lower()
     return text.split(".", 1)[-1] if text.startswith("executionstatus.") else text
 
 
+# 阅读注释（函数）：构建 span tree。
 def _build_span_tree(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """构建 span tree。
+
+    参数:
+        events: events，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        List[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：row.get, defaultdict, starts.items, append, node, children.get。
+    """
     starts = {
         row["span_id"]: row
         for row in events
@@ -55,7 +92,19 @@ def _build_span_tree(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for span_id, row in starts.items():
         children[row.get("parent_span_id")].append(span_id)
 
+    # 阅读注释（函数）：处理 node 相关逻辑。
     def node(span_id: str) -> Dict[str, Any]:
+        """处理 node 相关逻辑。
+
+        参数:
+            span_id: span 标识，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Dict[str, Any]
+
+        阅读提示:
+            主要直接调用：terminals.get, start.get, terminal.get, node, children.get。
+        """
         start = starts[span_id]
         terminal = terminals.get(span_id) or {}
         return {
@@ -73,7 +122,16 @@ def _build_span_tree(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [node(span_id) for span_id in children.get(None, [])]
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, str, parser.parse_args, resolve, expanduser, Path, output_root.mkdir。
+    """
     parser = argparse.ArgumentParser(description="Run Step 13 Trace v2 acceptance.")
     parser.add_argument(
         "--output-root",
@@ -133,7 +191,6 @@ def main() -> int:
             output_root=output_root,
             clean_existing=True,
             settings=settings,
-            retrieval_strategy="hybrid",
             enable_agent_self_rag=False,
             allow_demo_defaults=True,
         )
@@ -151,7 +208,21 @@ def main() -> int:
 
     checks: List[Dict[str, Any]] = []
 
+    # 阅读注释（函数）：检查 main。
     def check(name: str, condition: bool, details: Dict[str, Any]) -> None:
+        """检查 main。
+
+        参数:
+            name: 名称，具体约束请结合类型标注和调用方确认。
+            condition: condition，具体约束请结合类型标注和调用方确认。
+            details: details，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：checks.append。
+        """
         checks.append(
             {
                 "name": name,

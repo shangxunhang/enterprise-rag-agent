@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：SemanticSectionJudge。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """LLM-assisted semantic quality gate for generated document sections.
 
 The judge evaluates only semantic issues that deterministic runtime checks
@@ -43,6 +47,7 @@ _VALID_SEVERITIES = {"warning", "soft_failure", "hard_failure"}
 _VALID_ACTIONS = {"keep", "rewrite", "qualify", "remove", "human_review"}
 
 
+# 阅读注释（类）：封装 semantic 章节 judge，集中封装相关状态、依赖和行为。
 class SemanticSectionJudge:
     """Use a configured LLM as a constrained semantic reviewer.
 
@@ -51,6 +56,7 @@ class SemanticSectionJudge:
     style preference into a hard runtime failure.
     """
 
+    # 阅读注释（函数）：初始化 SemanticSectionJudge，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -59,13 +65,36 @@ class SemanticSectionJudge:
         enabled: bool = True,
         hard_confidence_threshold: float = 0.75,
     ) -> None:
+        """初始化 SemanticSectionJudge，保存运行所需的依赖、配置或状态。
+
+        参数:
+            model_gateway: 模型 网关，具体约束请结合类型标注和调用方确认。
+            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+            enabled: enabled，具体约束请结合类型标注和调用方确认。
+            hard_confidence_threshold: hard 置信度 阈值，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.model_gateway = model_gateway
         self.model_name = model_name
         self.enabled = enabled
         self.hard_confidence_threshold = hard_confidence_threshold
 
+    # 阅读注释（函数）：提取 JSON object。
     @staticmethod
     def _extract_json_object(text: str) -> Dict[str, Any]:
+        """提取 JSON object。
+
+        参数:
+            text: 待处理文本。
+
+        返回:
+            Dict[str, Any]
+
+        阅读提示:
+            主要直接调用：strip, str, raw.startswith, re.sub, json.loads, isinstance, re.search, ValueError。
+        """
         raw = str(text or "").strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
@@ -85,6 +114,7 @@ class SemanticSectionJudge:
             raise ValueError("semantic judge JSON root must be an object")
         return value
 
+    # 阅读注释（函数）：处理 compact 项目 输入 相关逻辑。
     @staticmethod
     def _compact_project_input(project_input: ProjectInputSchema) -> Dict[str, Any]:
         """Keep only business facts useful to semantic review."""
@@ -108,8 +138,20 @@ class SemanticSectionJudge:
             "extra": project_input.extra,
         }
 
+    # 阅读注释（函数）：处理 compact citations 相关逻辑。
     @staticmethod
     def _compact_citations(citations: Iterable[CitationSchema]) -> List[Dict[str, Any]]:
+        """处理 compact citations 相关逻辑。
+
+        参数:
+            citations: 引用信息集合。
+
+        返回:
+            List[Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：strip, str, output.append。
+        """
         output: list[Dict[str, Any]] = []
         for item in citations:
             quote = str(item.quote_text or "").strip()
@@ -123,6 +165,7 @@ class SemanticSectionJudge:
             )
         return output[:12]
 
+    # 阅读注释（函数）：构建 提示词。
     def _build_prompt(
         self,
         *,
@@ -134,6 +177,23 @@ class SemanticSectionJudge:
         deterministic_candidates: List[Dict[str, Any]],
         overlong: bool,
     ) -> tuple[str, str]:
+        """构建 提示词。
+
+        参数:
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            content: 待处理内容。
+            project_input: 规范化后的项目输入。
+            citations: 引用信息集合。
+            required_sections: required sections，具体约束请结合类型标注和调用方确认。
+            deterministic_candidates: deterministic candidates，具体约束请结合类型标注和调用方确认。
+            overlong: overlong，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            tuple[str, str]
+
+        阅读提示:
+            主要直接调用：self._compact_project_input, self._compact_citations, json.dumps。
+        """
         system_prompt = (
             "你是企业文档的语义质量评审器，不负责改写正文。只评估语义型问题，"
             "并严格输出JSON。运行时错误、截断、必填章节和引用ID真实性由代码检查，"
@@ -168,7 +228,19 @@ class SemanticSectionJudge:
         )
         return system_prompt, prompt
 
+    # 阅读注释（函数）：规范化 issue。
     def _normalize_issue(self, raw: Dict[str, Any]) -> Optional[SemanticGateIssueSchema]:
+        """规范化 issue。
+
+        参数:
+            raw: raw，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Optional[SemanticGateIssueSchema]
+
+        阅读提示:
+            主要直接调用：lower, strip, str, raw.get, float, max, min, SemanticGateIssueSchema。
+        """
         issue_type = str(raw.get("issue_type") or "other").strip().lower()
         severity = str(raw.get("severity") or "warning").strip().lower()
         if severity not in _VALID_SEVERITIES:
@@ -208,8 +280,20 @@ class SemanticSectionJudge:
             source="llm_semantic_judge",
         )
 
+    # 阅读注释（函数）：处理 decision from issues 相关逻辑。
     @staticmethod
     def _decision_from_issues(issues: List[SemanticGateIssueSchema]) -> str:
+        """处理 decision from issues 相关逻辑。
+
+        参数:
+            issues: issues，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：any。
+        """
         if any(item.severity == "hard_failure" for item in issues):
             return "fail"
         if any(item.severity == "soft_failure" for item in issues):
@@ -218,6 +302,7 @@ class SemanticSectionJudge:
             return "warn"
         return "pass"
 
+    # 阅读注释（函数）：合并 deterministic candidates。
     @staticmethod
     def _merge_deterministic_candidates(
         issues: List[SemanticGateIssueSchema],
@@ -261,6 +346,7 @@ class SemanticSectionJudge:
             )
         return merged
 
+    # 阅读注释（函数）：处理 fallback 结果 相关逻辑。
     def _fallback_result(
         self,
         *,
@@ -312,6 +398,7 @@ class SemanticSectionJudge:
             error_message=error_message,
         )
 
+    # 阅读注释（函数）：处理 judge 相关逻辑。
     def judge(
         self,
         *,
@@ -328,6 +415,28 @@ class SemanticSectionJudge:
         overlong: bool,
         call_suffix: str = "",
     ) -> tuple[SemanticGateResultSchema, Optional[ModelResponseSchema]]:
+        """处理 judge 相关逻辑。
+
+        参数:
+            task_id: 任务唯一标识。
+            run_id: 本次运行唯一标识。
+            created_at: created at，具体约束请结合类型标注和调用方确认。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
+            content: 待处理内容。
+            project_input: 规范化后的项目输入。
+            citations: 引用信息集合。
+            required_sections: required sections，具体约束请结合类型标注和调用方确认。
+            deterministic_candidates: deterministic candidates，具体约束请结合类型标注和调用方确认。
+            overlong: overlong，具体约束请结合类型标注和调用方确认。
+            call_suffix: call suffix，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            tuple[SemanticGateResultSchema, Optional[ModelResponseSchema]]
+
+        阅读提示:
+            主要直接调用：self._fallback_result, self._build_prompt, ModelRequestSchema, self.model_gateway.generate, self._extract_json_object, parsed.get, isinstance, ValueError。
+        """
         if not self.enabled or self.model_gateway is None:
             return (
                 self._fallback_result(

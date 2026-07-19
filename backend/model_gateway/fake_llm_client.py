@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
+# 主要定义：FakeLLMClient。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Deterministic LLM client for smoke and recovery tests."""
 
 from __future__ import annotations
@@ -10,9 +14,12 @@ from contracts.base_client import BaseLLMClient
 from schemas.model import ModelRequestSchema, ModelResponseSchema, TokenUsageSchema
 
 
+# 阅读注释（类）：封装 fake llmclient，集中封装相关状态、依赖和行为。
 class FakeLLMClient(BaseLLMClient):
+    """封装 fake llmclient，集中封装相关状态、依赖和行为。"""
     model_name = "fake_llm"
 
+    # 阅读注释（函数）：处理 force unbound 输出 相关逻辑。
     @staticmethod
     def _force_unbound_output(request: ModelRequestSchema, scenario: str) -> bool:
         """Return whether this call must omit all citation markers.
@@ -37,8 +44,20 @@ class FakeLLMClient(BaseLLMClient):
             return "_attempt_2" not in str(request.model_call_id)
         return False
 
+    # 阅读注释（函数）：处理 quote from 提示词 相关逻辑。
     @staticmethod
     def _quote_from_prompt(prompt: str) -> str:
+        """处理 quote from 提示词 相关逻辑。
+
+        参数:
+            prompt: 提示词，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：re.search, strip, str, json.loads, match.group。
+        """
         match = re.search(r'"quote_text"\s*:\s*("(?:\\.|[^"\\])*")', prompt)
         if not match:
             return ""
@@ -47,7 +66,19 @@ class FakeLLMClient(BaseLLMClient):
         except Exception:
             return ""
 
+    # 阅读注释（函数）：生成 FakeLLMClient。
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
+        """生成 FakeLLMClient。
+
+        参数:
+            request: 当前请求对象。
+
+        返回:
+            ModelResponseSchema
+
+        阅读提示:
+            主要直接调用：request.extra.get, lower, strip, str, os.getenv, self._force_unbound_output, self._quote_from_prompt, join。
+        """
         purpose = request.extra.get("call_purpose")
         scenario = str(os.getenv("FAKE_LLM_SCENARIO", "default")).strip().lower()
         force_unbound = self._force_unbound_output(request, scenario)
@@ -56,6 +87,33 @@ class FakeLLMClient(BaseLLMClient):
             content = '{"task_type":"scheme_generation","reason":"deterministic smoke-test route"}'
         elif purpose == "semantic_section_gate":
             content = '{"decision":"pass","summary":"deterministic semantic gate pass","issues":[]}'
+        elif purpose == "agent_section_self_rag_check" and scenario == "self_rag_retrieve_once":
+            if int(request.extra.get("generation_attempt") or 1) <= 1:
+                content = json.dumps(
+                    {
+                        "is_supported": False,
+                        "faithfulness_label": "medium",
+                        "answer_relevance_label": "medium",
+                        "need_rewrite": False,
+                        "need_retrieve_more": True,
+                        "unsupported_claims": [],
+                        "problems": ["test evidence gap"],
+                        "score": 0.4,
+                    }
+                )
+            else:
+                content = json.dumps(
+                    {
+                        "is_supported": True,
+                        "faithfulness_label": "high",
+                        "answer_relevance_label": "high",
+                        "need_rewrite": False,
+                        "need_retrieve_more": False,
+                        "unsupported_claims": [],
+                        "problems": [],
+                        "score": 0.95,
+                    }
+                )
         else:
             section_title = request.extra.get("section_title") or "章节"
             document_title = request.extra.get("document_title") or "项目文档"

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：FakeVerificationReport、FakeVerifier、_make_index、_manager、test_discover_register_activate_and_online_resolve、test_failed_activation_keeps_previous_pointer、test_rollback_restores_previous_index_and_records_audit、test_discovery_ignores_failed_archives、test_resolver_verifies_directory_artifact_fingerprint、test_resolver_allows_legacy_milvus_directory_operational_drift等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import json
@@ -12,11 +16,22 @@ from rag.offline.lifecycle import (
 )
 from rag.offline.manifest import ArtifactRecord, IndexManifest, fingerprint_path, sha256_file
 from rag.offline.resolver import ActiveIndexResolver
-from rag.tools.rag_tool import RAGTool, RAGToolConfig
+from rag.runtime.retrieval_runtime import RetrievalRuntime, RetrievalRuntimeConfig
 
 
+# 阅读注释（类）：封装 fake verification report，集中封装相关状态、依赖和行为。
 class FakeVerificationReport:
+    """封装 fake verification report，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 FakeVerificationReport，保存运行所需的依赖、配置或状态。
     def __init__(self, status: str = "success") -> None:
+        """初始化 FakeVerificationReport，保存运行所需的依赖、配置或状态。
+
+        参数:
+            status: 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.status = status
         self.metrics = {
             "failed_checks": [] if status == "success" else ["fake_failure"],
@@ -25,15 +40,52 @@ class FakeVerificationReport:
         }
 
 
+# 阅读注释（类）：封装 fake verifier，集中封装相关状态、依赖和行为。
 class FakeVerifier:
+    """封装 fake verifier，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 FakeVerifier，保存运行所需的依赖、配置或状态。
     def __init__(self, status: str = "success") -> None:
+        """初始化 FakeVerifier，保存运行所需的依赖、配置或状态。
+
+        参数:
+            status: 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.status = status
 
+    # 阅读注释（函数）：验证 FakeVerifier。
     def verify(self, manifest_path, **kwargs):
+        """验证 FakeVerifier。
+
+        参数:
+            manifest_path: manifest 路径，具体约束请结合类型标注和调用方确认。
+            **kwargs: 额外关键字参数。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：FakeVerificationReport。
+        """
         return FakeVerificationReport(self.status)
 
 
+# 阅读注释（函数）：生成 索引。
 def _make_index(root: Path, version: str) -> Path:
+    """生成 索引。
+
+    参数:
+        root: root，具体约束请结合类型标注和调用方确认。
+        version: 版本，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：index_dir.mkdir, parent.write_text, json.dumps, child.write_text, db.write_bytes, encode, IndexManifest, ArtifactRecord。
+    """
     index_dir = root / "data" / "processed" / "indexes" / version
     index_dir.mkdir(parents=True)
     parent = index_dir / "parent_chunks.jsonl"
@@ -85,14 +137,39 @@ def _make_index(root: Path, version: str) -> Path:
     return manifest_path
 
 
+# 阅读注释（函数）：处理 管理器 相关逻辑。
 def _manager(root: Path, status: str = "success") -> IndexLifecycleManager:
+    """处理 管理器 相关逻辑。
+
+    参数:
+        root: root，具体约束请结合类型标注和调用方确认。
+        status: 状态，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        IndexLifecycleManager
+
+    阅读提示:
+        主要直接调用：IndexLifecycleManager。
+    """
     return IndexLifecycleManager(
         project_root=root,
         verifier_factory=lambda: FakeVerifier(status),
     )
 
 
+# 阅读注释（函数）：处理 测试 discover register activate and 在线 resolve 相关逻辑。
 def test_discover_register_activate_and_online_resolve(tmp_path: Path) -> None:
+    """处理 测试 discover register activate and 在线 resolve 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, _manager, manager.discover, manager.activate, resolve, ActiveIndexResolver, str, manifest_path.resolve。
+    """
     manifest_path = _make_index(tmp_path, "idx_v1")
     manager = _manager(tmp_path)
 
@@ -111,7 +188,19 @@ def test_discover_register_activate_and_online_resolve(tmp_path: Path) -> None:
     assert not list(manager.pointer_path.parent.glob(".active_index.json.*.tmp"))
 
 
+# 阅读注释（函数）：处理 测试 failed activation keeps previous pointer 相关逻辑。
 def test_failed_activation_keeps_previous_pointer(tmp_path: Path) -> None:
+    """处理 测试 failed activation keeps previous pointer 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, _manager, good.discover, good.activate, good.pointer_path.read_text, pytest.raises, failed.activate, failed.pointer_path.read_text。
+    """
     _make_index(tmp_path, "idx_v1")
     _make_index(tmp_path, "idx_v2")
     good = _manager(tmp_path)
@@ -127,7 +216,19 @@ def test_failed_activation_keeps_previous_pointer(tmp_path: Path) -> None:
     assert json.loads(manager_text)["index_version"] == "idx_v1"
 
 
+# 阅读注释（函数）：处理 测试 rollback restores previous 索引 and 记录集合 audit 相关逻辑。
 def test_rollback_restores_previous_index_and_records_audit(tmp_path: Path) -> None:
+    """处理 测试 rollback restores previous 索引 and 记录集合 audit 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, _manager, manager.discover, manager.activate, manager.rollback, manager.resolve_active, manager.history。
+    """
     _make_index(tmp_path, "idx_v1")
     _make_index(tmp_path, "idx_v2")
     manager = _manager(tmp_path)
@@ -147,7 +248,19 @@ def test_rollback_restores_previous_index_and_records_audit(tmp_path: Path) -> N
     ]
 
 
+# 阅读注释（函数）：处理 测试 discovery ignores failed archives 相关逻辑。
 def test_discovery_ignores_failed_archives(tmp_path: Path) -> None:
+    """处理 测试 discovery ignores failed archives 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, archived.parent.with_name, archived.parent.rename, discover, _manager。
+    """
     _make_index(tmp_path, "idx_valid")
     archived = _make_index(tmp_path, "idx_archived")
     failed_dir = archived.parent.with_name(archived.parent.name + ".failed_20260717")
@@ -157,7 +270,19 @@ def test_discovery_ignores_failed_archives(tmp_path: Path) -> None:
     assert versions == ["idx_valid"]
 
 
+# 阅读注释（函数）：处理 测试 resolver verifies directory artifact fingerprint 相关逻辑。
 def test_resolver_verifies_directory_artifact_fingerprint(tmp_path: Path) -> None:
+    """处理 测试 resolver verifies directory artifact fingerprint 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, IndexManifest.model_validate_json, manifest_path.read_text, db_dir.mkdir, write_text, fingerprint_path, ArtifactRecord, str。
+    """
     manifest_path = _make_index(tmp_path, "idx_dir")
     manifest = IndexManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     db_dir = manifest_path.parent / "milvus_dir"
@@ -180,7 +305,19 @@ def test_resolver_verifies_directory_artifact_fingerprint(tmp_path: Path) -> Non
     assert resolved["db_file"] == str(db_dir.resolve())
 
 
+# 阅读注释（函数）：处理 测试 resolver allows legacy milvus directory operational drift 相关逻辑。
 def test_resolver_allows_legacy_milvus_directory_operational_drift(tmp_path: Path) -> None:
+    """处理 测试 resolver allows legacy milvus directory operational drift 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, IndexManifest.model_validate_json, manifest_path.read_text, db_dir.mkdir, internal.write_text, fingerprint_path, ArtifactRecord, str。
+    """
     manifest_path = _make_index(tmp_path, "idx_legacy_dir")
     manifest = IndexManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     db_dir = manifest_path.parent / "milvus_dir"
@@ -209,24 +346,75 @@ def test_resolver_allows_legacy_milvus_directory_operational_drift(tmp_path: Pat
 
 
 
+# 阅读注释（类）：封装 fake engine，负责驱动实际运行流程并维护执行状态。
 class FakeEngine:
+    """封装 fake engine，负责驱动实际运行流程并维护执行状态。"""
+    # 阅读注释（函数）：初始化 FakeEngine，保存运行所需的依赖、配置或状态。
     def __init__(self, version: str) -> None:
+        """初始化 FakeEngine，保存运行所需的依赖、配置或状态。
+
+        参数:
+            version: 版本，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.version = version
         self.closed = False
 
+    # 阅读注释（函数）：释放 FakeEngine 持有的资源。
     def close(self) -> None:
+        """释放 FakeEngine 持有的资源。
+
+        返回:
+            None
+        """
         self.closed = True
 
 
+# 阅读注释（类）：封装 fake 运行时 工厂，负责根据配置装配并返回运行实例。
 class FakeRuntimeFactory:
+    """封装 fake 运行时 工厂，负责根据配置装配并返回运行实例。"""
+    # 阅读注释（函数）：初始化 FakeRuntimeFactory，保存运行所需的依赖、配置或状态。
     def __init__(self, pointer_path: Path) -> None:
+        """初始化 FakeRuntimeFactory，保存运行所需的依赖、配置或状态。
+
+        参数:
+            pointer_path: pointer 路径，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.pointer_path = pointer_path
         self.engines: list[FakeEngine] = []
 
+    # 阅读注释（函数）：解析并确定 配置。
     def resolve_config(self, config, project_root):
+        """解析并确定 配置。
+
+        参数:
+            config: 运行配置。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+        """
         return config
 
+    # 阅读注释（函数）：构建 FakeRuntimeFactory。
     def build(self, config, project_root):
+        """构建 FakeRuntimeFactory。
+
+        参数:
+            config: 运行配置。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：json.loads, self.pointer_path.read_text, FakeEngine, self.engines.append, SimpleNamespace。
+        """
         payload = json.loads(self.pointer_path.read_text(encoding="utf-8"))
         version = payload["index_version"]
         engine = FakeEngine(version)
@@ -235,20 +423,27 @@ class FakeRuntimeFactory:
         return engine, runtime_config
 
 
-class FakeRunner:
-    def run(self, engine, config, tool_input, tool_name):
-        return {"status": "success", "index_version": config.index_version}
-
-
+# 阅读注释（类）：封装 fake runner，集中封装相关状态、依赖和行为。
+# 阅读注释（函数）：处理 测试 RAG 工具 explicit reload swaps engine after pointer change 相关逻辑。
 def test_rag_tool_explicit_reload_swaps_engine_after_pointer_change(tmp_path: Path) -> None:
+    """处理 测试 RAG 工具 explicit reload swaps engine after pointer change 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：pointer.write_text, json.dumps, FakeRuntimeFactory, RAGTool, RAGToolConfig, str, FakeRunner, tool.initialize。
+    """
     pointer = tmp_path / "active_index.json"
     pointer.write_text(json.dumps({"index_version": "idx_v1"}), encoding="utf-8")
     factory = FakeRuntimeFactory(pointer)
-    tool = RAGTool(
-        RAGToolConfig(active_index_pointer=str(pointer)),
+    tool = RetrievalRuntime(
+        RetrievalRuntimeConfig(active_index_pointer=str(pointer)),
         project_root=tmp_path,
         runtime_factory=factory,
-        runner=FakeRunner(),
     )
     tool.initialize()
     first_engine = tool.engine
@@ -263,18 +458,29 @@ def test_rag_tool_explicit_reload_swaps_engine_after_pointer_change(tmp_path: Pa
     assert result["previous_index_version"] == "idx_v1"
     assert result["index_version"] == "idx_v2"
     assert first_engine.closed is True
-    assert tool.run({"query": "x"})["index_version"] == "idx_v2"
+    assert tool.config.index_version == "idx_v2"
 
 
+# 阅读注释（函数）：处理 测试 RAG 工具 reload is noop when pointer unchanged 相关逻辑。
 def test_rag_tool_reload_is_noop_when_pointer_unchanged(tmp_path: Path) -> None:
+    """处理 测试 RAG 工具 reload is noop when pointer unchanged 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：pointer.write_text, json.dumps, FakeRuntimeFactory, RAGTool, RAGToolConfig, str, FakeRunner, tool.initialize。
+    """
     pointer = tmp_path / "active_index.json"
     pointer.write_text(json.dumps({"index_version": "idx_v1"}), encoding="utf-8")
     factory = FakeRuntimeFactory(pointer)
-    tool = RAGTool(
-        RAGToolConfig(active_index_pointer=str(pointer)),
+    tool = RetrievalRuntime(
+        RetrievalRuntimeConfig(active_index_pointer=str(pointer)),
         project_root=tmp_path,
         runtime_factory=factory,
-        runner=FakeRunner(),
     )
     tool.initialize()
 
@@ -284,9 +490,22 @@ def test_rag_tool_reload_is_noop_when_pointer_unchanged(tmp_path: Path) -> None:
     assert len(factory.engines) == 1
 
 
+# 阅读注释（函数）：处理 测试 post activation resolution failure restores previous pointer 相关逻辑。
 def test_post_activation_resolution_failure_restores_previous_pointer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """处理 测试 post activation resolution failure restores previous pointer 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+        monkeypatch: monkeypatch，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, _manager, manager.discover, manager.activate, manager.pointer_path.read_text, monkeypatch.setattr, pytest.raises, len。
+    """
     _make_index(tmp_path, "idx_v1")
     _make_index(tmp_path, "idx_v2")
     manager = _manager(tmp_path)
@@ -294,7 +513,19 @@ def test_post_activation_resolution_failure_restores_previous_pointer(
     manager.activate("idx_v1")
     before = manager.pointer_path.read_text(encoding="utf-8")
 
+    # 阅读注释（函数）：处理 fail resolve 相关逻辑。
     def fail_resolve(self, pointer_path):
+        """处理 fail resolve 相关逻辑。
+
+        参数:
+            pointer_path: pointer 路径，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：ValueError。
+        """
         raise ValueError("simulated online resolution failure")
 
     monkeypatch.setattr(
@@ -308,23 +539,49 @@ def test_post_activation_resolution_failure_restores_previous_pointer(
     assert len(manager.history()) == 1
 
 
+# 阅读注释（类）：封装 failing 运行时 工厂，负责根据配置装配并返回运行实例。
 class FailingRuntimeFactory(FakeRuntimeFactory):
+    """封装 failing 运行时 工厂，负责根据配置装配并返回运行实例。"""
+    # 阅读注释（函数）：构建 FailingRuntimeFactory。
     def build(self, config, project_root):
+        """构建 FailingRuntimeFactory。
+
+        参数:
+            config: 运行配置。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：json.loads, self.pointer_path.read_text, RuntimeError, build, super。
+        """
         payload = json.loads(self.pointer_path.read_text(encoding="utf-8"))
         if payload["index_version"] == "idx_bad":
             raise RuntimeError("simulated runtime build failure")
         return super().build(config, project_root)
 
 
+# 阅读注释（函数）：处理 测试 RAG 工具 failed reload preserves old engine 相关逻辑。
 def test_rag_tool_failed_reload_preserves_old_engine(tmp_path: Path) -> None:
+    """处理 测试 RAG 工具 failed reload preserves old engine 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：pointer.write_text, json.dumps, FailingRuntimeFactory, RAGTool, RAGToolConfig, str, FakeRunner, tool.initialize。
+    """
     pointer = tmp_path / "active_index.json"
     pointer.write_text(json.dumps({"index_version": "idx_v1"}), encoding="utf-8")
     factory = FailingRuntimeFactory(pointer)
-    tool = RAGTool(
-        RAGToolConfig(active_index_pointer=str(pointer)),
+    tool = RetrievalRuntime(
+        RetrievalRuntimeConfig(active_index_pointer=str(pointer)),
         project_root=tmp_path,
         runtime_factory=factory,
-        runner=FakeRunner(),
     )
     tool.initialize()
     old_engine = tool.engine
@@ -338,7 +595,19 @@ def test_rag_tool_failed_reload_preserves_old_engine(tmp_path: Path) -> None:
     assert tool.config.index_version == "idx_v1"
 
 
+# 阅读注释（函数）：处理 测试 manifest change after registration is rejected 相关逻辑。
 def test_manifest_change_after_registration_is_rejected(tmp_path: Path) -> None:
+    """处理 测试 manifest change after registration is rejected 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, _manager, manager.discover, manifest_path.write_text, manifest_path.read_text, pytest.raises, manager.activate, manager.pointer_path.exists。
+    """
     manifest_path = _make_index(tmp_path, "idx_v1")
     manager = _manager(tmp_path)
     manager.discover()
@@ -353,7 +622,20 @@ def test_manifest_change_after_registration_is_rejected(tmp_path: Path) -> None:
     assert not manager.pointer_path.exists()
 
 
+# 阅读注释（函数）：处理 测试 stale lifecycle lock is recovered 相关逻辑。
 def test_stale_lifecycle_lock_is_recovered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """处理 测试 stale lifecycle lock is recovered 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+        monkeypatch: monkeypatch，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_make_index, IndexLifecycleManager, manager.discover, manager.lock_path.parent.mkdir, manager.lock_path.write_text, manager.lock_path.stat, os.utime, manager.activate。
+    """
     _make_index(tmp_path, "idx_v1")
     manager = IndexLifecycleManager(
         project_root=tmp_path,

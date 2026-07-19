@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：write_json_report、write_markdown_report、write_reports。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Write RAG eval reports."""
 
 from __future__ import annotations
@@ -9,7 +13,20 @@ from typing import Dict
 from .schemas import RAGEvalReportSchema
 
 
+# 阅读注释（函数）：写入 JSON report。
 def write_json_report(report: RAGEvalReportSchema, output_path: str | Path) -> Path:
+    """写入 JSON report。
+
+    参数:
+        report: report，具体约束请结合类型标注和调用方确认。
+        output_path: 输出 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：Path, path.parent.mkdir, path.write_text, json.dumps, report.model_dump。
+    """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -19,7 +36,20 @@ def write_json_report(report: RAGEvalReportSchema, output_path: str | Path) -> P
     return path
 
 
+# 阅读注释（函数）：写入 markdown report。
 def write_markdown_report(report: RAGEvalReportSchema, output_path: str | Path) -> Path:
+    """写入 markdown report。
+
+    参数:
+        report: report，具体约束请结合类型标注和调用方确认。
+        output_path: 输出 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：Path, path.parent.mkdir, lines.append, enumerate, join, format, path.write_text。
+    """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -75,7 +105,21 @@ def write_markdown_report(report: RAGEvalReportSchema, output_path: str | Path) 
     return path
 
 
+# 阅读注释（函数）：写入 reports。
 def write_reports(report: RAGEvalReportSchema, output_dir: str | Path, report_name: str) -> Dict[str, str]:
+    """写入 reports。
+
+    参数:
+        report: report，具体约束请结合类型标注和调用方确认。
+        output_dir: 输出 dir，具体约束请结合类型标注和调用方确认。
+        report_name: report 名称，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, str]
+
+    阅读提示:
+        主要直接调用：Path, write_json_report, write_markdown_report, str。
+    """
     output_dir = Path(output_dir)
     json_path = write_json_report(report, output_dir / f"{report_name}.json")
     md_path = write_markdown_report(report, output_dir / f"{report_name}.md")

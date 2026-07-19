@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：端到端演示入口：装配配置和依赖，构造示例 ProjectInput，运行 Agent-RAG 主链并输出结果。
+# 主要定义：_normalize_status_value、_effective_runtime_error、_is_business_gate_failure、_resolve_console_question、_configure_runtime、_preflight_real_runtime、_load_trace_events、_validate_end_to_end、_write_answer_file、_section_report_rows等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Run the Agent-RAG end-to-end console demonstration.
 
 PyCharm users can run this file directly with no parameters. The script then
@@ -15,8 +19,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_ROOT.parent
+BACKEND_ROOT = PROJECT_ROOT / "backend"
+for import_root in (SCRIPT_ROOT, BACKEND_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from core.config import AppSettings, get_settings
 from mainline_runtime import (
@@ -35,6 +47,7 @@ REAL_MODEL_NAME = "local_qwen2_5_1_5b"
 SUCCESS_LIKE_STATUSES = {"success", "partial_success"}
 
 
+# 阅读注释（函数）：规范化 状态 value。
 def _normalize_status_value(value: Any) -> str:
     """Return a canonical lower-case execution status from enums or strings."""
 
@@ -46,6 +59,7 @@ def _normalize_status_value(value: Any) -> str:
     return text
 
 
+# 阅读注释（函数）：处理 effective 运行时 错误 相关逻辑。
 def _effective_runtime_error(summary: Dict[str, Any]) -> Dict[str, Any]:
     """Return an error only when the final runtime status is actually failed."""
 
@@ -79,7 +93,19 @@ def _effective_runtime_error(summary: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+# 阅读注释（函数）：判断 business gate failure。 判断业务门控是否失败
 def _is_business_gate_failure(summary: Dict[str, Any]) -> bool:
+    """判断 business gate failure。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        bool
+
+    阅读提示:
+        主要直接调用：summary.get, output.get, _effective_runtime_error, hard_gate.get, str, error.get。
+    """
     output = summary.get("scheme_writer_output") or {}
     hard_gate = output.get("hard_gate") or {}
     error = output.get("error") or _effective_runtime_error(summary)
@@ -88,6 +114,7 @@ def _is_business_gate_failure(summary: Dict[str, Any]) -> bool:
         or str(error.get("error_code") or "") == "DOCUMENT_HARD_GATE_FAILED"
     )
 
+# 阅读注释（函数）：解析并确定 console question。   处理用户输入
 def _resolve_console_question(cli_value: Optional[str]) -> str:
     """Resolve one non-empty question from CLI or an interactive console."""
 
@@ -99,6 +126,7 @@ def _resolve_console_question(cli_value: Optional[str]) -> str:
     return question
 
 
+# 阅读注释（函数）：处理 configure 运行时 相关逻辑。
 def _configure_runtime(*, fake_runtime: bool) -> None:
     """Make the console entry explicit about real versus fake dependencies.
 
@@ -122,6 +150,7 @@ def _configure_runtime(*, fake_runtime: bool) -> None:
     os.environ["SUPERVISOR_MODEL_NAME"] = REAL_MODEL_NAME
 
 
+# 阅读注释（函数）：处理 preflight real 运行时 相关逻辑。
 def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
     """Fail before model loading when the real runtime is not deployable."""
 
@@ -142,17 +171,17 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
         verify_artifacts=True,
     ).resolve(pointer_path)
 
-    pipeline_config = Path(
+    static_spec = Path(
         os.getenv(
-            "RAG_PIPELINE_CONFIG_FILE",
-            "backend/rag/profiles/hybrid_v1.yaml",
+            "RAG_STATIC_RETRIEVAL_SPEC_FILE",
+            "backend/rag/config/static_retrieval_v1.yaml",
         )
     ).expanduser()
-    if not pipeline_config.is_absolute():
-        pipeline_config = settings.project_root / pipeline_config
-    pipeline_config = pipeline_config.resolve()
-    if not pipeline_config.is_file():
-        raise FileNotFoundError(f"RAG Pipeline配置不存在：{pipeline_config}")
+    if not static_spec.is_absolute():
+        static_spec = settings.project_root / static_spec
+    static_spec = static_spec.resolve()
+    if not static_spec.is_file():
+        raise FileNotFoundError(f"RAG 静态检索规格不存在：{static_spec}")
 
     return {
         "mode": "real",
@@ -163,11 +192,23 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
         "active_index_backend": index_info["backend"],
         "active_index_collection": index_info["collection_name"],
         "embedding_model": index_info["embedding_model"],
-        "pipeline_config": str(pipeline_config),
+        "static_retrieval_spec": str(static_spec),
     }
 
 
+# 阅读注释（函数）：加载 Trace events。
 def _load_trace_events(trace_path: str | Path) -> list[Dict[str, Any]]:
+    """加载 Trace events。
+
+    参数:
+        trace_path: Trace 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        list[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：Path, path.is_file, FileNotFoundError, enumerate, splitlines, path.read_text, raw_line.strip, json.loads。
+    """
     path = Path(trace_path)
     if not path.is_file():
         raise FileNotFoundError(f"Trace文件不存在：{path}")
@@ -187,6 +228,7 @@ def _load_trace_events(trace_path: str | Path) -> list[Dict[str, Any]]:
     return events
 
 
+# 阅读注释（函数）：校验 end to end。
 def _validate_end_to_end(
     summary: Dict[str, Any],
     *,
@@ -237,8 +279,8 @@ def _validate_end_to_end(
         "workflow_finished",
         "agent_started",
         "agent_finished",
-        "tool_started",
-        "tool_finished",
+        "rag_started",
+        "rag_finished",
         "model_started",
         "model_finished",
     }
@@ -253,15 +295,20 @@ def _validate_end_to_end(
         for event in events
         if event.get("component_type") == "tool"
     }
-    if expected_real_rag and "RealRAGTool" not in tool_components:
+    rag_components = {
+        str(event.get("component_name") or "")
+        for event in events
+        if event.get("component_type") == "rag"
+    }
+    if expected_real_rag and "RAGService" not in rag_components:
         raise RuntimeError(
-            "端到端测试期望RealRAGTool，实际Tool组件："
-            + ", ".join(sorted(tool_components))
+            "端到端测试期望RAGService，实际RAG组件："
+            + ", ".join(sorted(rag_components))
         )
-    if not expected_real_rag and "FakeRAGTool" not in tool_components:
+    if not expected_real_rag and "FakeRAGService" not in rag_components:
         raise RuntimeError(
-            "Fake测试期望FakeRAGTool，实际Tool组件："
-            + ", ".join(sorted(tool_components))
+            "Fake测试期望FakeRAGService，实际RAG组件："
+            + ", ".join(sorted(rag_components))
         )
 
     model_components = {
@@ -323,13 +370,27 @@ def _validate_end_to_end(
         "content_chars": len(content),
         "trace_event_count": len(events),
         "tool_components": sorted(tool_components),
+        "rag_components": sorted(rag_components),
         "model_components": sorted(model_components),
         "graph_node_event_count": len(graph_events),
         "context_managed_model_call_count": len(context_managed_model_calls),
     }
 
 
+# 阅读注释（函数）：写入 answer 文件。
 def _write_answer_file(summary: Dict[str, Any], content: str) -> Path:
+    """写入 answer 文件。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+        content: 待处理内容。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：Path, trace_path.with_name, answer_path.parent.mkdir, answer_path.write_text。
+    """
     trace_path = Path(summary["paths"]["trace"])
     answer_path = trace_path.with_name(f"{summary['run_id']}_answer.md")
     answer_path.parent.mkdir(parents=True, exist_ok=True)
@@ -337,7 +398,19 @@ def _write_answer_file(summary: Dict[str, Any], content: str) -> Path:
     return answer_path
 
 
+# 阅读注释（函数）：处理 章节 report rows 相关逻辑。
 def _section_report_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """处理 章节 report rows 相关逻辑。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        list[Dict[str, Any]]
+
+    阅读提示:
+        主要直接调用：summary.get, str, item.get, output.get, isinstance, draft.get, section.get, bundles.get。
+    """
     draft = summary.get("scheme_draft") or {}
     output = summary.get("scheme_writer_output") or {}
     bundles = {
@@ -371,6 +444,7 @@ def _section_report_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
     return rows
 
 
+# 阅读注释（函数）：构建 e2e report。
 def _build_e2e_report(
     summary: Dict[str, Any],
     *,
@@ -378,6 +452,20 @@ def _build_e2e_report(
     validation: Optional[Dict[str, Any]],
     validation_error: Optional[Exception] = None,
 ) -> Dict[str, Any]:
+    """构建 e2e report。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+        runtime_preflight: 运行时 preflight，具体约束请结合类型标注和调用方确认。
+        validation: validation，具体约束请结合类型标注和调用方确认。
+        validation_error: validation 错误，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：summary.get, output.get, _section_report_rows, get, is_file, Path, _load_trace_events, str。
+    """
     output = summary.get("scheme_writer_output") or {}
     hard_gate = output.get("hard_gate") or {}
     sections = _section_report_rows(summary)
@@ -445,7 +533,7 @@ def _build_e2e_report(
                 for item in (output.get("section_evidence") or [])
             ),
             "trace_event_count": len(trace_events),
-            "tool_call_count": event_counts.get("tool_started", 0),
+            "rag_call_count": event_counts.get("rag_started", 0),
             "model_call_count": event_counts.get("model_started", 0),
             "error_event_count": sum(
                 1
@@ -459,12 +547,26 @@ def _build_e2e_report(
     }
 
 
+# 阅读注释（函数）：写入 e2e report。
 def _write_e2e_report(
     summary: Dict[str, Any],
     report: Dict[str, Any],
     *,
     explicit_path: Optional[str | Path] = None,
 ) -> Path:
+    """写入 e2e report。
+
+    参数:
+        summary: summary，具体约束请结合类型标注和调用方确认。
+        report: report，具体约束请结合类型标注和调用方确认。
+        explicit_path: explicit 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Path
+
+    阅读提示:
+        主要直接调用：resolve, expanduser, Path, trace_path.with_name, report_path.parent.mkdir, report_path.write_text, json.dumps。
+    """
     if explicit_path is not None:
         report_path = Path(explicit_path).expanduser().resolve()
     else:
@@ -478,6 +580,7 @@ def _write_e2e_report(
     return report_path
 
 
+# 阅读注释（函数）：处理 persist end to end artifacts 相关逻辑。
 def persist_end_to_end_artifacts(
     summary: Dict[str, Any],
     *,
@@ -510,21 +613,25 @@ def persist_end_to_end_artifacts(
         )
     except Exception as exc:  # report first, then preserve technical failure
         validation_error = exc
-
+    # 建立端到端结果报告
     report = _build_e2e_report(
         summary,
         runtime_preflight=runtime_preflight,
         validation=validation,
         validation_error=validation_error,
     )
+    # 写入端到端结果
     persisted_report_path = _write_e2e_report(
         summary,
         report,
         explicit_path=report_path,
     )
     summary["paths"]["e2e_report"] = str(persisted_report_path)
+    # 把更新后的完整产物路径复制进报告对象。
+    # 这里包括 answer、trace、task_state、e2e_report 等路径。
     report["paths"] = dict(summary["paths"])
-    # Rewrite once so the report contains its own final path.
+
+    # 第二次覆盖写入报告，使报告文件本身也包含自己的最终路径。
     _write_e2e_report(
         summary,
         report,
@@ -549,6 +656,7 @@ def persist_end_to_end_artifacts(
     }
 
 
+# 阅读注释（函数）：执行 run 演示 的主流程。
 def run_demo(
     user_input: str = DEFAULT_USER_INPUT,
     run_id: Optional[str] = None,
@@ -556,7 +664,6 @@ def run_demo(
     output_root: Optional[str | Path] = None,
     clean_existing: bool = False,
     settings: Optional[AppSettings] = None,
-    retrieval_strategy: Optional[str] = None,
     enable_agent_self_rag: Optional[bool] = None,
     project_input: Optional[Dict[str, Any]] = None,
     allow_demo_defaults: bool = True,
@@ -570,14 +677,23 @@ def run_demo(
         output_root=output_root,
         clean_existing=clean_existing,
         settings=settings,
-        retrieval_strategy=retrieval_strategy,
         enable_agent_self_rag=enable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=allow_demo_defaults,
     )
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, parser.parse_args, _resolve_console_question, _configure_runtime, str, resolve_project_path, get_settings。
+    """
+    ## 创建一个命令行解析参数
     parser = argparse.ArgumentParser(
         description="Run one complete Agent-RAG console request."
     )
@@ -610,33 +726,17 @@ def main() -> None:
         help="Delete existing output files for the same run_id before running.",
     )
     parser.add_argument(
-        "--retrieval-strategy",
-        type=str,
-        default=None,
-        choices=[
-            "hybrid",
-            "rag_fusion",
-            "hyde",
-            "rag_fusion_hyde",
-            "c_rag",
-            "self_rag",
-            "c_rag_self_rag",
-            "adaptive_rag",
-        ],
-        help="RAG retrieval strategy passed to RealRAGTool/rag-template.",
-    )
-    parser.add_argument(
         "--disable-agent-self-rag",
         action="store_true",
         help="Disable Agent-level Self-RAG check after SchemeWriter generation.",
     )
     parser.add_argument(
-        "--rag-pipeline-config",
+        "--rag-static-spec",
         type=str,
         default=None,
         help=(
-            "YAML/JSON online RAG pipeline profile. "
-            "Overrides RAG_PIPELINE_CONFIG_FILE for this process."
+            "YAML/JSON static retrieval specification. "
+            "Overrides RAG_STATIC_RETRIEVAL_SPEC_FILE for this process."
         ),
     )
     parser.add_argument(
@@ -674,9 +774,10 @@ def main() -> None:
     user_input = _resolve_console_question(args.user_input)
     _configure_runtime(fake_runtime=args.fake_runtime)
 
-    if args.rag_pipeline_config:
-        os.environ["RAG_PIPELINE_CONFIG_FILE"] = str(
-            resolve_project_path(args.rag_pipeline_config)
+    # 接下用户自己上传的rag配置
+    if args.rag_static_spec:
+        os.environ["RAG_STATIC_RETRIEVAL_SPEC_FILE"] = str(
+            resolve_project_path(args.rag_static_spec)
         )
 
     settings = get_settings(reload=True)
@@ -689,6 +790,7 @@ def main() -> None:
     print("user_input:", user_input)
 
     runtime_preflight: Dict[str, Any]
+    # 调用fake 不使用真实rag
     if args.fake_runtime:
         runtime_preflight = {
             "mode": "fake",
@@ -702,6 +804,8 @@ def main() -> None:
     print(json.dumps(runtime_preflight, ensure_ascii=False, indent=2))
 
     project_input = None
+
+    # 读取结构化项目输入
     if args.project_input_file:
         project_input_path = Path(args.project_input_file).expanduser().resolve()
         if not project_input_path.is_file():
@@ -715,19 +819,20 @@ def main() -> None:
                 "ProjectInput file must contain one JSON object at the top level."
             )
 
+    # 调用run_demo函数并返回结果
     summary = run_demo(
         user_input=user_input,
         run_id=args.run_id,
         output_root=args.output_root,
         clean_existing=args.clean_existing,
         settings=settings,
-        retrieval_strategy=args.retrieval_strategy,
         enable_agent_self_rag=not args.disable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=project_input is None,
     )
-
+    # 生成主链的草稿
     scheme_draft = summary.get("scheme_draft") or {}
+
     content = str(
         scheme_draft.get("full_text")
         or scheme_draft.get("content")
@@ -736,7 +841,7 @@ def main() -> None:
     sections = scheme_draft.get("sections") or []
     first_section = sections[0] if sections else {}
     first_section_extra = first_section.get("extra") or {}
-
+    #主链已经执行完后，保存产物并验证这次运行是否真的走完了端到端链路
     persisted = persist_end_to_end_artifacts(
         summary,
         runtime_preflight=runtime_preflight,
@@ -745,7 +850,9 @@ def main() -> None:
         report_path=args.e2e_report_path,
         raise_on_validation_error=args.strict,
     )
+    # 证明的是这次请求是否真实走过了完整主链，而不是只返回了一个伪造结果
     validation = persisted["validation"]
+    # 端到端验证过程中是否发现了技术性错误。
     validation_error = persisted.get("validation_error")
 
     print("\n" + "=" * 80)

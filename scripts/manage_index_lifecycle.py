@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：_parser、_dump、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import argparse
@@ -14,7 +18,16 @@ for path in (str(BACKEND_ROOT), str(PROJECT_ROOT)):
 from rag.offline.lifecycle import IndexLifecycleManager  # noqa: E402
 
 
+# 阅读注释（函数）：处理 parser 相关逻辑。
 def _parser() -> argparse.ArgumentParser:
+    """处理 parser 相关逻辑。
+
+    返回:
+        argparse.ArgumentParser
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, str, parser.add_subparsers, sub.add_parser, register.add_argument, activate.add_argument, rollback.add_argument。
+    """
     parser = argparse.ArgumentParser(description="Manage immutable RAG index lifecycle")
     parser.add_argument(
         "--project-root",
@@ -50,7 +63,19 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+# 阅读注释（函数）：处理 dump 相关逻辑。
 def _dump(value: object) -> None:
+    """处理 dump 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：hasattr, value.model_dump, isinstance, item.model_dump, print, json.dumps。
+    """
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
     elif isinstance(value, list):
@@ -61,7 +86,16 @@ def _dump(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> int:
+    """处理 main 相关逻辑。
+
+    返回:
+        int
+
+    阅读提示:
+        主要直接调用：parse_args, _parser, IndexLifecycleManager, _dump, manager.discover, manager.list_indexes, manager.status, manager.history。
+    """
     args = _parser().parse_args()
     manager = IndexLifecycleManager(project_root=args.project_root)
     try:

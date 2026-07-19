@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：GenerationParamsSchema、ModelMessageSchema、ModelRequestSchema、TokenUsageSchema、ModelResponseSchema、ModelRunSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """ModelGateway request/response/run schemas."""
 
 from __future__ import annotations
@@ -9,7 +13,9 @@ from pydantic import Field
 from schemas.common import ErrorSchema, SchemaBase
 
 
+# 阅读注释（类）：封装 生成 params Schema，定义跨模块传递的数据结构与字段约束。
 class GenerationParamsSchema(SchemaBase):
+    """封装 生成 params Schema，定义跨模块传递的数据结构与字段约束。"""
     max_new_tokens: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
@@ -17,13 +23,17 @@ class GenerationParamsSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 模型 消息 Schema，定义跨模块传递的数据结构与字段约束。
 class ModelMessageSchema(SchemaBase):
+    """封装 模型 消息 Schema，定义跨模块传递的数据结构与字段约束。"""
     role: str  # system | user | assistant | tool
     content: str
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 模型 请求 Schema，定义跨模块传递的数据结构与字段约束。
 class ModelRequestSchema(SchemaBase):
+    """封装 模型 请求 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "model_request_v1"
 
     model_call_id: str
@@ -45,14 +55,18 @@ class ModelRequestSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 Token 用量 Schema，定义跨模块传递的数据结构与字段约束。
 class TokenUsageSchema(SchemaBase):
+    """封装 Token 用量 Schema，定义跨模块传递的数据结构与字段约束。"""
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 模型 响应 Schema，定义跨模块传递的数据结构与字段约束。
 class ModelResponseSchema(SchemaBase):
+    """封装 模型 响应 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "model_response_v1"
 
     model_call_id: str
@@ -79,7 +93,9 @@ class ModelResponseSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 模型 run Schema，定义跨模块传递的数据结构与字段约束。
 class ModelRunSchema(SchemaBase):
+    """封装 模型 run Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "model_run_v1"
 
     model_run_id: str

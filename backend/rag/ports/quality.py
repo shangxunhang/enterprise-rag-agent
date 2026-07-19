@@ -1,48 +1,93 @@
-"""Stable ports for retrieval-evidence and generation-quality plugins."""
+"""Independent contracts for evidence assessment and corrective retrieval."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
-@dataclass
-class EvidenceCorrectionPlan:
-    """Conditional re-retrieval decision emitted by an evidence grader.
+@dataclass(frozen=True)
+class EvidenceJudgement:
+    """Read-only quality label for one evidence item."""
 
-    The retrieval pipeline treats this as a generic plan. It does not inspect
-    concrete grader names such as CRAG, which keeps the corrective loop
-    configuration-driven and reusable by future evidence graders.
+    evidence_id: str
+    relevance: str
+    confidence: float
+    reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id,
+            "relevance": self.relevance,
+            "confidence": float(self.confidence),
+            "reason": self.reason,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class EvidenceAssessment:
+    """Read-only quality assessment of one reranked evidence set.
+
+    Evidence deliberately is not carried by this value object. The retrieval
+    pipeline owns evidence quantity, order and content; an assessor can only
+    describe what it observed.
     """
 
-    required: bool = False
-    queries: list[str] = field(default_factory=list)
+    sufficient: bool
+    confidence: float
+    reason: str
+    item_judgements: tuple[EvidenceJudgement, ...] = ()
+    report: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sufficient": bool(self.sufficient),
+            "confidence": float(self.confidence),
+            "reason": self.reason,
+            "item_judgements": [item.to_dict() for item in self.item_judgements],
+            "report": dict(self.report),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class CorrectionGateDecision:
+    """Budget-aware decision made after evidence has been assessed."""
+
+    required: bool
+    reason: str
+    remaining_rounds: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "required": bool(self.required),
+            "reason": self.reason,
+            "remaining_rounds": max(0, int(self.remaining_rounds)),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class CorrectiveQueryPlan:
+    """Queries proposed after the correction gate has opened."""
+
+    queries: tuple[str, ...] = ()
     reason: str = ""
-    max_rounds: int = 1
     merge_original_candidates: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def normalized_queries(self, *, original_query: str = "") -> list[str]:
+        original_key = str(original_query or "").strip().lower()
         seen: set[str] = set()
         output: list[str] = []
-        original_key = str(original_query or "").strip().lower()
         for item in self.queries:
-            if isinstance(item, dict):
-                raw_text = next(
-                    (
-                        item.get(key)
-                        for key in ("query", "text", "rewritten_query", "value")
-                        if isinstance(item.get(key), str) and item.get(key).strip()
-                    ),
-                    "",
-                )
-            else:
-                raw_text = item
-            text = str(raw_text or "").strip()
-            if not text:
-                continue
+            text = str(item or "").strip()
             key = text.lower()
-            if key == original_key or key in seen:
+            if not text or key == original_key or key in seen:
                 continue
             seen.add(key)
             output.append(text)
@@ -50,71 +95,48 @@ class EvidenceCorrectionPlan:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "required": bool(self.required),
             "queries": list(self.queries),
-            "reason": str(self.reason or ""),
-            "max_rounds": max(0, int(self.max_rounds)),
+            "reason": self.reason,
             "merge_original_candidates": bool(self.merge_original_candidates),
             "metadata": dict(self.metadata),
         }
 
 
-@dataclass
-class EvidenceGradeOutput:
-    """Result of applying one configured evidence grader."""
-
-    results: list[dict[str, Any]]
-    report: dict[str, Any] | None
-    correction: EvidenceCorrectionPlan | None = None
-
-
-@dataclass
-class RepairOutput:
-    """Result of applying one configured answer/section repair strategy."""
-
-    answer: str
-    repaired: bool
-    report: dict[str, Any]
-
-
-class EvidenceGraderPort(Protocol):
-    def grade(
+@runtime_checkable
+class EvidenceAssessorPort(Protocol):
+    def assess(
         self,
         *,
         query: str,
         results: list[dict[str, Any]],
         runtime_context: dict[str, Any] | None = None,
-    ) -> EvidenceGradeOutput: ...
+    ) -> EvidenceAssessment: ...
 
     def execution_metadata(self) -> dict[str, Any]: ...
 
 
-class GenerationCheckerPort(Protocol):
-    def check(
+@runtime_checkable
+class CorrectiveRetrievalGatePort(Protocol):
+    def decide(
         self,
         *,
-        query: str,
-        answer: str | None,
-        context: str,
-        citations: list[dict[str, Any]],
-        citation_bindings: list[dict[str, Any]] | None = None,
+        assessment: EvidenceAssessment,
+        correction_budget: int,
+        completed_rounds: int,
         runtime_context: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None: ...
+    ) -> CorrectionGateDecision: ...
 
     def execution_metadata(self) -> dict[str, Any]: ...
 
 
-class RepairStrategyPort(Protocol):
-    def repair(
+@runtime_checkable
+class CorrectiveQueryPlannerPort(Protocol):
+    def plan(
         self,
         *,
         query: str,
-        answer: str,
-        context: str,
-        citations: list[dict[str, Any]],
-        citation_bindings: list[dict[str, Any]],
-        check_result: dict[str, Any] | None,
+        assessment: EvidenceAssessment,
         runtime_context: dict[str, Any] | None = None,
-    ) -> RepairOutput: ...
+    ) -> CorrectiveQueryPlan: ...
 
     def execution_metadata(self) -> dict[str, Any]: ...

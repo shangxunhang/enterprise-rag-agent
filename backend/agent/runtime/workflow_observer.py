@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：WorkflowObserver。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Node-level workflow Trace v2 observer."""
 
 from __future__ import annotations
@@ -13,10 +17,22 @@ from schemas.graph import GraphNodeInputSchema, GraphNodeOutputSchema
 from schemas.status import ExecutionStatus
 
 
+# 阅读注释（类）：封装 工作流 observer，集中封装相关状态、依赖和行为。
 class WorkflowObserver:
+    """封装 工作流 observer，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 WorkflowObserver，保存运行所需的依赖、配置或状态。
     def __init__(self, sink: Optional[TraceSink] = None) -> None:
+        """初始化 WorkflowObserver，保存运行所需的依赖、配置或状态。
+
+        参数:
+            sink: sink，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.sink = sink
 
+    # 阅读注释（函数）：处理 step started 相关逻辑。
     def step_started(
         self,
         state: SharedStateSchema,
@@ -27,6 +43,22 @@ class WorkflowObserver:
         attempt: int = 1,
         max_attempts: int = 1,
     ) -> TraceSpanHandle:
+        """处理 step started 相关逻辑。
+
+        参数:
+            state: 工作流共享状态。
+            workflow: 工作流，具体约束请结合类型标注和调用方确认。
+            step: step，具体约束请结合类型标注和调用方确认。
+            node_input: node 输入，具体约束请结合类型标注和调用方确认。
+            attempt: attempt，具体约束请结合类型标注和调用方确认。
+            max_attempts: max attempts，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            TraceSpanHandle
+
+        阅读提示:
+            主要直接调用：new_span, current_span, self.sink.record, getattr, bool, list。
+        """
         handle = new_span(
             run_id=state.run_id,
             span_name=f"agent:{step.target_name}",
@@ -88,6 +120,7 @@ class WorkflowObserver:
             )
         return handle
 
+    # 阅读注释（函数）：处理 step finished 相关逻辑。
     def step_finished(
         self,
         state: SharedStateSchema,
@@ -101,6 +134,25 @@ class WorkflowObserver:
         max_attempts: int = 1,
         will_retry: bool = False,
     ) -> None:
+        """处理 step finished 相关逻辑。
+
+        参数:
+            state: 工作流共享状态。
+            workflow: 工作流，具体约束请结合类型标注和调用方确认。
+            step: step，具体约束请结合类型标注和调用方确认。
+            result: 待处理的结果对象。
+            handle: handle，具体约束请结合类型标注和调用方确认。
+            node_output: node 输出，具体约束请结合类型标注和调用方确认。
+            attempt: attempt，具体约束请结合类型标注和调用方确认。
+            max_attempts: max attempts，具体约束请结合类型标注和调用方确认。
+            will_retry: will retry，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：self.sink.record, handle.latency_ms, result.model_dump, len, getattr, get。
+        """
         if self.sink is None:
             return
         error = result.error

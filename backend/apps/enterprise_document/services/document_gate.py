@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：evaluate_scheme_draft、extract_runtime_hard_failures。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Hard-failure rules shared by runtime and offline evaluation."""
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from schemas.status import ExecutionStatus
 _REFUSAL_TERMS = ("证据不足", "无法确认", "待补充", "需项目方确认", "无法得出")
 
 
+# 阅读注释（函数）：评估 scheme draft。
 def evaluate_scheme_draft(
     draft: SchemeDraftSchema,
     *,
@@ -26,6 +31,25 @@ def evaluate_scheme_draft(
     evidence_sufficient: bool = True,
     workflow_complete: bool = True,
 ) -> HardGateResultSchema:
+    """评估 scheme draft。
+
+    参数:
+        draft: draft，具体约束请结合类型标注和调用方确认。
+        citation_required: 引用 required，具体约束请结合类型标注和调用方确认。
+        retrieved_chunk_ids: retrieved 文本块 标识集合，具体约束请结合类型标注和调用方确认。
+        citation_required_sections: 引用 required sections，具体约束请结合类型标注和调用方确认。
+        tool_failed: 工具 failed，具体约束请结合类型标注和调用方确认。
+        key_fields_valid: key fields valid，具体约束请结合类型标注和调用方确认。
+        output_schema_valid: 输出 Schema valid，具体约束请结合类型标注和调用方确认。
+        evidence_sufficient: 证据 sufficient，具体约束请结合类型标注和调用方确认。
+        workflow_complete: 工作流 complete，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        HardGateResultSchema
+
+    阅读提示:
+        主要直接调用：all, failures.append, len, strip, str, sorted, join, bool。
+    """
     checks: Dict[str, bool] = {}
     failures: list[str] = []
     warnings: list[str] = []
@@ -143,6 +167,7 @@ def evaluate_scheme_draft(
     )
 
 
+# 阅读注释（函数）：提取 运行时 hard failures。
 def extract_runtime_hard_failures(run_summary: Dict[str, Any]) -> list[str]:
     """Read embedded hard-gate failures from run_demo output."""
 

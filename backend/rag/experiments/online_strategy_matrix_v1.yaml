@@ -1,43 +1,48 @@
 schema_version: rag_experiment_matrix_v1
-matrix_id: online_strategy_matrix_v1
+matrix_id: adaptive_intent_matrix_v1
 dataset_path: data/eval/rag_strategy_eval_v1.jsonl
 dataset_version: kb_dataset_v1
 eval_set_version: rag_strategy_eval_v1
 index_version: current_parent_child_index
 output_dir: data/eval_outputs/strategy_eval
-baseline_experiment_id: baseline_hybrid_v1
-metrics:
-  - hit_at_k
-  - recall_at_k
-  - mrr
-  - ndcg_at_k
-  - context_keyword_hit
-  - latency_ms
+baseline_experiment_id: identity
+metrics: [hit_at_k, recall_at_k, mrr, ndcg_at_k, context_keyword_hit, latency_ms]
 seed: 42
 fail_fast: false
 experiments:
   - schema_version: rag_experiment_config_v1
-    experiment_id: baseline_hybrid_v1
-    pipeline_config_file: backend/rag/profiles/hybrid_v1.yaml
-    mode: retrieval
-    top_k: 5
-    warmup_runs: 1
-    notes: Stable hybrid baseline; latency excludes one warmup run.
-  - schema_version: rag_experiment_config_v1
-    experiment_id: rag_fusion_v1
-    pipeline_config_file: backend/rag/profiles/rag_fusion_v1.yaml
+    experiment_id: identity
+    static_retrieval_spec_file: backend/rag/config/static_retrieval_v1.yaml
+    retrieval_plan_overrides:
+      query_transform_mode: identity
+      correction_budget: 0
     mode: retrieval
     top_k: 5
     warmup_runs: 1
   - schema_version: rag_experiment_config_v1
-    experiment_id: hyde_v1
-    pipeline_config_file: backend/rag/profiles/hyde_v1.yaml
+    experiment_id: multi_query
+    static_retrieval_spec_file: backend/rag/config/static_retrieval_v1.yaml
+    retrieval_plan_overrides:
+      query_transform_mode: multi_query
+      correction_budget: 0
     mode: retrieval
     top_k: 5
     warmup_runs: 1
   - schema_version: rag_experiment_config_v1
-    experiment_id: c_rag_v1
-    pipeline_config_file: backend/rag/profiles/c_rag_v1.yaml
+    experiment_id: hyde
+    static_retrieval_spec_file: backend/rag/config/static_retrieval_v1.yaml
+    retrieval_plan_overrides:
+      query_transform_mode: hyde
+      correction_budget: 0
+    mode: retrieval
+    top_k: 5
+    warmup_runs: 1
+  - schema_version: rag_experiment_config_v1
+    experiment_id: adaptive_correction
+    static_retrieval_spec_file: backend/rag/config/static_retrieval_v1.yaml
+    retrieval_plan_overrides:
+      query_transform_mode: identity
+      correction_budget: 1
     mode: retrieval
     top_k: 5
     warmup_runs: 1

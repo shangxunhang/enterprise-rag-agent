@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：TextReranker。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/rag_template/reranker/reranker.py
 ====================================
@@ -17,17 +21,32 @@ import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 
+# 阅读注释（类）：封装 文本 reranker，集中封装相关状态、依赖和行为。
 class TextReranker:
     """
     基于 HuggingFace CrossEncoder 的文本重排器。
     """
 
+    # 阅读注释（函数）：初始化 TextReranker，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         model_name: str,
         device: str = "cuda",
         batch_size: int = 16,
     ):
+        """初始化 TextReranker，保存运行所需的依赖、配置或状态。
+
+        参数:
+            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+            device: device，具体约束请结合类型标注和调用方确认。
+            batch_size: batch size，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：print, AutoTokenizer.from_pretrained, AutoModelForSequenceClassification.from_pretrained, self.model.to, self.model.eval。
+        """
         self.model_name = model_name
         self.device = device
         self.batch_size = batch_size
@@ -45,6 +64,7 @@ class TextReranker:
         print("[Reranker] 模型加载完成")
         print("=" * 80)
 
+    # 阅读注释（函数）：计算 pairs 的评分。
     @torch.no_grad()
     def score_pairs(self, pairs: List[List[str]]) -> List[float]:
         """
@@ -82,6 +102,7 @@ class TextReranker:
 
         return all_scores
 
+    # 阅读注释（函数）：对 TextReranker 重新排序。
     def rerank(
         self,
         query: str,

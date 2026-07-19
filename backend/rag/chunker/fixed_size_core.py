@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：chunk_fixed_size。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Shared fixed-size chunking algorithm.
 
 The project historically exposed two import paths with slightly different legacy
@@ -8,12 +12,13 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal
 
-from rag.legacy.schema.Chunk_Schema import build_chunk
+from rag.schema.Chunk_Schema import build_chunk
 from rag.util.text_utils import split_text_by_fixed_size
 
 SchemaStyle = Literal["document", "fields"]
 
 
+# 阅读注释（函数）：处理 文本块 fixed size 相关逻辑。
 def chunk_fixed_size(
     document: Dict,
     *,

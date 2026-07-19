@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：_write_jsonl、_config、test_registry_contains_four_chunkers、test_all_chunkers_build_parent_child_contract、test_same_input_and_config_are_reproducible、test_operational_fields_do_not_change_index_version、test_index_version_changes_when_chunk_params_change、test_index_version_changes_by_chunker_strategy、test_builder_creates_immutable_manifest_and_artifacts、test_loader_resolves_project_relative_path等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import json
@@ -5,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from rag.config.pipeline_config import ComponentConfig
+from rag.config.static_retrieval import ComponentConfig
 from rag.offline.builder import OfflineIndexBuilder
 from rag.offline.config import (
     EmbeddingBuildConfig,
@@ -66,12 +70,39 @@ SAMPLE_RECORDS = [
 ]
 
 
+# 阅读注释（函数）：写入 jsonl。
 def _write_jsonl(path: Path, records: list[dict]) -> None:
+    """写入 jsonl。
+
+    参数:
+        path: 目标文件或目录路径。
+        records: 记录集合，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：path.parent.mkdir, path.write_text, join, json.dumps。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records), encoding="utf-8")
 
 
+# 阅读注释（函数）：处理 配置 相关逻辑。
 def _config(tmp_path: Path, *, chunker_name: str = "fixed_parent_child", parent_size: int = 80) -> OfflineIndexBuildConfig:
+    """处理 配置 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+        chunker_name: chunker 名称，具体约束请结合类型标注和调用方确认。
+        parent_size: 父块 size，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        OfflineIndexBuildConfig
+
+    阅读提示:
+        主要直接调用：_write_jsonl, OfflineIndexBuildConfig, SourceDatasetConfig, str, ComponentConfig, EmbeddingBuildConfig, IndexStorageConfig, OutputConfig。
+    """
     source = tmp_path / "units.jsonl"
     _write_jsonl(source, SAMPLE_RECORDS)
     return OfflineIndexBuildConfig(
@@ -96,7 +127,16 @@ def _config(tmp_path: Path, *, chunker_name: str = "fixed_parent_child", parent_
     )
 
 
+# 阅读注释（函数）：处理 测试 注册表 contains four chunkers 相关逻辑。
 def test_registry_contains_four_chunkers() -> None:
+    """处理 测试 注册表 contains four chunkers 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_default_component_registry, registry.list_components。
+    """
     registry = build_default_component_registry()
     names = [item.name for item in registry.list_components(category="chunker")]
     assert names == [
@@ -107,6 +147,7 @@ def test_registry_contains_four_chunkers() -> None:
     ]
 
 
+# 阅读注释（函数）：处理 测试 all chunkers build 父块 子块 contract 相关逻辑。
 @pytest.mark.parametrize(
     "name",
     [
@@ -117,6 +158,17 @@ def test_registry_contains_four_chunkers() -> None:
     ],
 )
 def test_all_chunkers_build_parent_child_contract(name: str) -> None:
+    """处理 测试 all chunkers build 父块 子块 contract 相关逻辑。
+
+    参数:
+        name: 名称，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_default_component_registry, ComponentConfig, registry.build, chunker.chunk_records, all, pytest.mark.parametrize。
+    """
     registry = build_default_component_registry()
     component = ComponentConfig(
         name=name,
@@ -140,7 +192,16 @@ def test_all_chunkers_build_parent_child_contract(name: str) -> None:
     assert all(item["extra"]["chunker_plugin"]["name"] == name for item in result.children)
 
 
+# 阅读注释（函数）：处理 测试 same 输入 and 配置 are reproducible 相关逻辑。
 def test_same_input_and_config_are_reproducible() -> None:
+    """处理 测试 same 输入 and 配置 are reproducible 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_default_component_registry, ComponentConfig, chunk_records, registry.build。
+    """
     registry = build_default_component_registry()
     component = ComponentConfig(
         name="heading_parent_child",
@@ -161,7 +222,19 @@ def test_same_input_and_config_are_reproducible() -> None:
 
 
 
+# 阅读注释（函数）：处理 测试 operational fields do not change 索引 版本 相关逻辑。
 def test_operational_fields_do_not_change_index_version(tmp_path: Path) -> None:
+    """处理 测试 operational fields do not change 索引 版本 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_config, first.model_dump, str, OfflineIndexBuildConfig.model_validate, first.index_version, second.index_version, first.config_hash, second.config_hash。
+    """
     first = _config(tmp_path / "a")
     payload = first.model_dump(mode="python")
     payload["build_id"] = "another_build"
@@ -171,19 +244,55 @@ def test_operational_fields_do_not_change_index_version(tmp_path: Path) -> None:
     assert first.index_version() == second.index_version()
     assert first.config_hash() != second.config_hash()
 
+# 阅读注释（函数）：处理 测试 索引 版本 changes when 文本块 params change 相关逻辑。
 def test_index_version_changes_when_chunk_params_change(tmp_path: Path) -> None:
+    """处理 测试 索引 版本 changes when 文本块 params change 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_config, first.index_version, second.index_version。
+    """
     first = _config(tmp_path / "a", parent_size=80)
     second = _config(tmp_path / "b", parent_size=81)
     assert first.index_version() != second.index_version()
 
 
+# 阅读注释（函数）：处理 测试 索引 版本 changes by chunker strategy 相关逻辑。
 def test_index_version_changes_by_chunker_strategy(tmp_path: Path) -> None:
+    """处理 测试 索引 版本 changes by chunker strategy 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_config, fixed.index_version, heading.index_version。
+    """
     fixed = _config(tmp_path / "fixed", chunker_name="fixed_parent_child")
     heading = _config(tmp_path / "heading", chunker_name="heading_parent_child")
     assert fixed.index_version() != heading.index_version()
 
 
+# 阅读注释（函数）：处理 测试 builder creates immutable manifest and artifacts 相关逻辑。
 def test_builder_creates_immutable_manifest_and_artifacts(tmp_path: Path) -> None:
+    """处理 测试 builder creates immutable manifest and artifacts 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_config, OfflineIndexBuilder, builder.build, Path, manifest_path.exists, IndexManifest.model_validate_json, manifest_path.read_text, config.index_version。
+    """
     config = _config(tmp_path)
     builder = OfflineIndexBuilder(project_root=tmp_path)
     result = builder.build(config)
@@ -207,17 +316,38 @@ def test_builder_creates_immutable_manifest_and_artifacts(tmp_path: Path) -> Non
     assert repeated.index_version == result.index_version
 
 
+# 阅读注释（函数）：处理 测试 loader resolves 项目 relative 路径 相关逻辑。
 def test_loader_resolves_project_relative_path() -> None:
+    """处理 测试 loader resolves 项目 relative 路径 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：OfflineIndexConfigLoader, loader.resolve_path。
+    """
     loader = OfflineIndexConfigLoader()
     resolved = loader.resolve_path("backend/rag/index_profiles/fixed_parent_child_smoke_v1.yaml")
     assert resolved.name == "fixed_parent_child_smoke_v1.yaml"
 
 
+# 阅读注释（函数）：处理 测试 active 索引 resolver and 运行时 override 相关逻辑。
 def test_active_index_resolver_and_runtime_override(tmp_path: Path) -> None:
+    """处理 测试 active 索引 resolver and 运行时 override 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：index_dir.mkdir, parent.write_text, child.write_text, db.write_bytes, IndexManifest, ArtifactRecord, str, sha256_file。
+    """
     from rag.offline.manifest import ActiveIndexPointer, ArtifactRecord, IndexManifest, sha256_file
     from rag.offline.resolver import ActiveIndexResolver
     from rag.runtime.parent_child_runtime_factory import ParentChildRuntimeFactory
-    from rag.tools.rag_tool import RAGToolConfig
+    from rag.runtime.retrieval_runtime import RetrievalRuntimeConfig
 
     index_dir = tmp_path / "index"
     index_dir.mkdir()
@@ -260,7 +390,7 @@ def test_active_index_resolver_and_runtime_override(tmp_path: Path) -> None:
     assert resolved["index_version"] == "idx_test_v1"
     assert resolved["parent_file"] == str(parent)
 
-    cfg = RAGToolConfig(active_index_pointer=str(pointer_path))
+    cfg = RetrievalRuntimeConfig(active_index_pointer=str(pointer_path))
     runtime_cfg = ParentChildRuntimeFactory().resolve_config(cfg, tmp_path)
     assert runtime_cfg.index_version == "idx_test_v1"
     assert runtime_cfg.parent_file == str(parent)
@@ -269,7 +399,19 @@ def test_active_index_resolver_and_runtime_override(tmp_path: Path) -> None:
     assert runtime_cfg.index_lineage["status"] == "active_manifest"
 
 
+# 阅读注释（函数）：处理 测试 artifacts only cannot be activated 相关逻辑。
 def test_artifacts_only_cannot_be_activated(tmp_path: Path) -> None:
+    """处理 测试 artifacts only cannot be activated 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：pytest.raises, OfflineIndexBuildConfig, SourceDatasetConfig, str, ComponentConfig, EmbeddingBuildConfig, IndexStorageConfig, OutputConfig。
+    """
     with pytest.raises(ValueError, match="milvus_lite"):
         OfflineIndexBuildConfig(
             build_id="b1",
@@ -282,7 +424,16 @@ def test_artifacts_only_cannot_be_activated(tmp_path: Path) -> None:
         )
 
 
+# 阅读注释（函数）：处理 测试 real 模型 embedding 策略配置 is default smoke 配置 相关逻辑。
 def test_real_model_embedding_profile_is_default_smoke_config() -> None:
+    """处理 测试 real 模型 embedding 策略配置 is default smoke 配置 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：OfflineIndexConfigLoader, loader.load。
+    """
     loader = OfflineIndexConfigLoader()
     config = loader.load("backend/rag/index_profiles/fixed_parent_child_smoke_v1.yaml")
     assert config.embedding.mode == "model"
@@ -293,7 +444,20 @@ def test_real_model_embedding_profile_is_default_smoke_config() -> None:
     assert config.embedding.dim == 768
 
 
+# 阅读注释（函数）：处理 测试 模型 embedding build 记录集合 real 模型 lineage 相关逻辑。
 def test_model_embedding_build_records_real_model_lineage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """处理 测试 模型 embedding build 记录集合 real 模型 lineage 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+        monkeypatch: monkeypatch，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：model_dir.mkdir, _write_jsonl, monkeypatch.setattr, OfflineIndexBuildConfig, SourceDatasetConfig, str, ComponentConfig, EmbeddingBuildConfig。
+    """
     import numpy as np
 
     source = tmp_path / "units.jsonl"
@@ -302,7 +466,23 @@ def test_model_embedding_build_records_real_model_lineage(tmp_path: Path, monkey
     _write_jsonl(source, SAMPLE_RECORDS)
     calls: dict[str, object] = {}
 
+    # 阅读注释（函数）：处理 fake encode texts with 模型 相关逻辑。
     def fake_encode_texts_with_model(texts, model_name, device, batch_size, embedding_version):
+        """处理 fake encode texts with 模型 相关逻辑。
+
+        参数:
+            texts: texts，具体约束请结合类型标注和调用方确认。
+            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+            device: device，具体约束请结合类型标注和调用方确认。
+            batch_size: batch size，具体约束请结合类型标注和调用方确认。
+            embedding_version: embedding 版本，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：calls.update, list, np.ones, len, str。
+        """
         calls.update(
             texts=list(texts),
             model_name=model_name,
@@ -359,7 +539,20 @@ def test_model_embedding_build_records_real_model_lineage(tmp_path: Path, monkey
     }
 
 
+# 阅读注释（函数）：处理 测试 模型 embedding dimension mismatch is rejected 相关逻辑。
 def test_model_embedding_dimension_mismatch_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """处理 测试 模型 embedding dimension mismatch is rejected 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+        monkeypatch: monkeypatch，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：model_dir.mkdir, _write_jsonl, monkeypatch.setattr, OfflineIndexBuildConfig, SourceDatasetConfig, str, ComponentConfig, EmbeddingBuildConfig。
+    """
     import numpy as np
 
     source = tmp_path / "units.jsonl"
@@ -406,7 +599,19 @@ def test_model_embedding_dimension_mismatch_is_rejected(tmp_path: Path, monkeypa
         OfflineIndexBuilder(project_root=tmp_path).build(config)
 
 
+# 阅读注释（函数）：处理 测试 validate rejects missing explicit 本地 embedding 模型 相关逻辑。
 def test_validate_rejects_missing_explicit_local_embedding_model(tmp_path: Path) -> None:
+    """处理 测试 validate rejects missing explicit 本地 embedding 模型 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_write_jsonl, OfflineIndexBuildConfig, SourceDatasetConfig, str, ComponentConfig, EmbeddingBuildConfig, IndexStorageConfig, OutputConfig。
+    """
     source = tmp_path / "units.jsonl"
     _write_jsonl(source, SAMPLE_RECORDS)
     config = OfflineIndexBuildConfig(

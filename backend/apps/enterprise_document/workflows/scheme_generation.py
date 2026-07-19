@@ -1,7 +1,23 @@
+# =============================================================================
+# 中文阅读说明：方案生成 Workflow 定义：声明节点、执行顺序、输入输出和失败策略。
+# 主要定义：build_scheme_generation_workflow。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 
 
+# 阅读注释（函数）：构建 scheme 生成 工作流。
 def build_scheme_generation_workflow(created_at: str) -> WorkflowDefinitionSchema:
+    """构建 scheme 生成 工作流。
+
+    参数:
+        created_at: created at，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        WorkflowDefinitionSchema
+
+    阅读提示:
+        主要直接调用：WorkflowDefinitionSchema, WorkflowStepSchema。
+    """
     return WorkflowDefinitionSchema(
         workflow_id="scheme_generation_v2",
         workflow_name="建设方案分章节生成流程",

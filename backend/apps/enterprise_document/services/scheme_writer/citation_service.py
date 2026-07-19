@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：引用处理服务：引用标记、绑定、支持性过滤、修复及引用注册表维护。
+# 主要定义：CitationService。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generated from the stable v7.5.1 SchemeWriter behavior."""
 
 
@@ -11,7 +15,8 @@ from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationBindingSchema, CitationSchema
 from schemas.model import ModelResponseSchema
-from .base import RuntimeBoundService
+from .model_service import SectionModelService
+from .prompt_service import SectionPromptService
 
 from .constants import (
     CITATION_PATTERN as _CITATION_PATTERN,
@@ -22,7 +27,19 @@ from .constants import (
 )
 
 
-class CitationService(RuntimeBoundService):
+# 阅读注释（类）：封装 引用 服务，封装一组可复用的业务能力。
+class CitationService:
+    """封装 引用 服务，封装一组可复用的业务能力。"""
+
+    def __init__(
+        self,
+        *,
+        model_service: SectionModelService,
+        prompt_service: SectionPromptService,
+    ) -> None:
+        self.model_service = model_service
+        self.prompt_service = prompt_service
+    # 阅读注释（函数）：处理 claim for marker 相关逻辑。
     @staticmethod
     def _claim_for_marker(
         paragraph: str,
@@ -59,6 +76,7 @@ class CitationService(RuntimeBoundService):
         ]
         return sentence_parts[-1] if sentence_parts else candidate_line.strip()
 
+    # 阅读注释（函数）：处理 bind citations 相关逻辑。
     @staticmethod
     def _bind_citations(
         document_id: str,
@@ -66,6 +84,20 @@ class CitationService(RuntimeBoundService):
         content: str,
         citations: List[CitationSchema],
     ) -> List[CitationBindingSchema]:
+        """处理 bind citations 相关逻辑。
+
+        参数:
+            document_id: 文档 标识，具体约束请结合类型标注和调用方确认。
+            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
+            content: 待处理内容。
+            citations: 引用信息集合。
+
+        返回:
+            List[CitationBindingSchema]
+
+        阅读提示:
+            主要直接调用：item.strip, re.split, enumerate, _CITATION_PATTERN.finditer, marker_match.group, by_id.get, CitationService._claim_for_marker, marker_match.start。
+        """
         by_id = {item.citation_id: item for item in citations}
         bindings: list[CitationBindingSchema] = []
         paragraphs = [item.strip() for item in re.split(r"\n\s*\n", content) if item.strip()]
@@ -105,6 +137,7 @@ class CitationService(RuntimeBoundService):
                 )
         return bindings
 
+    # 阅读注释（函数）：处理 引用 match tokens 相关逻辑。
     @staticmethod
     def _citation_match_tokens(text: str) -> set[str]:
         """Build deterministic lexical tokens for citation support checks.
@@ -127,6 +160,7 @@ class CitationService(RuntimeBoundService):
             if token not in _GENERIC_CITATION_TOKENS
         }
 
+    # 阅读注释（函数）：处理 引用 support score 相关逻辑。
     @classmethod
     def _citation_support_score(cls, claim_text: str, citation: CitationSchema) -> float:
         """Return a conservative lexical grounding score in the range [0, 1]."""
@@ -152,12 +186,25 @@ class CitationService(RuntimeBoundService):
         exact_phrase_bonus = min(0.25, long_phrase_count * 0.05)
         return min(1.0, coverage + exact_phrase_bonus)
 
+    # 阅读注释（函数）：处理 绑定关系 is supported 相关逻辑。
     @classmethod
     def _binding_is_supported(
         cls,
         binding: CitationBindingSchema,
         citations_by_id: Dict[str, CitationSchema],
     ) -> bool:
+        """处理 绑定关系 is supported 相关逻辑。
+
+        参数:
+            binding: 绑定关系，具体约束请结合类型标注和调用方确认。
+            citations_by_id: citations by 标识，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            bool
+
+        阅读提示:
+            主要直接调用：citations_by_id.get, cls._citation_support_score, cls._citation_match_tokens, join, sum, len, strip, cls._strip_known_citation_markers。
+        """
         citation = citations_by_id.get(binding.citation_id)
         if citation is None:
             return False
@@ -191,12 +238,25 @@ class CitationService(RuntimeBoundService):
             and long_overlap_count >= _MIN_CITATION_LONG_TOKEN_OVERLAP
         )
 
+    # 阅读注释（函数）：处理 supported bindings 相关逻辑。
     @classmethod
     def _supported_bindings(
         cls,
         bindings: List[CitationBindingSchema],
         citations: List[CitationSchema],
     ) -> List[CitationBindingSchema]:
+        """处理 supported bindings 相关逻辑。
+
+        参数:
+            bindings: bindings，具体约束请结合类型标注和调用方确认。
+            citations: 引用信息集合。
+
+        返回:
+            List[CitationBindingSchema]
+
+        阅读提示:
+            主要直接调用：by_id.get, cls._binding_is_supported, cls._citation_support_score, dict, metadata.update, supported.append, binding.model_copy。
+        """
         by_id = {item.citation_id: item for item in citations}
         supported: list[CitationBindingSchema] = []
         for binding in bindings:
@@ -215,6 +275,7 @@ class CitationService(RuntimeBoundService):
             supported.append(binding.model_copy(update={"metadata": metadata}))
         return supported
 
+    # 阅读注释（函数）：处理 insert deterministic citations 相关逻辑。
     @classmethod
     def _insert_deterministic_citations(
         cls,
@@ -290,16 +351,30 @@ class CitationService(RuntimeBoundService):
 
         return "\n".join(lines), selected
 
+    # 阅读注释（函数）：处理 strip known 引用 markers 相关逻辑。
     @staticmethod
     def _strip_known_citation_markers(
         text: str,
         citation_ids: Iterable[str],
     ) -> str:
+        """处理 strip known 引用 markers 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+            citation_ids: 引用 标识集合，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：cleaned.replace, re.sub。
+        """
         cleaned = text
         for citation_id in citation_ids:
             cleaned = cleaned.replace(f"[{citation_id}]", "")
         return re.sub(r"\s+", "", cleaned)
 
+    # 阅读注释（函数）：修复 章节 citations。
     def _repair_section_citations(
         self,
         shared_state: SharedStateSchema,
@@ -331,10 +406,10 @@ class CitationService(RuntimeBoundService):
             "3. 不得增加、删除、改写、重排任何正文文字；\n"
             "4. 不得给没有证据支持的句子强行添加引用；\n"
             "5. 只输出插入引用后的完整原文，不要解释。\n\n"
-            f"引用目录：\n{self._citation_catalog(citations)}\n\n"
+            f"引用目录：\n{self.prompt_service._citation_catalog(citations)}\n\n"
             f"原始正文：\n{content}"
         )
-        response = self._call_model(
+        response = self.model_service._call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -383,6 +458,7 @@ class CitationService(RuntimeBoundService):
         )
         return candidate, response
 
+    # 阅读注释（函数）：处理 regenerate 章节 from 证据 相关逻辑。
     def _regenerate_section_from_evidence(
         self,
         shared_state: SharedStateSchema,
@@ -410,11 +486,11 @@ class CitationService(RuntimeBoundService):
             "5. 不得保留原文中没有证据支持的安全措施、资源数量、指标或承诺；\n"
             "6. 只输出重写后的完整章节正文。\n\n"
             f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
-            f"引用目录：\n{self._citation_catalog(citations)}\n\n"
+            f"引用目录：\n{self.prompt_service._citation_catalog(citations)}\n\n"
             f"未通过校验的原始正文（仅供识别需要修正的范围，不得照抄无依据内容）：\n"
             f"{original_content}"
         )
-        return self._call_model(
+        return self.model_service._call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,

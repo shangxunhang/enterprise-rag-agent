@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：SchemeWriterOutputSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Top-level scheme writer output contract."""
 from __future__ import annotations
 
@@ -15,7 +19,9 @@ from schemas.rag import RAGContextSchema, RetrievedChunkSchema
 from schemas.status import ExecutionStatus
 
 
+# 阅读注释（类）：封装 scheme writer 输出 Schema，定义跨模块传递的数据结构与字段约束。
 class SchemeWriterOutputSchema(SchemaBase):
+    """封装 scheme writer 输出 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "scheme_writer_output_v2"
     task_id: str
     run_id: str

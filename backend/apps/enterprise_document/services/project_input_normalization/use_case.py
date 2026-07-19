@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：ProjectInputNormalizationUseCase。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Application use case for project-input normalization."""
 
 from __future__ import annotations
@@ -12,7 +16,10 @@ from .input_reader import ProjectInputReader
 from .table_analysis_service import TableAnalysisBuilder
 
 
+# 阅读注释（类）：封装 项目 输入 normalization use case，集中封装相关状态、依赖和行为。
 class ProjectInputNormalizationUseCase:
+    """封装 项目 输入 normalization use case，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 ProjectInputNormalizationUseCase，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -22,13 +29,40 @@ class ProjectInputNormalizationUseCase:
         state_writer: SharedStateWriter | None = None,
         clock: Clock | None = None,
     ) -> None:
+        """初始化 ProjectInputNormalizationUseCase，保存运行所需的依赖、配置或状态。
+
+        参数:
+            reader: reader，具体约束请结合类型标注和调用方确认。
+            table_builder: table builder，具体约束请结合类型标注和调用方确认。
+            fact_extractor: fact extractor，具体约束请结合类型标注和调用方确认。
+            state_writer: 状态 writer，具体约束请结合类型标注和调用方确认。
+            clock: clock，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：ProjectInputReader, TableAnalysisBuilder, StructuredFactExtractor, SharedStateWriter, SystemClock。
+        """
         self.reader = reader or ProjectInputReader()
         self.table_builder = table_builder or TableAnalysisBuilder()
         self.fact_extractor = fact_extractor or StructuredFactExtractor()
         self.state_writer = state_writer or SharedStateWriter()
         self.clock = clock or SystemClock()
 
+    # 阅读注释（函数）：执行 ProjectInputNormalizationUseCase。
     def execute(self, state: SharedStateSchema) -> TableAgentOutputSchema:
+        """执行 ProjectInputNormalizationUseCase。
+
+        参数:
+            state: 工作流共享状态。
+
+        返回:
+            TableAgentOutputSchema
+
+        阅读提示:
+            主要直接调用：self.reader.read, self.clock.now_iso, self.table_builder.build, self.fact_extractor.extract, TableAgentOutputSchema, self.state_writer.set_project_input_normalization, project_input.model_dump, output.model_dump。
+        """
         project_input = self.reader.read(state)
         created_at = self.clock.now_iso()
         table_analysis = self.table_builder.build(project_input)

@@ -1,9 +1,14 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：build_chunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 # src/rag_template/chunker/chunk_factory.py
 from rag.chunker.fixed_chunker import FixedSizeChunker
 from rag.chunker.HeadingChunker import HeadingChunker
 from rag.chunker.RecursiveChunker import RecursiveChunker
 
 
+# 阅读注释（函数）：构建 chunker。
 def build_chunker(chunk_strategy: str, chunk_size: int, chunk_overlap: int):
     """
     根据策略名创建 Chunker。

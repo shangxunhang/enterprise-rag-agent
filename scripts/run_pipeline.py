@@ -1,6 +1,10 @@
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：load_project_input、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Run the production mainline from an explicit ProjectInput JSON object.
 
-Unlike ``run_demo_back.py``, this entry point never injects a document title,
+Unlike the interactive ``run_demo.py``, this entry point never injects a document title,
 chapter list, citation policy or task type.  Business differences must arrive
 through ProjectInput.
 """
@@ -17,7 +21,19 @@ from mainline_runtime import run_mainline
 from mainline_runtime import resolve_project_path
 
 
+# 阅读注释（函数）：加载 项目 输入。
 def load_project_input(path: str | Path) -> Dict[str, Any]:
+    """加载 项目 输入。
+
+    参数:
+        path: 目标文件或目录路径。
+
+    返回:
+        Dict[str, Any]
+
+    阅读提示:
+        主要直接调用：resolve, expanduser, Path, input_path.is_file, FileNotFoundError, input_path.open, json.load, isinstance。
+    """
     input_path = Path(path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"ProjectInput file not found: {input_path}")
@@ -28,7 +44,16 @@ def load_project_input(path: str | Path) -> Dict[str, Any]:
     return payload
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：argparse.ArgumentParser, parser.add_argument, parser.parse_args, str, resolve_project_path, load_project_input, strip, project_input.get。
+    """
     parser = argparse.ArgumentParser(
         description="Run the Agent-RAG mainline from an explicit ProjectInput."
     )
@@ -36,35 +61,21 @@ def main() -> None:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--clean-existing", action="store_true")
-    parser.add_argument(
-        "--retrieval-strategy",
-        default=None,
-        choices=[
-            "hybrid",
-            "rag_fusion",
-            "hyde",
-            "rag_fusion_hyde",
-            "c_rag",
-            "self_rag",
-            "c_rag_self_rag",
-            "adaptive_rag",
-        ],
-    )
     parser.add_argument("--disable-agent-self-rag", action="store_true")
     parser.add_argument(
-        "--rag-pipeline-config",
+        "--rag-static-spec",
         type=str,
         default=None,
         help=(
-            "YAML/JSON online RAG pipeline profile. "
-            "Overrides RAG_PIPELINE_CONFIG_FILE for this process."
+            "YAML/JSON static retrieval specification. "
+            "Overrides RAG_STATIC_RETRIEVAL_SPEC_FILE for this process."
         ),
     )
     args = parser.parse_args()
 
-    if args.rag_pipeline_config:
-        os.environ["RAG_PIPELINE_CONFIG_FILE"] = str(
-            resolve_project_path(args.rag_pipeline_config)
+    if args.rag_static_spec:
+        os.environ["RAG_STATIC_RETRIEVAL_SPEC_FILE"] = str(
+            resolve_project_path(args.rag_static_spec)
         )
 
     project_input = load_project_input(args.project_input_file)
@@ -77,7 +88,6 @@ def main() -> None:
         run_id=args.run_id,
         output_root=args.output_root,
         clean_existing=args.clean_existing,
-        retrieval_strategy=args.retrieval_strategy,
         enable_agent_self_rag=not args.disable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=False,

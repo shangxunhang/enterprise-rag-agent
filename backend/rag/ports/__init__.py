@@ -1,15 +1,23 @@
-"""Framework-independent RAG ports."""
+"""Framework-independent retrieval ports."""
 
 from rag.ports.chunking import ChunkerPort
 from rag.ports.quality import (
-    EvidenceGradeOutput,
-    EvidenceGraderPort,
-    GenerationCheckerPort,
+    CorrectionGateDecision,
+    CorrectiveQueryPlan,
+    CorrectiveQueryPlannerPort,
+    CorrectiveRetrievalGatePort,
+    EvidenceAssessment,
+    EvidenceAssessorPort,
+    EvidenceJudgement,
 )
 
 __all__ = [
     "ChunkerPort",
-    "EvidenceGradeOutput",
-    "EvidenceGraderPort",
-    "GenerationCheckerPort",
+    "CorrectionGateDecision",
+    "CorrectiveQueryPlan",
+    "CorrectiveQueryPlannerPort",
+    "CorrectiveRetrievalGatePort",
+    "EvidenceAssessment",
+    "EvidenceAssessorPort",
+    "EvidenceJudgement",
 ]

@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：ParentChildChunkResult、ChildParentChunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 rag_template/chunker/ChildParentChunker.py
 =========================================
@@ -32,12 +36,13 @@ from rag.configs.SchemaConfig import (
     DEFAULT_PARENT_CHUNK_VERSION,
     DEFAULT_SOURCE_TYPE,
 )
-from rag.legacy.schema.Chunk_Schema import build_child_chunk_v1, build_parent_chunk_v1
+from rag.schema.Chunk_Schema import build_child_chunk_v1, build_parent_chunk_v1
 from rag.chunker.cleaned_text_unit_chunker import row_to_unit, should_skip_unit
 from rag.util.text_utils import safe_int, split_text_by_fixed_size, unique_keep_order
 from rag.util.token_utils import get_default_token_counter, get_token_counter
 
 
+# 阅读注释（类）：封装 父块 子块 文本块 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class ParentChildChunkResult:
     """父子块切分结果。"""
@@ -46,6 +51,7 @@ class ParentChildChunkResult:
     children: List[Dict[str, Any]]
 
 
+# 阅读注释（类）：封装 子块 父块 chunker，集中封装相关状态、依赖和行为。
 class ChildParentChunker:
     """父子块切分器。
 
@@ -59,6 +65,7 @@ class ChildParentChunker:
     - PARENT_CHILD_CHUNK_UNIT
     """
 
+    # 阅读注释（函数）：初始化 ChildParentChunker，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         parent_chunk_size: Optional[int] = None,
@@ -74,6 +81,28 @@ class ChildParentChunker:
         tokenizer_model_name: Optional[str] = None,
         tokenizer_local_files_only: bool = True,
     ) -> None:
+        """初始化 ChildParentChunker，保存运行所需的依赖、配置或状态。
+
+        参数:
+            parent_chunk_size: 父块 文本块 size，具体约束请结合类型标注和调用方确认。
+            parent_chunk_overlap: 父块 文本块 overlap，具体约束请结合类型标注和调用方确认。
+            child_chunk_size: 子块 文本块 size，具体约束请结合类型标注和调用方确认。
+            child_chunk_overlap: 子块 文本块 overlap，具体约束请结合类型标注和调用方确认。
+            unit: unit，具体约束请结合类型标注和调用方确认。
+            parent_chunk_strategy: 父块 文本块 strategy，具体约束请结合类型标注和调用方确认。
+            child_chunk_strategy: 子块 文本块 strategy，具体约束请结合类型标注和调用方确认。
+            parent_chunk_version: 父块 文本块 版本，具体约束请结合类型标注和调用方确认。
+            child_chunk_version: 子块 文本块 版本，具体约束请结合类型标注和调用方确认。
+            chunker_name: chunker 名称，具体约束请结合类型标注和调用方确认。
+            tokenizer_model_name: tokenizer 模型 名称，具体约束请结合类型标注和调用方确认。
+            tokenizer_local_files_only: tokenizer 本地 files only，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：int, getattr, lower, str, self._validate_config, get_token_counter, bool, get_default_token_counter。
+        """
         self.parent_chunk_size = int(
             parent_chunk_size
             if parent_chunk_size is not None
@@ -137,6 +166,7 @@ class ChildParentChunker:
     # public APIs
     # =====================================================
 
+    # 阅读注释（函数）：处理 文本块 记录集合 for doc 相关逻辑。
     def chunk_records_for_doc(self, records: List[Dict[str, Any]]) -> ParentChildChunkResult:
         """输入一个 doc 的 cleaned_text_unit_v1 records，输出父子块。"""
         units = [row_to_unit(r) for r in records]
@@ -151,6 +181,7 @@ class ChildParentChunker:
 
         return self.chunk_units_for_doc(doc_id=doc_id, units=units)
 
+    # 阅读注释（函数）：处理 文本块 记录集合 相关逻辑。
     def chunk_records(self, records: Iterable[Dict[str, Any]]) -> ParentChildChunkResult:
         """输入多个 doc 的 cleaned_text_unit_v1 records，按 doc_id 分组后输出父子块。"""
         groups: Dict[str, List[Dict[str, Any]]] = {}
@@ -171,6 +202,7 @@ class ChildParentChunker:
 
         return ParentChildChunkResult(parents=all_parents, children=all_children)
 
+    # 阅读注释（函数）：处理 文本块 units for doc 相关逻辑。
     def chunk_units_for_doc(self, doc_id: str, units: List[Dict[str, Any]]) -> ParentChildChunkResult:
         """输入单个 doc 的内部 unit 列表，输出 parent_chunk_v1 / child_chunk_v1。"""
         units = self._prepare_units(units)
@@ -250,6 +282,7 @@ class ChildParentChunker:
     # parent construction
     # =====================================================
 
+    # 阅读注释（函数）：准备 units。
     def _prepare_units(self, units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """排序、过滤、长 unit 兜底拆分。"""
         prepared = [u for u in units if not should_skip_unit(u)]
@@ -257,6 +290,7 @@ class ChildParentChunker:
         prepared = self._expand_long_units(prepared, chunk_size=self.parent_chunk_size, overlap=self.parent_chunk_overlap)
         return prepared
 
+    # 阅读注释（函数）：构建 父块 unit groups。
     def _build_parent_unit_groups(self, units: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
         """按 parent_chunk_size 聚合 unit，得到 parent 的 unit 组。"""
         groups: List[List[Dict[str, Any]]] = []
@@ -281,6 +315,7 @@ class ChildParentChunker:
 
         return groups
 
+    # 阅读注释（函数）：处理 join units with spans 相关逻辑。
     def _join_units_with_spans(self, units: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
         """把 parent 内 units 拼成文本，同时记录每个 unit 在 parent_text 中的 char span。"""
         pieces: List[str] = []
@@ -318,6 +353,7 @@ class ChildParentChunker:
     # child construction
     # =====================================================
 
+    # 阅读注释（函数）：构建 children for 父块。
     def _build_children_for_parent(
         self,
         *,
@@ -328,6 +364,22 @@ class ChildParentChunker:
         source_unit_spans: List[Dict[str, Any]],
         start_global_child_index: int,
     ) -> Tuple[List[Dict[str, Any]], int]:
+        """构建 children for 父块。
+
+        参数:
+            doc_id: doc 标识，具体约束请结合类型标注和调用方确认。
+            parent_chunk_id: 父块 文本块 标识，具体约束请结合类型标注和调用方确认。
+            parent_text: 父块 文本，具体约束请结合类型标注和调用方确认。
+            parent_units: 父块 units，具体约束请结合类型标注和调用方确认。
+            source_unit_spans: source unit spans，具体约束请结合类型标注和调用方确认。
+            start_global_child_index: start global 子块 索引，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Tuple[List[Dict[str, Any]], int]
+
+        阅读提示:
+            主要直接调用：self._split_text_windows_with_offsets, unique_keep_order, u.get, enumerate, self._unit_ids_for_span, set, self._build_common_extra, child_extra.update。
+        """
         windows = self._split_text_windows_with_offsets(
             parent_text,
             chunk_size=self.child_chunk_size,
@@ -399,13 +451,26 @@ class ChildParentChunker:
     # text splitting / length calculation
     # =====================================================
 
+    # 阅读注释（函数）：处理 measure 相关逻辑。
     def _measure(self, text: str) -> int:
+        """处理 measure 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+
+        返回:
+            int
+
+        阅读提示:
+            主要直接调用：self.token_counter.count, len。
+        """
         if not text:
             return 0
         if self.unit == "token" and self.token_counter is not None:
             return self.token_counter.count(text)
         return len(text)
 
+    # 阅读注释（函数）：处理 split 文本 windows with offsets 相关逻辑。
     def _split_text_windows_with_offsets(self, text: str, chunk_size: int, overlap: int) -> List[Tuple[str, int, int]]:
         """返回 [(chunk_text, char_start, char_end)]。
 
@@ -448,8 +513,22 @@ class ChildParentChunker:
 
         return self._split_char_windows_with_offsets(text, chunk_size=chunk_size, overlap=overlap)
 
+    # 阅读注释（函数）：处理 split char windows with offsets 相关逻辑。
     @staticmethod
     def _split_char_windows_with_offsets(text: str, chunk_size: int, overlap: int) -> List[Tuple[str, int, int]]:
+        """处理 split char windows with offsets 相关逻辑。
+
+        参数:
+            text: 待处理文本。
+            chunk_size: 文本块 size，具体约束请结合类型标注和调用方确认。
+            overlap: overlap，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Tuple[str, int, int]]
+
+        阅读提示:
+            主要直接调用：ValueError, len, min, strip, windows.append。
+        """
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
         if overlap < 0:
@@ -473,6 +552,7 @@ class ChildParentChunker:
 
         return windows
 
+    # 阅读注释（函数）：处理 expand long units 相关逻辑。
     def _expand_long_units(self, units: List[Dict[str, Any]], chunk_size: int, overlap: int) -> List[Dict[str, Any]]:
         """单个 unit 超过 parent_chunk_size 时，先拆成多个 pseudo unit。"""
         expanded: List[Dict[str, Any]] = []
@@ -513,7 +593,20 @@ class ChildParentChunker:
 
         return expanded
 
+    # 阅读注释（函数）：处理 overlap tail 相关逻辑。
     def _overlap_tail(self, units: List[Dict[str, Any]], overlap: int) -> List[Dict[str, Any]]:
+        """处理 overlap tail 相关逻辑。
+
+        参数:
+            units: units，具体约束请结合类型标注和调用方确认。
+            overlap: overlap，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：reversed, tail.insert, self._measure, unit.get。
+        """
         if overlap <= 0:
             return []
 
@@ -530,7 +623,21 @@ class ChildParentChunker:
     # metadata helpers
     # =====================================================
 
+    # 阅读注释（函数）：构建 common extra。
     def _build_common_extra(self, *, units: List[Dict[str, Any]], text: str, min_chunk_size: int) -> Dict[str, Any]:
+        """构建 common extra。
+
+        参数:
+            units: units，具体约束请结合类型标注和调用方确认。
+            text: 待处理文本。
+            min_chunk_size: min 文本块 size，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Dict[str, Any]
+
+        阅读提示:
+            主要直接调用：quality_flags.extend, unit.get, unique_keep_order, self._measure, quality_flags.append, u.get, round, sum。
+        """
         quality_flags: List[Any] = []
         for unit in units:
             quality_flags.extend(unit.get("quality_flags") or [])
@@ -570,8 +677,22 @@ class ChildParentChunker:
             "tokenizer_backend": getattr(self.token_counter, "backend", None) if self.token_counter else None,
         }
 
+    # 阅读注释（函数）：处理 unit 标识集合 for span 相关逻辑。
     @staticmethod
     def _unit_ids_for_span(source_unit_spans: List[Dict[str, Any]], start: int, end: int) -> List[Any]:
+        """处理 unit 标识集合 for span 相关逻辑。
+
+        参数:
+            source_unit_spans: source unit spans，具体约束请结合类型标注和调用方确认。
+            start: start，具体约束请结合类型标注和调用方确认。
+            end: end，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            List[Any]
+
+        阅读提示:
+            主要直接调用：span.get, int, unit_ids.append, unique_keep_order。
+        """
         unit_ids = []
         for span in source_unit_spans:
             s = span.get("char_start")
@@ -583,35 +704,98 @@ class ChildParentChunker:
                 unit_ids.append(span.get("unit_id"))
         return unique_keep_order(unit_ids)
 
+    # 阅读注释（函数）：处理 first non empty 相关逻辑。
     @staticmethod
     def _first_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) -> Any:
+        """处理 first non empty 相关逻辑。
+
+        参数:
+            units: units，具体约束请结合类型标注和调用方确认。
+            key: key，具体约束请结合类型标注和调用方确认。
+            default: default，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Any
+
+        阅读提示:
+            主要直接调用：unit.get。
+        """
         for unit in units:
             value = unit.get(key)
             if value not in (None, ""):
                 return value
         return default
 
+    # 阅读注释（函数）：处理 last non empty 相关逻辑。
     @staticmethod
     def _last_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) -> Any:
+        """处理 last non empty 相关逻辑。
+
+        参数:
+            units: units，具体约束请结合类型标注和调用方确认。
+            key: key，具体约束请结合类型标注和调用方确认。
+            default: default，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Any
+
+        阅读提示:
+            主要直接调用：reversed, unit.get。
+        """
         for unit in reversed(units):
             value = unit.get(key)
             if value not in (None, ""):
                 return value
         return default
 
+    # 阅读注释（函数）：处理 min int 相关逻辑。
     @staticmethod
     def _min_int(units: List[Dict[str, Any]], key: str) -> Optional[int]:
+        """处理 min int 相关逻辑。
+
+        参数:
+            units: units，具体约束请结合类型标注和调用方确认。
+            key: key，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Optional[int]
+
+        阅读提示:
+            主要直接调用：safe_int, u.get, min。
+        """
         values = [safe_int(u.get(key), None) for u in units]
         values = [v for v in values if v is not None]
         return min(values) if values else None
 
+    # 阅读注释（函数）：处理 max int 相关逻辑。
     @staticmethod
     def _max_int(units: List[Dict[str, Any]], key: str) -> Optional[int]:
+        """处理 max int 相关逻辑。
+
+        参数:
+            units: units，具体约束请结合类型标注和调用方确认。
+            key: key，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            Optional[int]
+
+        阅读提示:
+            主要直接调用：safe_int, u.get, max。
+        """
         values = [safe_int(u.get(key), None) for u in units]
         values = [v for v in values if v is not None]
         return max(values) if values else None
 
+    # 阅读注释（函数）：校验 配置。
     def _validate_config(self) -> None:
+        """校验 配置。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：ValueError。
+        """
         if self.parent_chunk_size <= 0:
             raise ValueError("parent_chunk_size must be positive")
         if self.child_chunk_size <= 0:

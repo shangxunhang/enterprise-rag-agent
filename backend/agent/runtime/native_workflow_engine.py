@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：原生 Workflow 状态机：按节点执行 Agent/Tool，维护共享状态、重试、提交与失败传播。
+# 主要定义：NativeWorkflowEngine。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Framework-neutral native workflow engine with explicit runtime contracts."""
 
 from __future__ import annotations
@@ -12,9 +16,7 @@ from typing import Any, Optional
 from agent.agent_registry import AgentRegistry
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
-from agent.runtime.node_adapter import LegacyAgentNodeAdapter
-from agent.runtime.step_dispatcher import WorkflowStepDispatcher
-from agent.runtime.steps.agent_step import AgentStepHandler
+from agent.runtime.node_adapter import AgentNodeAdapter
 from agent.runtime.workflow_observer import WorkflowObserver
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from agent.runtime.workflow_state import WorkflowStateController
@@ -33,6 +35,7 @@ from schemas.graph import (
 from schemas.status import ExecutionStatus, is_failure
 
 
+# 阅读注释（类）：封装 native 工作流 engine，负责驱动实际运行流程并维护执行状态。
 class NativeWorkflowEngine:
     """Current in-process implementation of ``WorkflowEnginePort``.
 
@@ -48,41 +51,72 @@ class NativeWorkflowEngine:
     engine_name = "native_workflow_engine"
     engine_version = "v2"
 
+    # 阅读注释（函数）：初始化 NativeWorkflowEngine，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         agent_registry: AgentRegistry,
         run_trace_recorder: Optional[TraceSink] = None,
         *,
-        dispatcher: WorkflowStepDispatcher | None = None,
         state_controller: WorkflowStateController | None = None,
         observer: WorkflowObserver | None = None,
         projector: GraphStateProjector | None = None,
         applier: GraphStateApplier | None = None,
-        node_adapter: LegacyAgentNodeAdapter | None = None,
+        node_adapter: AgentNodeAdapter | None = None,
         clock: Clock | None = None,
         error_factory: ErrorFactory | None = None,
     ) -> None:
+        """初始化 NativeWorkflowEngine，保存运行所需的依赖、配置或状态。
+
+        参数:
+            agent_registry: Agent 注册表，具体约束请结合类型标注和调用方确认。
+            run_trace_recorder: run Trace recorder，具体约束请结合类型标注和调用方确认。
+            dispatcher: dispatcher，具体约束请结合类型标注和调用方确认。
+            state_controller: 状态 controller，具体约束请结合类型标注和调用方确认。
+            observer: observer，具体约束请结合类型标注和调用方确认。
+            projector: projector，具体约束请结合类型标注和调用方确认。
+            applier: applier，具体约束请结合类型标注和调用方确认。
+            node_adapter: node 适配器，具体约束请结合类型标注和调用方确认。
+            clock: clock，具体约束请结合类型标注和调用方确认。
+            error_factory: 错误 工厂，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：WorkflowStateController, WorkflowObserver, GraphStateProjector, GraphStateApplier, AgentNodeAdapter, SystemClock。
+        """
         self.agent_registry = agent_registry
-        self.dispatcher = dispatcher or WorkflowStepDispatcher(
-            [AgentStepHandler(agent_registry)]
-        )
         self.state_controller = state_controller or WorkflowStateController()
         self.observer = observer or WorkflowObserver(run_trace_recorder)
         self.projector = projector or GraphStateProjector()
         self.applier = applier or GraphStateApplier()
-        self.node_adapter = node_adapter or LegacyAgentNodeAdapter(self.dispatcher)
+        self.node_adapter = node_adapter or AgentNodeAdapter(agent_registry)
         self.differ = self.node_adapter.differ
         self.clock = clock or SystemClock()
         self.error_factory = error_factory or ErrorFactory(self.clock)
 
+    # 阅读注释（函数）：执行 NativeWorkflowEngine。
     def execute(
         self,
         workflow: WorkflowDefinitionSchema,
         graph_state: GraphStateSchema,
     ) -> WorkflowEngineResultSchema:
+        """执行 NativeWorkflowEngine。
+
+        参数:
+            workflow: 工作流，具体约束请结合类型标注和调用方确认。
+            graph_state: graph 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            WorkflowEngineResultSchema
+
+        阅读提示:
+            主要直接调用：self.state_controller.start_workflow, sorted, enumerate, max, len, self.error_factory.create, self.state_controller.writer.add_error, self.state_controller.start_step。
+        """
         node_inputs: list[GraphNodeInputSchema] = []
         node_outputs: list[GraphNodeOutputSchema] = []
         node_results: list[AgentResultSchema] = []
+        # 记录工作流版本号
         initial_revision = graph_state.graph_revision
         graph_state.workflow_engine_name = self.engine_name
         graph_state.workflow_engine_version = self.engine_version
@@ -97,9 +131,13 @@ class NativeWorkflowEngine:
         workflow_complete = False
         terminal_reason = "not_started"
         terminal_failure_status: ExecutionStatus | None = None
+
+        #设置一个随 Workflow 大小增长、同时又有最低下限的“保险丝”
         max_transitions = max(16, len(ordered_steps) * 8)
 
+        # Workflow 主循环：按步骤顺序推进，每轮只处理一个节点。
         while 0 <= current_index < len(ordered_steps):
+            #  路由死循环保护
             transition_count += 1
             if transition_count > max_transitions:
                 terminal_failure_status = ExecutionStatus.FAILED
@@ -120,13 +158,17 @@ class NativeWorkflowEngine:
                 )
                 self.state_controller.writer.add_error(graph_state, error)
                 break
-
+            # 获取当前要执行的 WorkflowStepSchema
             step = ordered_steps[current_index]
+            # 将当前 step_id 写入 GraphState，标记当前正在执行哪个节点
             graph_state.current_node_id = step.step_id
+            # 启动当前 step，并初始化/返回该 step 的运行状态
             step_state = self.state_controller.start_step(graph_state, step)
+            # 初始化step尝试执行的历史
             attempt_history: list[dict[str, Any]] = []
             final_node_input: GraphNodeInputSchema | None = None
             final_node_output: GraphNodeOutputSchema | None = None
+
             max_attempts = 1 + step.max_retries
 
             for attempt in range(1, max_attempts + 1):
@@ -152,6 +194,7 @@ class NativeWorkflowEngine:
                     max_attempts=max_attempts,
                 )
                 with activate_span(span_handle):
+                    # 执行节点并施加超时控制；节点异常会被转换为结构化失败结果。
                     node_output = self._execute_with_timeout(
                         step=step,
                         node_input=node_input,
@@ -165,6 +208,7 @@ class NativeWorkflowEngine:
                     and attempt < max_attempts
                     and self._is_retryable(node_output)
                 )
+                # 判断重试 以及记录重试的状态
                 if will_retry:
                     retry_count += 1
                     graph_state.context_bundle.runtime.retry_count += 1
@@ -202,6 +246,7 @@ class NativeWorkflowEngine:
                 raise RuntimeError(f"workflow step {step.step_id} produced no output")
 
             proposed_delta_sha256 = final_node_output.state_delta.delta_sha256
+            # 根据节点状态和提交策略筛选可写回共享状态的数据增量。
             committed_delta, commit_decision = self._select_committed_delta(
                 step=step,
                 state=graph_state,
@@ -288,7 +333,7 @@ class NativeWorkflowEngine:
                 max_attempts=max_attempts,
                 will_retry=False,
             )
-
+            # 根据结果选择 success/failure 路由，然后决定是失败终止、正常结束，还是进入下一步。
             failed = is_failure(result.status)
             route = step.on_failure if failed else step.on_success
             if failed and route != "fail_task":
@@ -375,6 +420,7 @@ class NativeWorkflowEngine:
             },
         )
 
+    # 阅读注释（函数）：执行 with timeout。
     def _execute_with_timeout(
         self,
         *,
@@ -396,7 +442,16 @@ class NativeWorkflowEngine:
         started_at = self.clock.now_iso()
         started = time.monotonic()
 
+        # 阅读注释（函数）：处理 invoke 相关逻辑。
         def invoke() -> None:
+            """处理 invoke 相关逻辑。
+
+            返回:
+                None
+
+            阅读提示:
+                主要直接调用：context.run, result_queue.put, traceback.format_exc。
+            """
             try:
                 output = context.run(
                     self.node_adapter.execute,
@@ -481,6 +536,7 @@ class NativeWorkflowEngine:
             stack_trace=stack_trace,
         )
 
+    # 阅读注释（函数）：构建 failure 输出。
     def _build_failure_output(
         self,
         *,
@@ -497,6 +553,28 @@ class NativeWorkflowEngine:
         stack_trace: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> GraphNodeOutputSchema:
+        """构建 failure 输出。
+
+        参数:
+            step: step，具体约束请结合类型标注和调用方确认。
+            node_input: node 输入，具体约束请结合类型标注和调用方确认。
+            state: 工作流共享状态。
+            error_code: 错误 code，具体约束请结合类型标注和调用方确认。
+            error_type: 错误 类型，具体约束请结合类型标注和调用方确认。
+            message: 消息，具体约束请结合类型标注和调用方确认。
+            user_message: user 消息，具体约束请结合类型标注和调用方确认。
+            retryable: retryable，具体约束请结合类型标注和调用方确认。
+            started_at: started at，具体约束请结合类型标注和调用方确认。
+            latency_ms: latency ms，具体约束请结合类型标注和调用方确认。
+            stack_trace: stack Trace，具体约束请结合类型标注和调用方确认。
+            metadata: 随对象传递的元数据。
+
+        返回:
+            GraphNodeOutputSchema
+
+        阅读提示:
+            主要直接调用：self.error_factory.create, AgentResultSchema, error_code.lower, self.differ.diff, state.model_copy, GraphNodeOutputSchema, self.clock.now_iso, dict。
+        """
         error = self.error_factory.create(
             error_code=error_code,
             error_type=error_type,
@@ -554,6 +632,7 @@ class NativeWorkflowEngine:
             },
         )
 
+    # 阅读注释（函数）：选择 committed delta。
     def _select_committed_delta(
         self,
         *,
@@ -561,6 +640,19 @@ class NativeWorkflowEngine:
         state: GraphStateSchema,
         node_output: GraphNodeOutputSchema,
     ):
+        """选择 committed delta。
+
+        参数:
+            step: step，具体约束请结合类型标注和调用方确认。
+            state: 工作流共享状态。
+            node_output: node 输出，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            未显式标注；请结合调用方和实际返回语句理解。
+
+        阅读提示:
+            主要直接调用：is_failure, set, self.differ.restrict_delta, self.differ.diff, state.model_copy。
+        """
         proposed = node_output.state_delta
         if not is_failure(node_output.status):
             return proposed, "success_commit"
@@ -597,8 +689,20 @@ class NativeWorkflowEngine:
         )
         return empty, "failure_discarded"
 
+    # 阅读注释（函数）：判断 retryable。
     @staticmethod
     def _is_retryable(node_output: GraphNodeOutputSchema) -> bool:
+        """判断 retryable。
+
+        参数:
+            node_output: node 输出，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            bool
+
+        阅读提示:
+            主要直接调用：bool。
+        """
         if node_output.status == ExecutionStatus.RETRYABLE_FAILED:
             return True
         return bool(
@@ -606,8 +710,20 @@ class NativeWorkflowEngine:
             and node_output.result.error.retryable
         )
 
+    # 阅读注释（函数）：处理 attempt summary 相关逻辑。
     @staticmethod
     def _attempt_summary(node_output: GraphNodeOutputSchema) -> dict[str, Any]:
+        """处理 attempt summary 相关逻辑。
+
+        参数:
+            node_output: node 输出，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            dict[str, Any]
+
+        阅读提示:
+            主要直接调用：list。
+        """
         error = node_output.result.error
         return {
             "status": node_output.status.value,
@@ -617,11 +733,3 @@ class NativeWorkflowEngine:
             "proposed_delta_sha256": node_output.state_delta.delta_sha256,
             "changed_paths": list(node_output.state_delta.changed_paths),
         }
-
-    def run(
-        self,
-        workflow: WorkflowDefinitionSchema,
-        shared_state: GraphStateSchema,
-    ):
-        """Compatibility surface retained for pre-Step-15 callers."""
-        return self.execute(workflow, shared_state).node_results

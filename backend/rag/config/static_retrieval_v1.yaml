@@ -1,0 +1,94 @@
+schema_version: static_retrieval_spec_v1
+spec_id: enterprise_parent_child_hybrid_v1
+spec_version: v1
+query_transformers:
+  - name: identity
+    version: v1
+  - name: multi_query
+    version: v1
+    params:
+      num_rewrites: 3
+      use_llm: true
+      fallback_to_deterministic: true
+  - name: hyde
+    version: v1
+    params:
+      use_llm: true
+      fallback_to_deterministic: true
+retrievers:
+  - name: milvus_dense_child
+    version: v1
+    params:
+      top_k: 10
+  - name: bm25_child
+    version: v1
+    params:
+      top_k: 10
+source_fusion:
+  name: rrf_child
+  version: v1
+  params:
+    rrf_k: 60
+query_fusion:
+  name: rrf_parent
+  version: v1
+  params:
+    rrf_k: 60
+    top_k: 5
+candidate_enricher:
+  name: parent_child
+  version: v1
+  params:
+    top_k: 5
+    context_granularity: parent
+    dedup_parent: true
+reranker:
+  name: bge_parent_cross_encoder
+  version: v1
+  params:
+    top_k: 5
+    text_field: parent_text
+evidence_assessor:
+  name: crag
+  version: v1
+  params:
+    max_judge_chunks: 8
+    use_llm: true
+    fallback_to_deterministic: true
+    confidence_threshold: 0.55
+    min_relevant_chunks: 1
+corrective_retrieval_gate:
+  name: evidence_sufficiency
+  version: v1
+corrective_query_planner:
+  name: section_gap
+  version: v1
+  params:
+    max_queries: 2
+    use_llm: true
+    fallback_to_deterministic: true
+    merge_original_candidates: true
+context_packers:
+  - name: default
+    version: v1
+    params:
+      max_context_chars: 12000
+      max_items: 5
+      text_field: text
+      dedup_parent: true
+      include_metadata: true
+  - name: lost_in_middle
+    version: v1
+    params:
+      max_context_chars: 12000
+      max_items: 5
+      text_field: text
+      dedup_parent: true
+      include_metadata: true
+context_gate:
+  long_context_threshold_ratio: 0.65
+  model_context_window: 8192
+  prompt_reserved_tokens: 1536
+  section_token_budget: 4096
+  max_evidence_items: 5
+  max_context_chars: 12000

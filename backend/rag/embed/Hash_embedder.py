@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：HashTextEmbedder。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/embedder.py
 ===============
@@ -19,6 +23,7 @@ from typing import List
 import numpy as np
 
 
+# 阅读注释（类）：封装 hash 文本 embedder，集中封装相关状态、依赖和行为。
 class HashTextEmbedder:
     """
     本地哈希文本向量化器。
@@ -40,6 +45,7 @@ class HashTextEmbedder:
     - 对同义词、复杂语义理解能力很弱
     """
 
+    # 阅读注释（函数）：初始化 HashTextEmbedder，保存运行所需的依赖、配置或状态。
     def __init__(self, embedding_dim: int = 384):
         """
         初始化哈希向量化器。
@@ -49,6 +55,7 @@ class HashTextEmbedder:
         """
         self.embedding_dim = embedding_dim
 
+    # 阅读注释（函数）：处理 tokenize 相关逻辑。
     def _tokenize(self, text: str) -> List[str]:
         """
         简单分词。
@@ -73,6 +80,7 @@ class HashTextEmbedder:
 
         return tokens
 
+    # 阅读注释（函数）：处理 hash Token 相关逻辑。
     def _hash_token(self, token: str) -> int:
         """
         将 token 映射到向量下标。
@@ -91,6 +99,7 @@ class HashTextEmbedder:
 
         return hash_int % self.embedding_dim
 
+    # 阅读注释（函数）：处理 encode one 相关逻辑。
     def _encode_one(self, text: str) -> np.ndarray:
         """
         编码单条文本。
@@ -117,6 +126,7 @@ class HashTextEmbedder:
 
         return vector.astype("float32")
 
+    # 阅读注释（函数）：处理 encode texts 相关逻辑。
     def encode_texts(self, texts: List[str]) -> np.ndarray:
         """
         批量编码文本。
@@ -131,6 +141,7 @@ class HashTextEmbedder:
 
         return np.vstack(embeddings).astype("float32")
 
+    # 阅读注释（函数）：处理 encode 查询 相关逻辑。
     def encode_query(self, query: str) -> np.ndarray:
         """
         编码用户 query。

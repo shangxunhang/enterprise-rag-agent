@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：后端业务模块。
+# 主要定义：FakeRAGTool。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Fake RAG tool for deterministic mainline and recovery tests."""
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from schemas.tool import ToolCallSchema, ToolResultSchema
 from contracts.base_tool import BaseTool
 
 
+# 阅读注释（类）：封装 fake ragtool，集中封装相关状态、依赖和行为。
 class FakeRAGTool(BaseTool):
     """Deterministic RAG tool with opt-in test scenarios.
 
@@ -37,12 +42,36 @@ class FakeRAGTool(BaseTool):
     tool_name = "FakeRAGTool"
     description = "Mock RAG retrieval tool for testing."
 
+    # 阅读注释（函数）：处理 safe key 相关逻辑。
     @staticmethod
     def _safe_key(value: str) -> str:
+        """处理 safe key 相关逻辑。
+
+        参数:
+            value: value，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            str
+
+        阅读提示:
+            主要直接调用：strip, re.sub。
+        """
         text = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", value).strip("_")
         return text or "document"
 
+    # 阅读注释（函数）：执行 FakeRAGTool 的主流程。
     def run(self, tool_call: ToolCallSchema) -> ToolResultSchema:
+        """执行 FakeRAGTool 的主流程。
+
+        参数:
+            tool_call: 工具 call，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ToolResultSchema
+
+        阅读提示:
+            主要直接调用：str, tool_input.get, dict, extra_metadata.get, strip, lower, os.getenv, self._safe_key。
+        """
         tool_input: Dict[str, Any] = tool_call.tool_input
         query = str(tool_input.get("query", ""))
         retrieval_mode = tool_input.get("retrieval_mode", "mock")

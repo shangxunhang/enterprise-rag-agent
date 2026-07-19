@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
+# 主要定义：TruncationCheckSchema、SemanticGateIssueSchema、SemanticGateResultSchema、SectionEvalSchema、HardGateResultSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Generation integrity and evaluation schemas."""
 from __future__ import annotations
 
@@ -8,7 +12,9 @@ from pydantic import Field
 from schemas.common import SchemaBase
 
 
+# 阅读注释（类）：封装 truncation check Schema，定义跨模块传递的数据结构与字段约束。
 class TruncationCheckSchema(SchemaBase):
+    """封装 truncation check Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "truncation_check_v1"
     truncated: bool = False
     reasons: List[str] = Field(default_factory=list)
@@ -19,7 +25,9 @@ class TruncationCheckSchema(SchemaBase):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 semantic gate issue Schema，定义跨模块传递的数据结构与字段约束。
 class SemanticGateIssueSchema(SchemaBase):
+    """封装 semantic gate issue Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "semantic_gate_issue_v1"
     issue_type: str
     severity: str
@@ -31,7 +39,9 @@ class SemanticGateIssueSchema(SchemaBase):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 semantic gate 结果 Schema，定义跨模块传递的数据结构与字段约束。
 class SemanticGateResultSchema(SchemaBase):
+    """封装 semantic gate 结果 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "semantic_gate_result_v1"
     decision: str = "pass"
     issues: List[SemanticGateIssueSchema] = Field(default_factory=list)
@@ -42,7 +52,9 @@ class SemanticGateResultSchema(SchemaBase):
     raw_output: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 章节 评测 Schema，定义跨模块传递的数据结构与字段约束。
 class SectionEvalSchema(SchemaBase):
+    """封装 章节 评测 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "section_eval_v2"
     passed: bool
     checks: Dict[str, bool] = Field(default_factory=dict)
@@ -51,7 +63,9 @@ class SectionEvalSchema(SchemaBase):
     semantic_gate: Optional[SemanticGateResultSchema] = None
 
 
+# 阅读注释（类）：封装 hard gate 结果 Schema，定义跨模块传递的数据结构与字段约束。
 class HardGateResultSchema(SchemaBase):
+    """封装 hard gate 结果 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "hard_gate_result_v2"
     passed: bool
     failures: List[str] = Field(default_factory=list)

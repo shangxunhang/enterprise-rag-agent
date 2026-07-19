@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：_get_top_k_results、_get_retrieved_doc_ids、compute_hit_at_k、compute_recall_at_k、compute_mrr、compute_context_keyword_hit、evaluate_retrieval。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 retrieval_eval.py
 =================
@@ -39,6 +43,7 @@ RAG 检索结果评估模块。
 from typing import List, Set
 
 
+# 阅读注释（函数）：获取 top k 结果集合。
 def _get_top_k_results(
         retrieved_results: List[RetrievalResult],
         top_k: int,
@@ -59,6 +64,7 @@ def _get_top_k_results(
     return retrieved_results[:top_k]
 
 
+# 阅读注释（函数）：获取 retrieved doc 标识集合。
 def _get_retrieved_doc_ids(
         retrieved_results: List[RetrievalResult],
 ) -> List[str]:
@@ -74,6 +80,7 @@ def _get_retrieved_doc_ids(
     return [result.doc_id for result in retrieved_results if result.doc_id]
 
 
+# 阅读注释（函数）：计算 hit at k。
 def compute_hit_at_k(
         expected_doc_ids: List[str],
         retrieved_results: List[RetrievalResult],
@@ -96,6 +103,7 @@ def compute_hit_at_k(
     return 1.0 if retrieved_doc_ids & expected_doc_id_set else 0.0
 
 
+# 阅读注释（函数）：计算 recall at k。
 def compute_recall_at_k(
         expected_doc_ids: List[str],
         retrieved_results: List[RetrievalResult],
@@ -118,6 +126,7 @@ def compute_recall_at_k(
     return len(hit_doc_ids) / len(expected_doc_id_set)
 
 
+# 阅读注释（函数）：计算 mrr。
 def compute_mrr(
         expected_doc_ids: List[str],
         retrieved_results: List[RetrievalResult],
@@ -149,6 +158,7 @@ def compute_mrr(
     return 0.0
 
 
+# 阅读注释（函数）：计算 上下文 keyword hit。
 def compute_context_keyword_hit(
         expected_keywords: List[str],
         retrieved_results: List[RetrievalResult],
@@ -178,6 +188,7 @@ def compute_context_keyword_hit(
     return hit_count / len(expected_keywords)
 
 
+# 阅读注释（函数）：评估 检索。
 def evaluate_retrieval(
         sample: EvalSample,
         retrieved_results: List[RetrievalResult],

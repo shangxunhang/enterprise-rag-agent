@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：TaskStateEventSchema、TaskStateRecordSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Task state schemas using the canonical status contract."""
 
 from __future__ import annotations
@@ -10,7 +14,9 @@ from .common import ErrorSchema, SchemaBase
 from .status import ExecutionStatus
 
 
+# 阅读注释（类）：封装 任务 状态 事件 Schema，定义跨模块传递的数据结构与字段约束。
 class TaskStateEventSchema(SchemaBase):
+    """封装 任务 状态 事件 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "task_state_event_v2"
 
     event_id: str
@@ -32,7 +38,9 @@ class TaskStateEventSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 任务 状态 记录 Schema，定义跨模块传递的数据结构与字段约束。
 class TaskStateRecordSchema(SchemaBase):
+    """封装 任务 状态 记录 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "task_state_record_v2"
 
     task_id: str

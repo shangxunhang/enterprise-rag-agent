@@ -1,9 +1,25 @@
-﻿import json
+# =============================================================================
+# 中文阅读说明：命令行脚本模块，用于启动、验收、调试或离线维护。
+# 主要定义：read_plugin_info。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
+import json
 import sys
 from pathlib import Path
 
 
+# 阅读注释（函数）：读取 插件 info。
 def read_plugin_info(trace_path: str) -> None:
+    """读取 插件 info。
+
+    参数:
+        trace_path: Trace 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：Path, print, path.open, enumerate, line.strip, json.loads, event.get, payload.get。
+    """
     path = Path(trace_path)
 
     print()
@@ -39,15 +55,16 @@ def read_plugin_info(trace_path: str) -> None:
             if not metadata:
                 continue
 
-            components = metadata.get("pipeline_components") or {}
+            static_spec = metadata.get("static_retrieval_spec") or {}
+            components = static_spec.get("components") or {}
             component = components.get("context_packer") or {}
 
             context = result.get("context") or {}
             context_extra = context.get("extra") or {}
 
             print(f"Line:                    {line_number}")
-            print(f"Config file:             {metadata.get('pipeline_config_file')}")
-            print(f"Config hash:             {metadata.get('pipeline_config_hash')}")
+            print(f"Static spec file:        {static_spec.get('path')}")
+            print(f"Static spec hash:        {static_spec.get('hash')}")
             print(f"Component category:      {component.get('category')}")
             print(f"Component name:          {component.get('name')}")
             print(f"Component version:       {component.get('version')}")

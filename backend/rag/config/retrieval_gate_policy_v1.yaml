@@ -1,0 +1,3 @@
+schema_version: retrieval_gate_policy_v1
+policy_id: evidence_correction_gate_v1
+correction_budget: 1

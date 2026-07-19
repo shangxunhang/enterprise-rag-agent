@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：后端业务模块。
+# 主要定义：PromptManager。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Prompt manager.
 
 PromptManager v1:
@@ -15,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from schemas.prompt import PromptRenderResultSchema, PromptTemplateSchema
 
 
+# 阅读注释（类）：封装 提示词 管理器，集中封装相关状态、依赖和行为。
 class PromptManager:
     """File-based prompt manager."""
 
@@ -38,14 +43,28 @@ class PromptManager:
 
     VARIABLE_PATTERN = re.compile(r"{([a-zA-Z_][a-zA-Z0-9_]*)}")
 
+    # 阅读注释（函数）：初始化 PromptManager，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         prompt_root: str | Path = "prompts",
         prompt_registry: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> None:
+        """初始化 PromptManager，保存运行所需的依赖、配置或状态。
+
+        参数:
+            prompt_root: 提示词 root，具体约束请结合类型标注和调用方确认。
+            prompt_registry: 提示词 注册表，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：Path。
+        """
         self.prompt_root = Path(prompt_root)
         self.prompt_registry = prompt_registry or self.DEFAULT_PROMPT_REGISTRY
 
+    # 阅读注释（函数）：加载 template。
     def load_template(self, prompt_id: str) -> PromptTemplateSchema:
         """Load prompt template by prompt_id."""
 
@@ -78,6 +97,7 @@ class PromptManager:
             },
         )
 
+    # 阅读注释（函数）：渲染 PromptManager。
     def render(
         self,
         prompt_id: str,
@@ -128,6 +148,7 @@ class PromptManager:
             },
         )
 
+    # 阅读注释（函数）：提取 variables。
     @classmethod
     def extract_variables(cls, template_text: str) -> List[str]:
         """Extract variable names from a prompt template."""
@@ -135,8 +156,26 @@ class PromptManager:
         variables = cls.VARIABLE_PATTERN.findall(template_text)
         return sorted(set(variables))
 
+    # 阅读注释（函数）：处理 exists 相关逻辑。
     def exists(self, prompt_id: str) -> bool:
+        """处理 exists 相关逻辑。
+
+        参数:
+            prompt_id: 提示词 标识，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            bool
+        """
         return prompt_id in self.prompt_registry
 
+    # 阅读注释（函数）：列出 提示词 标识集合。
     def list_prompt_ids(self) -> List[str]:
+        """列出 提示词 标识集合。
+
+        返回:
+            List[str]
+
+        阅读提示:
+            主要直接调用：sorted, self.prompt_registry.keys。
+        """
         return sorted(self.prompt_registry.keys())

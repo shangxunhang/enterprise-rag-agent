@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：format_context、get_template_by_query_type、build_rag_prompt。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 prompt_builder.py
 =================
@@ -19,6 +23,7 @@ from rag.prompt.templates import (
 )
 
 
+# 阅读注释（函数）：格式化 上下文。
 def format_context(retrieved_chunks: List[Dict[str, Any]]) -> str:
     """
     将 retrieved_chunks 格式化为 prompt context。
@@ -58,6 +63,7 @@ text:
     return "\n\n".join(context_parts)
 
 
+# 阅读注释（函数）：获取 template by 查询 类型。
 def get_template_by_query_type(query_type: QueryType) -> str:
     """
     根据 query_type 获取 prompt template。
@@ -68,6 +74,7 @@ def get_template_by_query_type(query_type: QueryType) -> str:
     )
 
 
+# 阅读注释（函数）：构建 RAG 提示词。
 def build_rag_prompt(
     query: str,
     retrieved_chunks: List[Dict[str, Any]],

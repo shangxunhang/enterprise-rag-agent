@@ -1,13 +1,15 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：_WriteAgent、_ReadAgent、_state、_workflow、_registry、test_legacy_agent_executes_on_copy_and_only_delta_commit_mutates_state、test_undeclared_state_write_is_rejected_and_not_committed、test_native_engine_uses_declared_node_inputs_and_revisioned_outputs、test_graph_node_projection_reports_missing_declared_inputs、test_engine_failure_stops_before_following_node_and_retains_graph_record等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
-from agent.runtime.node_adapter import LegacyAgentNodeAdapter
-from agent.runtime.step_dispatcher import WorkflowStepDispatcher
-from agent.runtime.steps.agent_step import AgentStepHandler
-from agent.runtime.workflow_executor import WorkflowExecutor
+from agent.runtime.native_workflow_engine import NativeWorkflowEngine
+from agent.runtime.node_adapter import AgentNodeAdapter
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from contracts.workflow_engine import WorkflowEnginePort
 from schemas.agent import AgentResultSchema
@@ -18,11 +20,25 @@ from schemas.status import ExecutionStatus
 NOW = "2026-07-17T00:00:00+00:00"
 
 
+# 阅读注释（类）：封装 write Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
 class _WriteAgent(BaseAgent):
+    """封装 write Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
     agent_name = "WriteAgent"
     agent_type = "sub_agent"
 
+    # 阅读注释（函数）：执行 _WriteAgent 的主流程。
     def run(self, shared_state) -> AgentResultSchema:
+        """执行 _WriteAgent 的主流程。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            AgentResultSchema
+
+        阅读提示:
+            主要直接调用：shared_state.structured_facts.append, AgentResultSchema。
+        """
         shared_state.context_bundle.business.project_input = {"project": "政务云"}
         shared_state.contexts["project_input"] = {"project": "政务云"}
         shared_state.structured_facts.append({"fact": "500 users"})
@@ -38,11 +54,25 @@ class _WriteAgent(BaseAgent):
         )
 
 
+# 阅读注释（类）：封装 read Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
 class _ReadAgent(BaseAgent):
+    """封装 read Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
     agent_name = "ReadAgent"
     agent_type = "sub_agent"
 
+    # 阅读注释（函数）：执行 _ReadAgent 的主流程。
     def run(self, shared_state) -> AgentResultSchema:
+        """执行 _ReadAgent 的主流程。
+
+        参数:
+            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            AgentResultSchema
+
+        阅读提示:
+            主要直接调用：AgentResultSchema。
+        """
         value = shared_state.context_bundle.business.project_input
         shared_state.final_result = {"read": value}
         return AgentResultSchema(
@@ -57,7 +87,16 @@ class _ReadAgent(BaseAgent):
         )
 
 
+# 阅读注释（函数）：处理 状态 相关逻辑。
 def _state() -> GraphStateSchema:
+    """处理 状态 相关逻辑。
+
+    返回:
+        GraphStateSchema
+
+    阅读提示:
+        主要直接调用：GraphStateSchema, ContextBundleSchema, UserContextSchema, TaskContextSchema。
+    """
     return GraphStateSchema(
         task_id="task_1",
         run_id="run_1",
@@ -72,7 +111,16 @@ def _state() -> GraphStateSchema:
     )
 
 
+# 阅读注释（函数）：处理 工作流 相关逻辑。
 def _workflow() -> WorkflowDefinitionSchema:
+    """处理 工作流 相关逻辑。
+
+    返回:
+        WorkflowDefinitionSchema
+
+    阅读提示:
+        主要直接调用：WorkflowDefinitionSchema, WorkflowStepSchema。
+    """
     return WorkflowDefinitionSchema(
         workflow_id="wf_graph",
         workflow_name="graph contract test",
@@ -102,26 +150,43 @@ def _workflow() -> WorkflowDefinitionSchema:
     )
 
 
+# 阅读注释（函数）：处理 注册表 相关逻辑。
 def _registry() -> AgentRegistry:
+    """处理 注册表 相关逻辑。
+
+    返回:
+        AgentRegistry
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _WriteAgent, _ReadAgent。
+    """
     registry = AgentRegistry()
     registry.register(_WriteAgent())
     registry.register(_ReadAgent())
     return registry
 
 
+# 阅读注释（函数）：处理 测试 legacy Agent executes on copy and only delta commit mutates 状态 相关逻辑。
 def test_legacy_agent_executes_on_copy_and_only_delta_commit_mutates_state() -> None:
+    """处理 测试 legacy Agent executes on copy and only delta commit mutates 状态 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_state, _workflow, _registry, WorkflowStepDispatcher, AgentStepHandler, build_node_input, GraphStateProjector, execute。
+    """
     state = _state()
     workflow = _workflow()
     step = workflow.steps[0]
     registry = _registry()
-    dispatcher = WorkflowStepDispatcher([AgentStepHandler(registry)])
     node_input = GraphStateProjector().build_node_input(
         workflow=workflow,
         step=step,
         state=state,
     )
 
-    output = LegacyAgentNodeAdapter(dispatcher).execute(
+    output = AgentNodeAdapter(registry).execute(
         step=step,
         node_input=node_input,
         state=state,
@@ -139,12 +204,35 @@ def test_legacy_agent_executes_on_copy_and_only_delta_commit_mutates_state() -> 
     assert state.graph_revision == 1
 
 
+# 阅读注释（函数）：处理 测试 undeclared 状态 write is rejected and not committed 相关逻辑。
 def test_undeclared_state_write_is_rejected_and_not_committed() -> None:
+    """处理 测试 undeclared 状态 write is rejected and not committed 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _ViolatingAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+    """
+    # 阅读注释（类）：封装 violating Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _ViolatingAgent(BaseAgent):
+        """封装 violating Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "ViolatingAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _ViolatingAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _ViolatingAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：AgentResultSchema。
+            """
             shared_state.contexts["undeclared_partial"] = "must_not_commit"
             return AgentResultSchema(
                 result_id="violating_result",
@@ -178,7 +266,7 @@ def test_undeclared_state_write_is_rejected_and_not_committed() -> None:
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert "undeclared_partial" not in state.contexts
@@ -188,9 +276,18 @@ def test_undeclared_state_write_is_rejected_and_not_committed() -> None:
     assert execution.node_outputs[0].metadata["write_contract_passed"] is False
 
 
+# 阅读注释（函数）：处理 测试 native engine uses declared node inputs and revisioned outputs 相关逻辑。
 def test_native_engine_uses_declared_node_inputs_and_revisioned_outputs() -> None:
+    """处理 测试 native engine uses declared node inputs and revisioned outputs 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_state, NativeWorkflowEngine, _registry, engine.execute, _workflow, isinstance, len, list。
+    """
     state = _state()
-    engine = WorkflowExecutor(_registry())
+    engine = NativeWorkflowEngine(_registry())
 
     execution = engine.execute(_workflow(), state)
 
@@ -215,7 +312,16 @@ def test_native_engine_uses_declared_node_inputs_and_revisioned_outputs() -> Non
     assert execution.node_outputs[1].state_delta.delta_sha256
 
 
+# 阅读注释（函数）：处理 测试 graph node projection reports missing declared inputs 相关逻辑。
 def test_graph_node_projection_reports_missing_declared_inputs() -> None:
+    """处理 测试 graph node projection reports missing declared inputs 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_state, _workflow, build_node_input, GraphStateProjector, set。
+    """
     state = _state()
     workflow = _workflow()
     step = workflow.steps[1]
@@ -235,12 +341,35 @@ def test_graph_node_projection_reports_missing_declared_inputs() -> None:
     assert node_input.input_sha256
 
 
+# 阅读注释（函数）：处理 测试 engine failure stops before following node and retains graph 记录 相关逻辑。
 def test_engine_failure_stops_before_following_node_and_retains_graph_record() -> None:
+    """处理 测试 engine failure stops before following node and retains graph 记录 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _FailAgent, _ReadAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute。
+    """
+    # 阅读注释（类）：封装 fail Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _FailAgent(BaseAgent):
+        """封装 fail Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "FailAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _FailAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _FailAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：AgentResultSchema。
+            """
             return AgentResultSchema(
                 result_id="failed",
                 task_id=shared_state.task_id,
@@ -280,7 +409,7 @@ def test_engine_failure_stops_before_following_node_and_retains_graph_record() -
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert execution.completed_node_ids == ["fail"]
@@ -289,15 +418,44 @@ def test_engine_failure_stops_before_following_node_and_retains_graph_record() -
     assert "never" not in state.workflow_step_states
 
 
+# 阅读注释（函数）：处理 测试 retryable node retries without committing failed attempt 相关逻辑。
 def test_retryable_node_retries_without_committing_failed_attempt() -> None:
+    """处理 测试 retryable node retries without committing failed attempt 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：_RetryAgent, AgentRegistry, registry.register, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+    """
+    # 阅读注释（类）：封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _RetryAgent(BaseAgent):
+        """封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "RetryAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：初始化 _RetryAgent，保存运行所需的依赖、配置或状态。
         def __init__(self) -> None:
+            """初始化 _RetryAgent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                None
+            """
             self.calls = 0
 
+        # 阅读注释（函数）：执行 _RetryAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _RetryAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：AgentResultSchema。
+            """
             self.calls += 1
             if self.calls == 1:
                 return AgentResultSchema(
@@ -345,7 +503,7 @@ def test_retryable_node_retries_without_committing_failed_attempt() -> None:
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.SUCCESS
     assert agent.calls == 2
@@ -356,14 +514,37 @@ def test_retryable_node_retries_without_committing_failed_attempt() -> None:
     assert execution.node_outputs[0].metadata["commit_decision"] == "success_commit"
 
 
+# 阅读注释（函数）：处理 测试 timeout returns structured failure and late 状态 is not committed 相关逻辑。
 def test_timeout_returns_structured_failure_and_late_state_is_not_committed() -> None:
+    """处理 测试 timeout returns structured failure and late 状态 is not committed 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _SlowAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+    """
     import time
 
+    # 阅读注释（类）：封装 slow Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _SlowAgent(BaseAgent):
+        """封装 slow Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "SlowAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _SlowAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _SlowAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：time.sleep, AgentResultSchema。
+            """
             time.sleep(0.08)
             shared_state.final_result = {"late": True}
             return AgentResultSchema(
@@ -399,7 +580,7 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert state.final_result is None
@@ -409,12 +590,35 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     assert execution.node_outputs[0].metadata["commit_decision"] == "failure_discarded"
 
 
+# 阅读注释（函数）：处理 测试 business failure can commit only declared partial outputs 相关逻辑。
 def test_business_failure_can_commit_only_declared_partial_outputs() -> None:
+    """处理 测试 business failure can commit only declared partial outputs 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _BusinessGateAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+    """
+    # 阅读注释（类）：封装 business gate Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _BusinessGateAgent(BaseAgent):
+        """封装 business gate Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "BusinessGateAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _BusinessGateAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _BusinessGateAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：ErrorSchema, AgentResultSchema。
+            """
             shared_state.final_result = {"partial": True}
             shared_state.contexts["undeclared"] = "must_fail_contract"
             error = ErrorSchema(
@@ -460,7 +664,7 @@ def test_business_failure_can_commit_only_declared_partial_outputs() -> None:
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     # Undeclared writes fail before commit, even when partial failure commit is enabled.
     assert execution.status == ExecutionStatus.FAILED
@@ -469,12 +673,35 @@ def test_business_failure_can_commit_only_declared_partial_outputs() -> None:
     assert execution.node_results[0].error.error_code == "STATE_WRITE_CONTRACT_VIOLATION"
 
 
+# 阅读注释（函数）：处理 测试 allowed business failure preserves partial 结果 相关逻辑。
 def test_allowed_business_failure_preserves_partial_result() -> None:
+    """处理 测试 allowed business failure preserves partial 结果 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _BusinessGateAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+    """
+    # 阅读注释（类）：封装 business gate Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _BusinessGateAgent(BaseAgent):
+        """封装 business gate Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "AllowedBusinessGateAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _BusinessGateAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _BusinessGateAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：ErrorSchema, AgentResultSchema。
+            """
             shared_state.final_result = {"partial": True}
             error = ErrorSchema(
                 error_code="BUSINESS_GATE_FAILED",
@@ -519,19 +746,42 @@ def test_allowed_business_failure_preserves_partial_result() -> None:
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert state.final_result == {"partial": True}
     assert execution.node_outputs[0].metadata["commit_decision"] == "failure_commit_partial"
 
 
+# 阅读注释（函数）：处理 测试 explicit failure 路由 recovers as partial success 相关逻辑。
 def test_explicit_failure_route_recovers_as_partial_success() -> None:
+    """处理 测试 explicit failure 路由 recovers as partial success 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：AgentRegistry, registry.register, _RouteFailAgent, _RecoveryAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute。
+    """
+    # 阅读注释（类）：封装 路由 fail Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _RouteFailAgent(BaseAgent):
+        """封装 路由 fail Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "RouteFailAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _RouteFailAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _RouteFailAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：AgentResultSchema。
+            """
             return AgentResultSchema(
                 result_id="route_fail",
                 task_id=shared_state.task_id,
@@ -543,11 +793,25 @@ def test_explicit_failure_route_recovers_as_partial_success() -> None:
                 result={},
             )
 
+    # 阅读注释（类）：封装 recovery Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _RecoveryAgent(BaseAgent):
+        """封装 recovery Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         agent_name = "RecoveryAgent"
         agent_type = "sub_agent"
 
+        # 阅读注释（函数）：执行 _RecoveryAgent 的主流程。
         def run(self, shared_state) -> AgentResultSchema:
+            """执行 _RecoveryAgent 的主流程。
+
+            参数:
+                shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
+
+            返回:
+                AgentResultSchema
+
+            阅读提示:
+                主要直接调用：AgentResultSchema。
+            """
             shared_state.final_result = {"recovered": True}
             return AgentResultSchema(
                 result_id="recovered",
@@ -590,7 +854,7 @@ def test_explicit_failure_route_recovers_as_partial_success() -> None:
     )
     state = _state()
 
-    execution = WorkflowExecutor(registry).execute(workflow, state)
+    execution = NativeWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.PARTIAL_SUCCESS
     assert state.final_result == {"recovered": True}

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：RoutingDecision、WorkflowCatalog、WorkflowRouter。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Workflow routing strategies separated from SupervisorAgent."""
 
 from __future__ import annotations
@@ -13,34 +17,92 @@ from schemas.model import ModelRequestSchema, ModelResponseSchema
 from schemas.task import TaskSchema
 
 
+# 阅读注释（类）：封装 routing decision，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class RoutingDecision:
+    """封装 routing decision，集中封装相关状态、依赖和行为。"""
     task_type: str
     model_response: Optional[ModelResponseSchema]
     metadata: Dict[str, Any]
 
 
+# 阅读注释（类）：封装 工作流 catalog，集中封装相关状态、依赖和行为。
 class WorkflowCatalog:
+    """封装 工作流 catalog，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 WorkflowCatalog，保存运行所需的依赖、配置或状态。
     def __init__(self, workflows: Mapping[str, WorkflowDefinitionSchema]) -> None:
+        """初始化 WorkflowCatalog，保存运行所需的依赖、配置或状态。
+
+        参数:
+            workflows: workflows，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：dict。
+        """
         self._workflows = dict(workflows)
 
+    # 阅读注释（函数）：处理 任务 types 相关逻辑。
     @property
     def task_types(self) -> list[str]:
+        """处理 任务 types 相关逻辑。
+
+        返回:
+            list[str]
+
+        阅读提示:
+            主要直接调用：list, self._workflows.keys。
+        """
         return list(self._workflows.keys())
 
+    # 阅读注释（函数）：获取 WorkflowCatalog。
     def get(self, task_type: str) -> WorkflowDefinitionSchema:
+        """获取 WorkflowCatalog。
+
+        参数:
+            task_type: 任务 类型，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            WorkflowDefinitionSchema
+
+        阅读提示:
+            主要直接调用：KeyError。
+        """
         if task_type not in self._workflows:
             raise KeyError(f"No workflow found for task_type: {task_type}")
         return self._workflows[task_type]
 
+    # 阅读注释（函数）：处理 len 相关逻辑。
     def __len__(self) -> int:
+        """处理 len 相关逻辑。
+
+        返回:
+            int
+
+        阅读提示:
+            主要直接调用：len。
+        """
         return len(self._workflows)
 
+    # 阅读注释（函数）：处理 contains 相关逻辑。
     def contains(self, task_type: str) -> bool:
+        """处理 contains 相关逻辑。
+
+        参数:
+            task_type: 任务 类型，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            bool
+        """
         return task_type in self._workflows
 
 
+# 阅读注释（类）：封装 工作流 路由器，集中封装相关状态、依赖和行为。
 class WorkflowRouter:
+    """封装 工作流 路由器，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 WorkflowRouter，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         catalog: WorkflowCatalog,
@@ -50,14 +112,38 @@ class WorkflowRouter:
         enable_llm_routing: bool = True,
         caller_agent: str = "SupervisorAgent",
     ) -> None:
+        """初始化 WorkflowRouter，保存运行所需的依赖、配置或状态。
+
+        参数:
+            catalog: catalog，具体约束请结合类型标注和调用方确认。
+            model_gateway: 模型 网关，具体约束请结合类型标注和调用方确认。
+            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
+            enable_llm_routing: enable LLM routing，具体约束请结合类型标注和调用方确认。
+            caller_agent: caller Agent，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+        """
         self.catalog = catalog
         self.model_gateway = model_gateway
         self.model_name = model_name
         self.enable_llm_routing = enable_llm_routing
         self.caller_agent = caller_agent
 
+    # 阅读注释（函数）：提取 JSON object。
     @staticmethod
     def extract_json_object(text: str) -> Dict[str, Any]:
+        """提取 JSON object。
+
+        参数:
+            text: 待处理文本。
+
+        返回:
+            Dict[str, Any]
+
+        阅读提示:
+            主要直接调用：text.strip, json.loads, isinstance, re.search, ValueError, match.group。
+        """
         text = text.strip()
         try:
             parsed = json.loads(text)
@@ -70,7 +156,19 @@ class WorkflowRouter:
         parsed = json.loads(match.group(0))
         return parsed if isinstance(parsed, dict) else {}
 
+    # 阅读注释（函数）：为 WorkflowRouter 选择执行路径。
     def route(self, task: TaskSchema) -> RoutingDecision:
+        """为 WorkflowRouter 选择执行路径。
+
+        参数:
+            task: 待执行的任务对象。
+
+        返回:
+            RoutingDecision
+
+        阅读提示:
+            主要直接调用：len, self.catalog.contains, metadata.update, print, RoutingDecision, ModelRequestSchema, self.model_gateway.generate, self.extract_json_object。
+        """
         fallback = task.task_type
         metadata: Dict[str, Any] = {
             "routing_mode": "rule_fallback",

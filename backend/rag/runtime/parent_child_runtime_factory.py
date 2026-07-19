@@ -1,14 +1,10 @@
-"""Composition of the parent-child RAG runtime from external configuration.
+"""Composition root for the one static parent-child retrieval topology."""
 
-Heavy ML/vector-store dependencies are loaded lazily through a per-runtime
-resource pool. The composition root resolves registered plugins; it does not
-branch on concrete retrieval strategy names.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Tuple
+from typing import Any, TYPE_CHECKING
 
 from rag.common.pathing import resolve_path
 
@@ -19,12 +15,17 @@ if TYPE_CHECKING:
 class ParentChildRuntimeFactory:
     def resolve_config(self, config: Any, project_root: Path) -> Any:
         cfg = config.__class__(**asdict(config))
-        cfg.parent_file = resolve_path(cfg.parent_file, project_root)
-        cfg.child_file = resolve_path(cfg.child_file, project_root)
-        cfg.db_file = resolve_path(cfg.db_file, project_root)
-        cfg.capture_output = resolve_path(cfg.capture_output, project_root)
-        cfg.pipeline_config_file = resolve_path(cfg.pipeline_config_file, project_root)
-        cfg.active_index_pointer = resolve_path(cfg.active_index_pointer, project_root)
+        for name in (
+            "parent_file",
+            "child_file",
+            "db_file",
+            "capture_output",
+            "static_retrieval_spec_file",
+            "intent_policy_file",
+            "retrieval_gate_policy_file",
+            "active_index_pointer",
+        ):
+            setattr(cfg, name, resolve_path(getattr(cfg, name), project_root))
         cfg.index_lineage = {
             "status": "legacy_paths",
             "index_version": getattr(cfg, "index_version", "legacy_unversioned_index"),
@@ -35,8 +36,12 @@ class ParentChildRuntimeFactory:
             from rag.offline.resolver import ActiveIndexResolver
 
             lineage = ActiveIndexResolver(
-                verify_manifest_hash=bool(getattr(cfg, "verify_active_index_manifest_hash", True)),
-                verify_artifacts=bool(getattr(cfg, "verify_active_index_artifacts", False)),
+                verify_manifest_hash=bool(
+                    getattr(cfg, "verify_active_index_manifest_hash", True)
+                ),
+                verify_artifacts=bool(
+                    getattr(cfg, "verify_active_index_artifacts", False)
+                ),
             ).resolve(pointer_path)
             if lineage.get("backend") != "milvus_lite":
                 raise ValueError(
@@ -60,260 +65,238 @@ class ParentChildRuntimeFactory:
             cfg.index_lineage = {"status": "active_manifest", **lineage}
         return cfg
 
-    def build(self, config: Any, project_root: Path) -> Tuple["ParentChildRAGEngine", Any]:
-        from rag.config.pipeline_config import PipelineConfigLoader
-        from rag.config.profile_catalog import OnlineRAGProfileCatalogValidator
+    def build(
+        self,
+        config: Any,
+        project_root: Path,
+    ) -> tuple["ParentChildRAGEngine", Any]:
+        from rag.config.retrieval_policies import (
+            IntentPolicyConfig,
+            RetrievalGatePolicyConfig,
+            RetrievalPolicyLoader,
+        )
+        from rag.config.static_retrieval import StaticRetrievalSpecLoader
+        from rag.context.context_gate import ContextGate, ContextRequirements
         from rag.data_capture.rag_run_capture import RagRunCapture
         from rag.llm.local_llm import LocalLLMGenerator
-        from rag.prompt.parent_child_prompt_builder import ParentChildPromptBuilder
-        from rag.query.query_transform_chain import QueryTransformChain
+        from rag.planning.retrieval_planner import AdaptiveRetrievalPlanner
+        from rag.query.query_transform_selector import QueryTransformSelector
         from rag.rag_engine.parent_child_rag_engine import ParentChildRAGEngine
         from rag.registry.default_registrations import build_default_component_registry
         from rag.runtime.resource_pool import ParentChildResourcePool
 
         cfg = self.resolve_config(config, project_root)
-        loader = PipelineConfigLoader()
-        pipeline_config = loader.load(
-            cfg.pipeline_config_file,
+        spec = StaticRetrievalSpecLoader().load(
+            cfg.static_retrieval_spec_file,
             project_root=project_root,
         )
-        component_registry = build_default_component_registry()
-        catalog_report = OnlineRAGProfileCatalogValidator(
-            loader=loader
-        ).validate(
-            project_root=project_root,
-            registry=component_registry,
+        policy_loader = RetrievalPolicyLoader()
+        intent_policy = policy_loader.load(cfg.intent_policy_file, IntentPolicyConfig)
+        gate_policy = policy_loader.load(
+            cfg.retrieval_gate_policy_file,
+            RetrievalGatePolicyConfig,
         )
+        registry = build_default_component_registry()
         resource_pool = ParentChildResourcePool(
             runtime_config=cfg,
             project_root=project_root,
         )
-        retrieval_build_context = {
+        retrieval_context = {
             "project_root": project_root,
             "runtime_config": cfg,
             "resource_pool": resource_pool,
         }
 
-        enabled_retriever_configs = [
-            item for item in pipeline_config.retrievers if item.enabled
-        ]
+        retriever_configs = [item for item in spec.retrievers if item.enabled]
         retrievers = [
-            component_registry.build(
+            registry.build(
                 category="retriever",
                 config=item,
-                build_context=retrieval_build_context,
+                build_context=retrieval_context,
             )
-            for item in enabled_retriever_configs
+            for item in retriever_configs
         ]
         source_names = [str(getattr(item, "source_name", "")) for item in retrievers]
-        if any(not name for name in source_names):
-            raise ValueError("configured retriever plugin must expose source_name")
-        if len(source_names) != len(set(source_names)):
-            raise ValueError(
-                "configured retriever plugins expose duplicate source_name values"
-            )
-        fusion = component_registry.build(
-            category="fusion",
-            config=pipeline_config.fusion,
-            build_context=retrieval_build_context,
+        if any(not name for name in source_names) or len(source_names) != len(
+            set(source_names)
+        ):
+            raise ValueError("static retrievers must expose unique non-empty source_name")
+
+        source_fusion = registry.build(
+            category="source_fusion",
+            config=spec.source_fusion,
+            build_context=retrieval_context,
         )
-        query_fusion = component_registry.build(
+        query_fusion = registry.build(
             category="query_fusion",
-            config=pipeline_config.query_fusion,
-            build_context=retrieval_build_context,
+            config=spec.query_fusion,
+            build_context=retrieval_context,
         )
-        candidate_enricher = component_registry.build(
+        candidate_enricher = registry.build(
             category="candidate_enricher",
-            config=pipeline_config.candidate_enricher,
-            build_context=retrieval_build_context,
+            config=spec.candidate_enricher,
+            build_context=retrieval_context,
         )
-
-        reranker = component_registry.build(
+        reranker = registry.build(
             category="reranker",
-            config=pipeline_config.reranker,
-            build_context=retrieval_build_context,
+            config=spec.reranker,
+            build_context=retrieval_context,
         )
-        context_packer = component_registry.build(
-            category="context_packer",
-            config=pipeline_config.context_packer,
-            build_context={
-                "project_root": project_root,
-                "runtime_config": cfg,
-            },
-        )
-        prompt_builder = ParentChildPromptBuilder()
-        run_capture = RagRunCapture(cfg.capture_output)
 
-        answer_llm = None
         query_llm = None
-        model_name = None
-        model_provider = None
-        if cfg.enable_llm:
-            answer_llm = LocalLLMGenerator(
-                model_name=cfg.llm_model,
-                device=cfg.llm_device,
-            )
-            model_name = cfg.llm_model
-            model_provider = cfg.model_provider
         if cfg.enable_query_expansion_llm:
-            can_reuse = (
-                answer_llm is not None
-                and str(cfg.query_expansion_llm_model) == str(cfg.llm_model)
-                and str(cfg.query_expansion_llm_device) == str(cfg.llm_device)
-            )
-            query_llm = answer_llm if can_reuse else LocalLLMGenerator(
+            query_llm = LocalLLMGenerator(
                 model_name=cfg.query_expansion_llm_model,
                 device=cfg.query_expansion_llm_device,
             )
-
-        query_transform_build_context = {
+        generation_params = {
+            "rewrite_max_new_tokens": cfg.query_rewrite_max_new_tokens,
+            "hyde_max_new_tokens": cfg.query_hyde_max_new_tokens,
+            "temperature": cfg.query_expansion_temperature,
+            "top_p": cfg.query_expansion_top_p,
+            "do_sample": cfg.query_expansion_do_sample,
+        }
+        transform_context = {
             "project_root": project_root,
             "runtime_config": cfg,
             "query_llm_generator": query_llm,
             "enable_query_expansion_llm": cfg.enable_query_expansion_llm,
-            "query_expansion_generation_params": {
-                "rewrite_max_new_tokens": cfg.query_rewrite_max_new_tokens,
-                "hyde_max_new_tokens": cfg.query_hyde_max_new_tokens,
-                "temperature": cfg.query_expansion_temperature,
-                "top_p": cfg.query_expansion_top_p,
-                "do_sample": cfg.query_expansion_do_sample,
-            },
+            "query_expansion_generation_params": generation_params,
         }
-        query_transformers = [
-            component_registry.build(
+        transformers = [
+            registry.build(
                 category="query_transformer",
                 config=item,
-                build_context=query_transform_build_context,
+                build_context=transform_context,
             )
-            for item in pipeline_config.query_transformers
+            for item in spec.query_transformers
             if item.enabled
         ]
-        query_transform_chain = QueryTransformChain(
-            query_transformers,
-            profile_id=pipeline_config.profile_id,
-            profile_version=pipeline_config.profile_version,
+        transform_selector = QueryTransformSelector(
+            transformers,
+            spec_id=spec.spec_id,
+            spec_version=spec.spec_version,
+        )
+        retrieval_planner = AdaptiveRetrievalPlanner(
+            short_query_max_chars=intent_policy.short_query_max_chars,
+            correction_budget=gate_policy.correction_budget,
         )
 
-        quality_llm = query_llm or answer_llm
-        quality_build_context = {
+        quality_context = {
             "project_root": project_root,
             "runtime_config": cfg,
-            "quality_llm_generator": quality_llm,
+            "quality_llm_generator": query_llm,
             "enable_quality_llm": bool(
-                cfg.enable_query_expansion_llm and quality_llm is not None
+                cfg.enable_query_expansion_llm and query_llm is not None
             ),
-            "quality_generation_params": {
-                "temperature": cfg.query_expansion_temperature,
-                "top_p": cfg.query_expansion_top_p,
-                "do_sample": cfg.query_expansion_do_sample,
-            },
+            "quality_generation_params": generation_params,
         }
-        evidence_grader = component_registry.build(
-            category="evidence_grader",
-            config=pipeline_config.evidence_grader,
-            build_context=quality_build_context,
+        evidence_assessor = registry.build(
+            category="evidence_assessor",
+            config=spec.evidence_assessor,
+            build_context=quality_context,
         )
-        generation_checker = component_registry.build(
-            category="generation_checker",
-            config=pipeline_config.generation_checker,
-            build_context=quality_build_context,
+        correction_gate = registry.build(
+            category="corrective_retrieval_gate",
+            config=spec.corrective_retrieval_gate,
+            build_context=quality_context,
         )
-        repair_strategy = component_registry.build(
-            category="repair_strategy",
-            config=pipeline_config.repair_strategy,
-            build_context=quality_build_context,
+        corrective_query_planner = registry.build(
+            category="corrective_query_planner",
+            config=spec.corrective_query_planner,
+            build_context=quality_context,
         )
 
-        # External profile is the source of truth for migrated slots. Legacy
-        # runtime fields remain available only for compatibility and audit.
-        requested_legacy_rerank_top_k = int(cfg.rerank_top_k)
-        cfg.legacy_reranker_overrides = {
-            "skip_rerank": bool(cfg.skip_rerank),
-            "rerank_top_k": requested_legacy_rerank_top_k,
-            "ignored_by_configured_reranker": True,
+        packers = {
+            item.name: registry.build(
+                category="context_packer",
+                config=item,
+                build_context={"project_root": project_root, "runtime_config": cfg},
+            )
+            for item in spec.context_packers
+            if item.enabled
         }
-        cfg.rerank_top_k = int(getattr(reranker, "top_k", cfg.rerank_top_k))
-        cfg.max_context_chars = int(context_packer.max_context_chars)
-        cfg.max_context_items = int(context_packer.max_items)
-        cfg.pipeline_name = pipeline_config.profile_id
-        cfg.pipeline_version = pipeline_config.profile_version
-        cfg.pipeline_config_hash = pipeline_config.config_hash()
-        cfg.pipeline_schema_version = pipeline_config.schema_version
-        cfg.pipeline_profile_id = pipeline_config.profile_id
-        cfg.pipeline_profile_version = pipeline_config.profile_version
-        cfg.profile_catalog_validation = catalog_report.to_dict()
+        gate_config = spec.context_gate
+        context_gate = ContextGate(
+            default_packer=packers["default"],
+            lost_in_middle_packer=packers["lost_in_middle"],
+            default_requirements=ContextRequirements(
+                model_context_window=gate_config.model_context_window,
+                prompt_reserved_tokens=gate_config.prompt_reserved_tokens,
+                section_token_budget=gate_config.section_token_budget,
+                max_evidence_items=gate_config.max_evidence_items,
+                max_context_chars=gate_config.max_context_chars,
+            ),
+            long_context_threshold_ratio=gate_config.long_context_threshold_ratio,
+        )
 
-        def _component_record(instance: Any, component_config: Any) -> dict[str, Any]:
+        def component_record(instance: Any, component_config: Any) -> dict[str, Any]:
             return {
                 **instance.plugin_metadata.to_dict(),
                 "enabled": bool(component_config.enabled),
                 "params": dict(component_config.params),
             }
 
-        cfg.pipeline_component_metadata = {
+        cfg.pipeline_name = spec.spec_id
+        cfg.pipeline_version = spec.spec_version
+        cfg.static_retrieval_spec_hash = spec.config_hash()
+        cfg.static_retrieval_spec_schema_version = spec.schema_version
+        cfg.static_retrieval_spec_id = spec.spec_id
+        cfg.static_retrieval_spec_version = spec.spec_version
+        cfg.intent_policy_id = intent_policy.policy_id
+        cfg.retrieval_gate_policy_id = gate_policy.policy_id
+        cfg.static_retrieval_component_metadata = {
             "query_transformers": [
-                _component_record(instance, component_config)
-                for instance, component_config in zip(
-                    query_transformers,
-                    [item for item in pipeline_config.query_transformers if item.enabled],
+                component_record(instance, item)
+                for instance, item in zip(
+                    transformers,
+                    [item for item in spec.query_transformers if item.enabled],
                     strict=True,
                 )
             ],
             "retrievers": [
-                _component_record(instance, component_config)
-                for instance, component_config in zip(
-                    retrievers,
-                    enabled_retriever_configs,
-                    strict=True,
-                )
+                component_record(instance, item)
+                for instance, item in zip(retrievers, retriever_configs, strict=True)
             ],
-            "fusion": _component_record(fusion, pipeline_config.fusion),
-            "query_fusion": _component_record(
-                query_fusion, pipeline_config.query_fusion
+            "source_fusion": component_record(source_fusion, spec.source_fusion),
+            "query_fusion": component_record(query_fusion, spec.query_fusion),
+            "candidate_enricher": component_record(
+                candidate_enricher, spec.candidate_enricher
             ),
-            "candidate_enricher": _component_record(
-                candidate_enricher, pipeline_config.candidate_enricher
+            "reranker": component_record(reranker, spec.reranker),
+            "evidence_assessor": component_record(
+                evidence_assessor, spec.evidence_assessor
             ),
-            "reranker": _component_record(reranker, pipeline_config.reranker),
-            "evidence_grader": _component_record(
-                evidence_grader, pipeline_config.evidence_grader
+            "corrective_retrieval_gate": component_record(
+                correction_gate, spec.corrective_retrieval_gate
             ),
-            "context_packer": _component_record(
-                context_packer, pipeline_config.context_packer
+            "corrective_query_planner": component_record(
+                corrective_query_planner, spec.corrective_query_planner
             ),
-            "generation_checker": _component_record(
-                generation_checker, pipeline_config.generation_checker
-            ),
-            "repair_strategy": _component_record(
-                repair_strategy, pipeline_config.repair_strategy
-            ),
+            "context_packers": {
+                item.name: component_record(packers[item.name], item)
+                for item in spec.context_packers
+                if item.enabled
+            },
+            "context_gate": context_gate.execution_metadata(),
         }
 
         engine = ParentChildRAGEngine(
             retrievers=retrievers,
-            fusion=fusion,
+            source_fusion=source_fusion,
             query_fusion=query_fusion,
             candidate_enricher=candidate_enricher,
             reranker=reranker,
-            context_packer=context_packer,
-            prompt_builder=prompt_builder,
-            evidence_grader=evidence_grader,
-            generation_checker=generation_checker,
-            repair_strategy=repair_strategy,
-            run_capture=run_capture,
-            llm_generator=answer_llm,
-            model_name=model_name,
-            model_provider=model_provider,
+            context_gate=context_gate,
+            evidence_assessor=evidence_assessor,
+            corrective_retrieval_gate=correction_gate,
+            corrective_query_planner=corrective_query_planner,
+            run_capture=RagRunCapture(cfg.capture_output),
             query_llm_generator=query_llm,
-            query_transform_chain=query_transform_chain,
+            query_transform_selector=transform_selector,
+            retrieval_planner=retrieval_planner,
             enable_query_expansion_llm=cfg.enable_query_expansion_llm,
-            query_expansion_generation_params={
-                "rewrite_max_new_tokens": cfg.query_rewrite_max_new_tokens,
-                "hyde_max_new_tokens": cfg.query_hyde_max_new_tokens,
-                "temperature": cfg.query_expansion_temperature,
-                "top_p": cfg.query_expansion_top_p,
-                "do_sample": cfg.query_expansion_do_sample,
-            },
+            query_expansion_generation_params=generation_params,
             pipeline_name=cfg.pipeline_name,
             pipeline_version=cfg.pipeline_version,
         )

@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：build_faiss_index、save_faiss_index、save_chunk_meta、load_chunks、load_faiss_index、load_chunk_meta。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """
 src/indexer.py
 ==============
@@ -22,6 +26,7 @@ import faiss
 import numpy as np
 
 
+# 阅读注释（函数）：构建 faiss 索引。
 def build_faiss_index(embeddings: np.ndarray) -> faiss.Index:
     """
     构建 FAISS 向量索引。
@@ -48,6 +53,7 @@ def build_faiss_index(embeddings: np.ndarray) -> faiss.Index:
     return index
 
 
+# 阅读注释（函数）：保存 faiss 索引。
 def save_faiss_index(index: faiss.Index, file_path: Path) -> None:
     """
     保存 FAISS index。
@@ -60,6 +66,7 @@ def save_faiss_index(index: faiss.Index, file_path: Path) -> None:
     faiss.write_index(index, str(file_path))
 
 
+# 阅读注释（函数）：保存 文本块 meta。
 def save_chunk_meta(chunks: List[Dict], file_path: Path) -> None:
     """
     保存 chunk metadata。
@@ -74,6 +81,7 @@ def save_chunk_meta(chunks: List[Dict], file_path: Path) -> None:
         json.dump(chunks, f, ensure_ascii=False, indent=2)
 
 
+# 阅读注释（函数）：加载 chunks。
 def load_chunks(file_path: Path) -> List[Dict]:
     """
     读取 chunks_old.json。
@@ -90,6 +98,7 @@ def load_chunks(file_path: Path) -> List[Dict]:
     return chunks
 
 
+# 阅读注释（函数）：加载 faiss 索引。
 def load_faiss_index(file_path: Path) -> faiss.Index:
     """
     加载 FAISS index。
@@ -108,6 +117,7 @@ def load_faiss_index(file_path: Path) -> faiss.Index:
     return index
 
 
+# 阅读注释（函数）：加载 文本块 meta。
 def load_chunk_meta(file_path: Path) -> List[Dict]:
     """
     加载 chunk metadata。

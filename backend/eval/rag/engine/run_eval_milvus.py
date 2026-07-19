@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：main。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from rag.configs.RAGConfig import (
     EMBEDDING_MODEL_NAME,
     EMBEDDING_DEVICE,
@@ -14,7 +18,16 @@ from rag.retriever.milvus_retriever import MilvusRetriever
 from eval.rag.engine.eval_runner import run_and_save_eval
 
 
+# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
+    """处理 main 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：print, TextEmbedder, MilvusRetriever, run_and_save_eval。
+    """
     print("=" * 80)
     print("[eval_milvus] 初始化 TextEmbedder")
     print("=" * 80)

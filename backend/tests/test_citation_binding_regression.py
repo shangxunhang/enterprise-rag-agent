@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：citation、project_input、_RepairStubAgent、CitationBindingRegressionTest。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Regression tests for citation repair, grounding fallback and hard gate."""
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from schemas.status import ExecutionStatus
 NOW = "2026-07-13T00:00:00+00:00"
 
 
+# 阅读注释（函数）：处理 引用 相关逻辑。
 def citation(
     citation_id: str,
     quote_text: str,
@@ -29,6 +34,20 @@ def citation(
     chunk_id: str,
     title: str = "测试资料",
 ) -> CitationSchema:
+    """处理 引用 相关逻辑。
+
+    参数:
+        citation_id: 引用 标识，具体约束请结合类型标注和调用方确认。
+        quote_text: quote 文本，具体约束请结合类型标注和调用方确认。
+        chunk_id: 文本块 标识，具体约束请结合类型标注和调用方确认。
+        title: title，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        CitationSchema
+
+    阅读提示:
+        主要直接调用：CitationSchema。
+    """
     return CitationSchema(
         citation_id=citation_id,
         source_type="document",
@@ -40,7 +59,16 @@ def citation(
     )
 
 
+# 阅读注释（函数）：处理 项目 输入 相关逻辑。
 def project_input() -> ProjectInputSchema:
+    """处理 项目 输入 相关逻辑。
+
+    返回:
+        ProjectInputSchema
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate。
+    """
     return ProjectInputSchema.model_validate(
         {
             "task_id": "task_test",
@@ -58,12 +86,39 @@ def project_input() -> ProjectInputSchema:
     )
 
 
+# 阅读注释（类）：封装 修复 stub Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
 class _RepairStubAgent(SchemeWriterAgent):
+    """封装 修复 stub Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+    # 阅读注释（函数）：初始化 _RepairStubAgent，保存运行所需的依赖、配置或状态。
     def __init__(self, response_content: str) -> None:
+        """初始化 _RepairStubAgent，保存运行所需的依赖、配置或状态。
+
+        参数:
+            response_content: 响应 content，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：__init__, super。
+        """
         super().__init__()
         self.response_content = response_content
 
+    # 阅读注释（函数）：处理 call 模型 相关逻辑。
     def _call_model(self, *args, **kwargs) -> ModelResponseSchema:  # type: ignore[override]
+        """处理 call 模型 相关逻辑。
+
+        参数:
+            *args: 额外位置参数。
+            **kwargs: 额外关键字参数。
+
+        返回:
+            ModelResponseSchema
+
+        阅读提示:
+            主要直接调用：ModelResponseSchema。
+        """
         return ModelResponseSchema(
             model_call_id="repair_stub",
             task_id="task_test",
@@ -76,8 +131,19 @@ class _RepairStubAgent(SchemeWriterAgent):
         )
 
 
+# 阅读注释（类）：封装 引用 绑定关系 regression 测试，集中封装相关状态、依赖和行为。
 class CitationBindingRegressionTest(unittest.TestCase):
+    """封装 引用 绑定关系 regression 测试，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：处理 测试 修复 rejects syntactic but unsupported marker 相关逻辑。
     def test_repair_rejects_syntactic_but_unsupported_marker(self) -> None:
+        """处理 测试 修复 rejects syntactic but unsupported marker 相关逻辑。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：citation, _RepairStubAgent, agent._repair_section_citations, SimpleNamespace, project_input, self.assertEqual。
+        """
         original = "系统拟采用 TLS 与多因素认证增强访问安全。"
         unrelated = citation(
             "C1",
@@ -86,7 +152,7 @@ class CitationBindingRegressionTest(unittest.TestCase):
         )
         agent = _RepairStubAgent(original + "[C1]")
 
-        repaired, _ = agent._repair_section_citations(
+        repaired, _ = agent.citation_service._repair_section_citations(
             SimpleNamespace(run_id="run_test"),
             content=original,
             section_id="section_security",
@@ -97,7 +163,16 @@ class CitationBindingRegressionTest(unittest.TestCase):
 
         self.assertEqual(original, repaired)
 
+    # 阅读注释（函数）：处理 测试 hard gate checks each required 引用 章节 相关逻辑。
     def test_hard_gate_checks_each_required_citation_section(self) -> None:
+        """处理 测试 hard gate checks each required 引用 章节 相关逻辑。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：CitationBindingSchema, SchemeSectionSchema, TruncationCheckSchema, SectionEvalSchema, SchemeDraftSchema, evaluate_scheme_draft, self.assertFalse, self.assertIn。
+        """
         binding = CitationBindingSchema(
             binding_id="binding_1",
             citation_id="C1",

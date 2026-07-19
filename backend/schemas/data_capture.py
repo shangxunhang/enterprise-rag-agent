@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：DataCaptureRecordSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Data capture schemas."""
 
 from __future__ import annotations
@@ -8,6 +12,7 @@ from pydantic import Field
 from .common import SchemaBase
 
 
+# 阅读注释（类）：封装 数据 capture 记录 Schema，定义跨模块传递的数据结构与字段约束。
 class DataCaptureRecordSchema(SchemaBase):
     """A reusable data capture record.
 

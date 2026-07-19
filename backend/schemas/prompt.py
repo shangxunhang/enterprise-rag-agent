@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：PromptTemplateSchema、PromptRenderResultSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Prompt schemas."""
 
 from __future__ import annotations
@@ -8,6 +12,7 @@ from pydantic import Field
 from .common import SchemaBase
 
 
+# 阅读注释（类）：封装 提示词 template Schema，定义跨模块传递的数据结构与字段约束。
 class PromptTemplateSchema(SchemaBase):
     """Prompt template metadata and content."""
 
@@ -29,6 +34,7 @@ class PromptTemplateSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 阅读注释（类）：封装 提示词 render 结果 Schema，定义跨模块传递的数据结构与字段约束。
 class PromptRenderResultSchema(SchemaBase):
     """Rendered prompt result."""
 

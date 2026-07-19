@@ -1,4 +1,8 @@
-"""Run the same eval set against multiple configured online RAG profiles."""
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：_utc_now、_aggregate、_set_seed、_error_payload、StrategyEvalRunner。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
+"""Run one eval set against static retrieval specs and request policies."""
 from __future__ import annotations
 
 import json
@@ -10,8 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from rag.config.pipeline_config import PipelineConfigLoader
-from rag.config.profile_catalog import OnlineRAGProfileCatalogValidator
+from rag.config.static_retrieval import StaticRetrievalSpecLoader
 from rag.registry.default_registrations import build_default_component_registry
 
 from .baseline import BaselineManager
@@ -36,16 +39,49 @@ from .schemas import (
 )
 
 
+# 阅读注释（函数）：处理 utc now 相关逻辑。
 def _utc_now() -> str:
+    """处理 utc now 相关逻辑。
+
+    返回:
+        str
+
+    阅读提示:
+        主要直接调用：isoformat, datetime.now。
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
+# 阅读注释（函数）：处理 aggregate 相关逻辑。
 def _aggregate(values: list[float | None]) -> float | None:
+    """处理 aggregate 相关逻辑。
+
+    参数:
+        values: values，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float | None
+
+    阅读提示:
+        主要直接调用：float, sum, len。
+    """
     usable = [float(value) for value in values if value is not None]
     return sum(usable) / len(usable) if usable else None
 
 
+# 阅读注释（函数）：设置 seed。
 def _set_seed(seed: int) -> None:
+    """设置 seed。
+
+    参数:
+        seed: seed，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：random.seed, np.random.seed, torch.manual_seed, torch.cuda.is_available, torch.cuda.manual_seed_all。
+    """
     random.seed(seed)
     try:
         import numpy as np
@@ -63,23 +99,51 @@ def _set_seed(seed: int) -> None:
         pass
 
 
+# 阅读注释（函数）：处理 错误 载荷 相关逻辑。
 def _error_payload(exc: Exception) -> dict[str, Any]:
+    """处理 错误 载荷 相关逻辑。
+
+    参数:
+        exc: exc，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        dict[str, Any]
+
+    阅读提示:
+        主要直接调用：str。
+    """
     return {
         "error_type": exc.__class__.__name__,
         "message": str(exc),
     }
 
 
+# 阅读注释（类）：封装 strategy 评测 runner，集中封装相关状态、依赖和行为。
 class StrategyEvalRunner:
+    """封装 strategy 评测 runner，集中封装相关状态、依赖和行为。"""
+    # 阅读注释（函数）：初始化 StrategyEvalRunner，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         metric_registry: MetricRegistry | None = None,
         runtime_factory: Any | None = None,
     ) -> None:
+        """初始化 StrategyEvalRunner，保存运行所需的依赖、配置或状态。
+
+        参数:
+            metric_registry: 指标 注册表，具体约束请结合类型标注和调用方确认。
+            runtime_factory: 运行时 工厂，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：build_default_metric_registry, DefaultExperimentRuntimeFactory。
+        """
         self.metric_registry = metric_registry or build_default_metric_registry()
         self.runtime_factory = runtime_factory or DefaultExperimentRuntimeFactory()
 
+    # 阅读注释（函数）：执行 StrategyEvalRunner 的主流程。
     def run_from_file(
         self,
         config_path: str | Path,
@@ -87,6 +151,19 @@ class StrategyEvalRunner:
         project_root: str | Path | None = None,
         output_dir_override: str | Path | None = None,
     ) -> MatrixReport:
+        """执行 StrategyEvalRunner 的主流程。
+
+        参数:
+            config_path: 配置 路径，具体约束请结合类型标注和调用方确认。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+            output_dir_override: 输出 dir override，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            MatrixReport
+
+        阅读提示:
+            主要直接调用：ExperimentConfigLoader, loader.load, resolve, Path, PipelineConfigLoader.default_project_root, self.run。
+        """
         loader = ExperimentConfigLoader()
         matrix, resolved_config_path, config_hash = loader.load(
             config_path,
@@ -95,7 +172,7 @@ class StrategyEvalRunner:
         root = (
             Path(project_root).resolve()
             if project_root is not None
-            else PipelineConfigLoader.default_project_root()
+            else StaticRetrievalSpecLoader.default_project_root()
         )
         return self.run(
             matrix,
@@ -105,12 +182,25 @@ class StrategyEvalRunner:
             output_dir_override=output_dir_override,
         )
 
+    # 阅读注释（函数）：校验 from 文件。
     def validate_from_file(
         self,
         config_path: str | Path,
         *,
         project_root: str | Path | None = None,
     ) -> dict[str, Any]:
+        """校验 from 文件。
+
+        参数:
+            config_path: 配置 路径，具体约束请结合类型标注和调用方确认。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            dict[str, Any]
+
+        阅读提示:
+            主要直接调用：ExperimentConfigLoader, loader.load, resolve, Path, PipelineConfigLoader.default_project_root, resolve_path, PipelineConfigLoader, load_eval_samples。
+        """
         loader = ExperimentConfigLoader()
         matrix, resolved_config_path, config_hash = loader.load(
             config_path,
@@ -119,18 +209,16 @@ class StrategyEvalRunner:
         root = (
             Path(project_root).resolve()
             if project_root is not None
-            else PipelineConfigLoader.default_project_root()
+            else StaticRetrievalSpecLoader.default_project_root()
         )
-        dataset_path = PipelineConfigLoader().resolve_path(
+        spec_loader = StaticRetrievalSpecLoader()
+        dataset_path = spec_loader.resolve_path(
             matrix.dataset_path,
             project_root=root,
         )
         samples = load_eval_samples(dataset_path)
-        catalog = OnlineRAGProfileCatalogValidator().validate(
-            project_root=root,
-            registry=build_default_component_registry(),
-        )
-        profiles: list[dict[str, Any]] = []
+        registry = build_default_component_registry()
+        specs: list[dict[str, Any]] = []
         for experiment in matrix.experiments:
             names = experiment.metrics or matrix.metrics
             definitions = self.metric_registry.require(names)
@@ -142,21 +230,50 @@ class StrategyEvalRunner:
                         "retrieval experiment cannot use answer metrics: "
                         + ", ".join(invalid)
                     )
-            profile_path = PipelineConfigLoader().resolve_path(
-                experiment.pipeline_config_file,
+            spec_path = spec_loader.resolve_path(
+                experiment.static_retrieval_spec_file,
                 project_root=root,
             )
-            profile = PipelineConfigLoader().load(
-                profile_path,
+            spec = spec_loader.load(
+                spec_path,
                 project_root=root,
             )
-            profiles.append(
+            references = [
+                *(("query_transformer", item) for item in spec.query_transformers),
+                *(("retriever", item) for item in spec.retrievers),
+                ("source_fusion", spec.source_fusion),
+                ("query_fusion", spec.query_fusion),
+                ("candidate_enricher", spec.candidate_enricher),
+                ("reranker", spec.reranker),
+                ("evidence_assessor", spec.evidence_assessor),
+                (
+                    "corrective_retrieval_gate",
+                    spec.corrective_retrieval_gate,
+                ),
+                ("corrective_query_planner", spec.corrective_query_planner),
+                *(("context_packer", item) for item in spec.context_packers),
+            ]
+            missing = [
+                f"{category}/{config.name}@{config.version}"
+                for category, config in references
+                if not registry.contains(
+                    category=category,
+                    name=config.name,
+                    version=config.version,
+                )
+            ]
+            if missing:
+                raise ValueError(
+                    "static retrieval spec references unregistered components: "
+                    + ", ".join(missing)
+                )
+            specs.append(
                 {
                     "experiment_id": experiment.experiment_id,
-                    "profile_id": profile.profile_id,
-                    "profile_version": profile.profile_version,
-                    "path": str(profile_path),
-                    "hash": profile.config_hash(),
+                    "static_spec_id": spec.spec_id,
+                    "static_spec_version": spec.spec_version,
+                    "path": str(spec_path),
+                    "hash": spec.config_hash(),
                     "mode": experiment.mode,
                     "metrics": names,
                     "warmup_runs": experiment.warmup_runs,
@@ -170,10 +287,10 @@ class StrategyEvalRunner:
             "dataset_path": str(dataset_path),
             "dataset_hash": file_sha256(dataset_path),
             "sample_count": len(samples),
-            "profile_catalog": catalog.to_dict(),
-            "profiles": profiles,
+            "static_specs": specs,
         }
 
+    # 阅读注释（函数）：执行 StrategyEvalRunner 的主流程。
     def run(
         self,
         matrix: ExperimentMatrixConfig,
@@ -183,16 +300,32 @@ class StrategyEvalRunner:
         matrix_config_hash: str,
         output_dir_override: str | Path | None = None,
     ) -> MatrixReport:
+        """执行 StrategyEvalRunner 的主流程。
+
+        参数:
+            matrix: matrix，具体约束请结合类型标注和调用方确认。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+            matrix_config_path: matrix 配置 路径，具体约束请结合类型标注和调用方确认。
+            matrix_config_hash: matrix 配置 hash，具体约束请结合类型标注和调用方确认。
+            output_dir_override: 输出 dir override，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            MatrixReport
+
+        阅读提示:
+            主要直接调用：_utc_now, strftime, datetime.now, time.perf_counter, resolve_path, PipelineConfigLoader, load_eval_samples, file_sha256。
+        """
         started_at = _utc_now()
         matrix_run_id = datetime.now(timezone.utc).strftime("run_%Y%m%d_%H%M%S_%f")
         started = time.perf_counter()
-        dataset_path = PipelineConfigLoader().resolve_path(
+        path_loader = StaticRetrievalSpecLoader()
+        dataset_path = path_loader.resolve_path(
             matrix.dataset_path,
             project_root=project_root,
         )
         samples = load_eval_samples(dataset_path)
         dataset_hash = file_sha256(dataset_path)
-        output_dir = PipelineConfigLoader().resolve_path(
+        output_dir = path_loader.resolve_path(
             output_dir_override or matrix.output_dir,
             project_root=project_root,
         ) / matrix.matrix_id / matrix_run_id
@@ -268,6 +401,7 @@ class StrategyEvalRunner:
         )
         return report
 
+    # 阅读注释（函数）：执行 StrategyEvalRunner 的主流程。
     def _run_experiment(
         self,
         *,
@@ -279,6 +413,23 @@ class StrategyEvalRunner:
         matrix_config_hash: str,
         matrix_run_id: str,
     ) -> ExperimentReport:
+        """执行 StrategyEvalRunner 的主流程。
+
+        参数:
+            matrix: matrix，具体约束请结合类型标注和调用方确认。
+            experiment: experiment，具体约束请结合类型标注和调用方确认。
+            samples: samples，具体约束请结合类型标注和调用方确认。
+            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+            dataset_hash: 数据集 hash，具体约束请结合类型标注和调用方确认。
+            matrix_config_hash: matrix 配置 hash，具体约束请结合类型标注和调用方确认。
+            matrix_run_id: matrix run 标识，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            ExperimentReport
+
+        阅读提示:
+            主要直接调用：_utc_now, time.perf_counter, _set_seed, self.metric_registry.require, self.metric_registry.validate_samples, ValueError, join, resolve_path。
+        """
         started_at = _utc_now()
         started = time.perf_counter()
         seed = experiment.seed if experiment.seed is not None else matrix.seed
@@ -294,20 +445,21 @@ class StrategyEvalRunner:
                     + ", ".join(invalid)
                 )
 
-        profile_path = PipelineConfigLoader().resolve_path(
-            experiment.pipeline_config_file,
+        spec_loader = StaticRetrievalSpecLoader()
+        spec_path = spec_loader.resolve_path(
+            experiment.static_retrieval_spec_file,
             project_root=project_root,
         )
-        profile = PipelineConfigLoader().load(
-            profile_path,
+        spec = spec_loader.load(
+            spec_path,
             project_root=project_root,
         )
         metadata: dict[str, Any] = {
-            "profile_id": profile.profile_id,
-            "profile_version": profile.profile_version,
-            "pipeline_config_file": str(profile_path),
-            "pipeline_config_hash": profile.config_hash(),
-            "components": profile.canonical_dict(),
+            "static_spec_id": spec.spec_id,
+            "static_spec_version": spec.spec_version,
+            "static_retrieval_spec_file": str(spec_path),
+            "static_retrieval_spec_hash": spec.config_hash(),
+            "components": spec.canonical_dict(),
         }
         sample_results: list[SampleMetricResult] = []
         runtime = None
@@ -367,8 +519,8 @@ class StrategyEvalRunner:
                             citations=output.get("citations") or [],
                             metadata={
                                 "query_expansion": output.get("query_expansion") or {},
-                                "adaptive_rag": output.get("adaptive_rag"),
-                                "c_rag": output.get("c_rag"),
+                                "retrieval_plan": output.get("retrieval_plan"),
+                                "evidence_quality": output.get("evidence_quality"),
                                 "self_rag": output.get("self_rag"),
                             },
                         )
@@ -421,10 +573,14 @@ class StrategyEvalRunner:
             matrix_id=matrix.matrix_id,
             matrix_run_id=matrix_run_id,
             status=status,
-            profile_id=str(metadata["profile_id"]),
-            profile_version=str(metadata["profile_version"]),
-            pipeline_config_file=str(metadata["pipeline_config_file"]),
-            pipeline_config_hash=str(metadata["pipeline_config_hash"]),
+            static_spec_id=str(metadata["static_spec_id"]),
+            static_spec_version=str(metadata["static_spec_version"]),
+            static_retrieval_spec_file=str(
+                metadata["static_retrieval_spec_file"]
+            ),
+            static_retrieval_spec_hash=str(
+                metadata["static_retrieval_spec_hash"]
+            ),
             component_metadata=dict(metadata["components"]),
             mode=experiment.mode,
             top_k=experiment.top_k,

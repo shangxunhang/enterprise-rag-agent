@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：RAGEvaluator。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Evaluator for task-level RAG capture records."""
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from .metrics import (
 from .schemas import RAGEvalResultSchema
 
 
+# 阅读注释（类）：封装 ragevaluator，集中封装相关状态、依赖和行为。
 class RAGEvaluator:
     """RAGAS-style lightweight evaluator.
 
@@ -26,7 +31,20 @@ class RAGEvaluator:
     data/captures/eval_samples/<run_id>_eval_samples.jsonl
     """
 
+    # 阅读注释（函数）：评估 RAGEvaluator。
     def evaluate(self, sample: Dict[str, Any], sample_index: int = 1) -> RAGEvalResultSchema:
+        """评估 RAGEvaluator。
+
+        参数:
+            sample: sample，具体约束请结合类型标注和调用方确认。
+            sample_index: sample 索引，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            RAGEvalResultSchema
+
+        阅读提示:
+            主要直接调用：extract_query, extract_answer, extract_context_text, sample.get, isinstance, eval_sample.get, label.get, context_precision。
+        """
         query = extract_query(sample)
         answer = extract_answer(sample)
         context_text = extract_context_text(sample)

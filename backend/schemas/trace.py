@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：跨模块数据 Schema 定义模块。
+# 主要定义：RunTraceEventSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Run trace schemas.
 
 This scheme is designed as a stable v1 envelope for workflow / agent / tool / model tracing.
@@ -12,6 +16,7 @@ from pydantic import Field
 from .common import ErrorSchema, SchemaBase
 
 
+# 阅读注释（类）：封装 run Trace 事件 Schema，定义跨模块传递的数据结构与字段约束。
 class RunTraceEventSchema(SchemaBase):
     """One trace event in a task run.
 

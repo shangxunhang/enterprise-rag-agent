@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
+# 主要定义：_safe_float、_resource_pool、ParentChildCandidateEnricher。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Parent-child candidate enrichment and parent backfill plugin."""
 
 from __future__ import annotations
@@ -5,18 +9,43 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from rag.legacy.schema.Retrieval_Result_Schema import build_retrieval_result_v2
+from rag.schema.Retrieval_Result_Schema import build_retrieval_result_v2
 from rag.schema.candidate import CandidateSet
 
 
+# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """处理 safe float 相关逻辑。
+
+    参数:
+        value: value，具体约束请结合类型标注和调用方确认。
+        default: default，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        float
+
+    阅读提示:
+        主要直接调用：float。
+    """
     try:
         return default if value is None else float(value)
     except Exception:
         return default
 
 
+# 阅读注释（函数）：处理 resource pool 相关逻辑。
 def _resource_pool(build_context: Any) -> Any:
+    """处理 resource pool 相关逻辑。
+
+    参数:
+        build_context: build 上下文，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        Any
+
+    阅读提示:
+        主要直接调用：isinstance, context.get, ValueError。
+    """
     context = build_context if isinstance(build_context, dict) else {}
     pool = context.get("resource_pool")
     if pool is None:
@@ -26,9 +55,11 @@ def _resource_pool(build_context: Any) -> Any:
     return pool
 
 
+# 阅读注释（类）：封装 父块 子块 candidate enricher，集中封装相关状态、依赖和行为。
 class ParentChildCandidateEnricher:
     """Deduplicate fused child hits by parent and build retrieval_result_v2."""
 
+    # 阅读注释（函数）：初始化 ParentChildCandidateEnricher，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -37,6 +68,20 @@ class ParentChildCandidateEnricher:
         context_granularity: str = "parent",
         dedup_parent: bool = True,
     ) -> None:
+        """初始化 ParentChildCandidateEnricher，保存运行所需的依赖、配置或状态。
+
+        参数:
+            build_context: build 上下文，具体约束请结合类型标注和调用方确认。
+            top_k: top k，具体约束请结合类型标注和调用方确认。
+            context_granularity: 上下文 granularity，具体约束请结合类型标注和调用方确认。
+            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            None
+
+        阅读提示:
+            主要直接调用：ValueError, max, int, bool, get_parent_store, _resource_pool。
+        """
         if context_granularity not in {"parent", "child"}:
             raise ValueError("context_granularity must be 'parent' or 'child'")
         self.top_k = max(1, int(top_k))
@@ -44,10 +89,22 @@ class ParentChildCandidateEnricher:
         self.dedup_parent = bool(dedup_parent)
         self.parent_store = _resource_pool(build_context).get_parent_store()
 
+    # 阅读注释（函数）：处理 group by 父块 相关逻辑。
     @staticmethod
     def _group_by_parent(
         candidates: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """处理 group by 父块 相关逻辑。
+
+        参数:
+            candidates: candidates，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            list[dict[str, Any]]
+
+        阅读提示:
+            主要直接调用：defaultdict, candidate.get, append, str, groups.values, items.sort, dict, set。
+        """
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         missing_counter = 0
         for candidate in candidates:
@@ -149,7 +206,19 @@ class ParentChildCandidateEnricher:
             )
         return deduped
 
+    # 阅读注释（函数）：补充并丰富 ParentChildCandidateEnricher。
     def enrich(self, candidate_set: CandidateSet) -> CandidateSet:
+        """补充并丰富 ParentChildCandidateEnricher。
+
+        参数:
+            candidate_set: candidate set，具体约束请结合类型标注和调用方确认。
+
+        返回:
+            CandidateSet
+
+        阅读提示:
+            主要直接调用：list, self._group_by_parent, dict, candidate_set.metadata.get, source_sets.get, int, dense_meta.get, get。
+        """
         fused = list(candidate_set.candidates)
         grouped = self._group_by_parent(fused) if self.dedup_parent else fused
         selected = grouped[: self.top_k]

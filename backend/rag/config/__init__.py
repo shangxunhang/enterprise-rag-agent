@@ -1,20 +1,23 @@
-from rag.config.pipeline_config import (
-    ComponentConfig,
-    OnlineRAGPipelineConfig,
-    PipelineConfigLoader,
-)
+"""Static retrieval topology and independent policy configuration."""
 
-from rag.config.profile_catalog import (
-    OnlineRAGProfileCatalogValidator,
-    ProfileCatalogReport,
-    ValidatedProfile,
+from rag.config.retrieval_policies import (
+    IntentPolicyConfig,
+    RetrievalGatePolicyConfig,
+    RetrievalPolicyLoader,
+)
+from rag.config.static_retrieval import (
+    ComponentConfig,
+    ContextGateConfig,
+    StaticRetrievalSpec,
+    StaticRetrievalSpecLoader,
 )
 
 __all__ = [
     "ComponentConfig",
-    "OnlineRAGPipelineConfig",
-    "PipelineConfigLoader",
-    "OnlineRAGProfileCatalogValidator",
-    "ProfileCatalogReport",
-    "ValidatedProfile",
+    "ContextGateConfig",
+    "IntentPolicyConfig",
+    "RetrievalGatePolicyConfig",
+    "RetrievalPolicyLoader",
+    "StaticRetrievalSpec",
+    "StaticRetrievalSpecLoader",
 ]

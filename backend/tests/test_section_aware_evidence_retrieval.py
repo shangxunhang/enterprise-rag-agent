@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：_citation、test_document_citation_registry_deduplicates_sources_and_allocates_global_ids、test_section_query_for_security_is_specific_and_recovery_is_stricter、test_fake_mainline_can_explicitly_enable_section_aware_retrieval、_minimal_trace_events、test_console_validation_allows_only_business_gate_failure、test_console_validation_rejects_technical_failure_even_in_interactive_mode。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from __future__ import annotations
 
 import json
@@ -10,11 +14,25 @@ from apps.enterprise_document.services.scheme_writer.evidence_service import (
 )
 from core.config import get_settings
 from schemas.citation import CitationSchema
-from run_demo_back import run_demo
+from run_demo import run_demo
 from mainline_runtime import build_project_input
 
 
+# 阅读注释（函数）：处理 引用 相关逻辑。
 def _citation(citation_id: str, *, chunk_id: str, quote: str) -> CitationSchema:
+    """处理 引用 相关逻辑。
+
+    参数:
+        citation_id: 引用 标识，具体约束请结合类型标注和调用方确认。
+        chunk_id: 文本块 标识，具体约束请结合类型标注和调用方确认。
+        quote: quote，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        CitationSchema
+
+    阅读提示:
+        主要直接调用：CitationSchema。
+    """
     return CitationSchema(
         citation_id=citation_id,
         source_type="document",
@@ -28,7 +46,16 @@ def _citation(citation_id: str, *, chunk_id: str, quote: str) -> CitationSchema:
     )
 
 
+# 阅读注释（函数）：处理 测试 文档 引用 注册表 deduplicates sources and allocates global 标识集合 相关逻辑。
 def test_document_citation_registry_deduplicates_sources_and_allocates_global_ids() -> None:
+    """处理 测试 文档 引用 注册表 deduplicates sources and allocates global 标识集合 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：DocumentCitationRegistry, registry.register, _citation, registry.all。
+    """
     registry = DocumentCitationRegistry()
     first, first_map = registry.register(
         [_citation("local_C1", chunk_id="chunk_1", quote="采用统一身份认证。")],
@@ -52,7 +79,16 @@ def test_document_citation_registry_deduplicates_sources_and_allocates_global_id
     assert registry.all()[0].extra["retrieval_scopes"] == ["document", "section"]
 
 
+# 阅读注释（函数）：处理 测试 章节 查询 for security is specific and recovery is stricter 相关逻辑。
 def test_section_query_for_security_is_specific_and_recovery_is_stricter() -> None:
+    """处理 测试 章节 查询 for security is specific and recovery is stricter 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：build_project_input, SchemeEvidenceService._build_section_query。
+    """
     project_input = build_project_input(
         "task_query",
         "生成一个政务云建设方案",
@@ -72,7 +108,19 @@ def test_section_query_for_security_is_specific_and_recovery_is_stricter() -> No
     assert normal != recovery
 
 
+# 阅读注释（函数）：处理 测试 fake 主链 can explicitly enable 章节 aware 检索 相关逻辑。
 def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -> None:
+    """处理 测试 fake 主链 can explicitly enable 章节 aware 检索 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：os.environ.get, get_settings, replace, model_dump, build_project_input, update, run_demo, old_env.items。
+    """
     old_env = {
         key: os.environ.get(key)
         for key in (
@@ -118,7 +166,6 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
             output_root=tmp_path,
             clean_existing=True,
             settings=settings,
-            retrieval_strategy="hybrid",
             enable_agent_self_rag=False,
             project_input=project_input,
             allow_demo_defaults=False,
@@ -150,13 +197,19 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
         .splitlines()
         if line.strip()
     ]
-    tool_started = [
-        item for item in trace_events if item.get("event_type") == "tool_started"
+    rag_started = [
+        item for item in trace_events if item.get("event_type") == "rag_started"
     ]
-    assert len(tool_started) == 1 + len(required)
+    assert len(rag_started) == 1 + len(required)
 
 
+# 阅读注释（函数）：处理 minimal Trace events 相关逻辑。
 def _minimal_trace_events() -> list[dict]:
+    """处理 minimal Trace events 相关逻辑。
+
+    返回:
+        list[dict]
+    """
     return [
         {"event_type": "run_started", "component_type": "runtime"},
         {"event_type": "workflow_started", "component_type": "workflow"},
@@ -166,14 +219,14 @@ def _minimal_trace_events() -> list[dict]:
             "input_summary": {"graph_state_schema": "graph_state_v1"},
         },
         {
-            "event_type": "tool_started",
-            "component_type": "tool",
-            "component_name": "FakeRAGTool",
+            "event_type": "rag_started",
+            "component_type": "rag",
+            "component_name": "FakeRAGService",
         },
         {
-            "event_type": "tool_finished",
-            "component_type": "tool",
-            "component_name": "FakeRAGTool",
+            "event_type": "rag_finished",
+            "component_type": "rag",
+            "component_name": "FakeRAGService",
         },
         {
             "event_type": "model_started",
@@ -194,7 +247,19 @@ def _minimal_trace_events() -> list[dict]:
     ]
 
 
+# 阅读注释（函数）：处理 测试 console validation allows only business gate failure 相关逻辑。
 def test_console_validation_allows_only_business_gate_failure(tmp_path) -> None:
+    """处理 测试 console validation allows only business gate failure 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：trace_path.write_text, join, json.dumps, _minimal_trace_events, task_state.write_text, str, _validate_end_to_end。
+    """
     from run_demo import _validate_end_to_end
 
     trace_path = tmp_path / "trace.jsonl"
@@ -224,9 +289,21 @@ def test_console_validation_allows_only_business_gate_failure(tmp_path) -> None:
     assert result["business_gate_failure"] is True
 
 
+# 阅读注释（函数）：处理 测试 console validation rejects technical failure even in interactive mode 相关逻辑。
 def test_console_validation_rejects_technical_failure_even_in_interactive_mode(
     tmp_path,
 ) -> None:
+    """处理 测试 console validation rejects technical failure even in interactive mode 相关逻辑。
+
+    参数:
+        tmp_path: tmp 路径，具体约束请结合类型标注和调用方确认。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：trace_path.write_text, join, json.dumps, _minimal_trace_events, task_state.write_text, str, pytest.raises, _validate_end_to_end。
+    """
     import pytest
     from run_demo import _validate_end_to_end
 

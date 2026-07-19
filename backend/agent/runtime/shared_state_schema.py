@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
+# 主要定义：SharedStateSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Shared workflow state with typed base contexts and runtime status."""
 
 from __future__ import annotations
@@ -11,7 +15,9 @@ from schemas.context import ContextBundleSchema, WorkflowStepStateSchema
 from schemas.status import ExecutionStatus
 
 
+# 阅读注释（类）：封装 shared 状态 Schema，定义跨模块传递的数据结构与字段约束。
 class SharedStateSchema(SchemaBase):
+    """封装 shared 状态 Schema，定义跨模块传递的数据结构与字段约束。"""
     schema_version: str = "shared_state_v2"
 
     task_id: str

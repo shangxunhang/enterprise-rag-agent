@@ -1,3 +1,7 @@
+# =============================================================================
+# 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
+# 主要定义：test_truncated_section_uses_compact_full_retry_without_continuation、test_overlong_section_uses_dedicated_compression_pass、test_truncated_compact_retry_can_recover_complete_prefix。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 """Stage-1 regression tests split by responsibility."""
 
 from __future__ import annotations
@@ -5,7 +9,6 @@ from __future__ import annotations
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
 from agent.runtime.shared_state_schema import SharedStateSchema
-from agent.runtime.workflow_executor import WorkflowExecutor
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
@@ -24,15 +27,35 @@ from schemas.status import ExecutionStatus
 
 NOW = "2026-07-14T00:00:00+00:00"
 
+# 阅读注释（函数）：处理 测试 truncated 章节 uses compact full retry without continuation 相关逻辑。
 def test_truncated_section_uses_compact_full_retry_without_continuation() -> None:
+    """处理 测试 truncated 章节 uses compact full retry without continuation 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, SimpleNamespace, _generate_section, RetryAgent, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class RetryAgent(SchemeWriterAgent):
+        """封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 RetryAgent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 RetryAgent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -57,7 +80,20 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
                 ),
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -75,7 +111,7 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
         }
     )
     state = SimpleNamespace(run_id="run_retry", task_id="task_retry")
-    section = RetryAgent()._generate_section(
+    section = RetryAgent().section_generation_service._generate_section(
         state,
         document_id="document_retry",
         project_input=item,
@@ -94,15 +130,35 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
     assert section.extra["truncation_retry_model_call_ids"] == ["retry"]
 
 
+# 阅读注释（函数）：处理 测试 overlong 章节 uses dedicated compression pass 相关逻辑。
 def test_overlong_section_uses_dedicated_compression_pass() -> None:
+    """处理 测试 overlong 章节 uses dedicated compression pass 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, CompressionAgent, SimpleNamespace, RAGContextSchema, len。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 compression Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class CompressionAgent(SchemeWriterAgent):
+        """封装 compression Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 CompressionAgent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 CompressionAgent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -127,7 +183,20 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
                 ),
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -145,7 +214,7 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
             "output_schema": {"required_sections": ["技术方案"]},
         }
     )
-    section = CompressionAgent()._generate_section(
+    section = CompressionAgent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_compress", task_id="task_compress"),
         document_id="document_compress",
         project_input=item,
@@ -162,15 +231,35 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
     assert len(section.content) <= section.extra["max_section_chars"]
 
 
+# 阅读注释（函数）：处理 测试 truncated compact retry can recover complete prefix 相关逻辑。
 def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
+    """处理 测试 truncated compact retry can recover complete prefix 相关逻辑。
+
+    返回:
+        None
+
+    阅读提示:
+        主要直接调用：ProjectInputSchema.model_validate, _generate_section, _Agent, SimpleNamespace, RAGContextSchema。
+    """
     from types import SimpleNamespace
 
     from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
     from schemas.model import ModelResponseSchema
     from schemas.rag import RAGContextSchema
 
+    # 阅读注释（类）：封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _Agent(SchemeWriterAgent):
+        """封装 Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+        # 阅读注释（函数）：初始化 _Agent，保存运行所需的依赖、配置或状态。
         def __init__(self):
+            """初始化 _Agent，保存运行所需的依赖、配置或状态。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：__init__, super, ModelResponseSchema。
+            """
             super().__init__()
             self.responses = [
                 ModelResponseSchema(
@@ -195,7 +284,20 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
                 ),
             ]
 
+        # 阅读注释（函数）：处理 call 模型 相关逻辑。
         def _call_model(self, *args, **kwargs):  # type: ignore[override]
+            """处理 call 模型 相关逻辑。
+
+            参数:
+                *args: 额外位置参数。
+                **kwargs: 额外关键字参数。
+
+            返回:
+                未显式标注；请结合调用方和实际返回语句理解。
+
+            阅读提示:
+                主要直接调用：self.responses.pop。
+            """
             return self.responses.pop(0)
 
     item = ProjectInputSchema.model_validate(
@@ -212,7 +314,7 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
             "output_schema": {"required_sections": ["正文"]},
         }
     )
-    section = _Agent()._generate_section(
+    section = _Agent().section_generation_service._generate_section(
         SimpleNamespace(run_id="run_safe_trim", task_id="task_safe_trim"),
         document_id="document_safe_trim",
         project_input=item,
@@ -229,4 +331,3 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
     assert section.content == "第一项内容完整。第二项内容也完整。"
     assert section.extra["truncation_recovery_strategy"] == "complete_sentence_prefix"
     assert "truncation_recovered:complete_sentence_prefix" in section.eval_result.warnings
-

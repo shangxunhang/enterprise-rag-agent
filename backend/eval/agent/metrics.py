@@ -1,6 +1,11 @@
+# =============================================================================
+# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
+# 主要定义：keyword_hit、compute_metrics。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# =============================================================================
 from typing import Dict, List
 
 
+# 阅读注释（函数）：处理 keyword hit 相关逻辑。
 def keyword_hit(text: str, keywords: List[str]) -> bool:
     """
     判断文本是否命中所有关键词。
@@ -17,6 +22,7 @@ def keyword_hit(text: str, keywords: List[str]) -> bool:
     return all(keyword in text for keyword in keywords)
 
 
+# 阅读注释（函数）：计算 指标。
 def compute_metrics(eval_records: List[Dict]) -> Dict[str, float]:
     """
     计算 Agent Eval 指标。
