@@ -9,7 +9,7 @@ from __future__ import annotations
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
 from agent.runtime.graph_state import GraphStateSchema
-from agent.runtime.native_workflow_engine import NativeWorkflowEngine
+from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
@@ -136,7 +136,7 @@ def test_workflow_propagates_structured_failure_and_stops() -> None:
         created_at=NOW,
     )
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
     results = execution.node_results
 
     assert len(results) == 1

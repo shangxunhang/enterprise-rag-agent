@@ -14,7 +14,7 @@ flowchart TD
     C2 --> C4["AgentRegistry"]
     C --> D["SupervisorAgent.run"]
     D --> D1["WorkflowRouter.route"]
-    D --> E["NativeWorkflowEngine.execute"]
+    D --> E["LangGraphWorkflowEngine.execute"]
     E --> E1["AgentNodeAdapter.execute"]
     E1 --> N["ProjectInputNormalizerAgent.run"]
     E1 --> S["SchemeWriterAgent.run"]

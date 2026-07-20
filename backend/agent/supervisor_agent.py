@@ -7,7 +7,7 @@ from typing import Dict, Optional
 
 from agent.agent_registry import AgentRegistry
 from agent.runtime.graph_state import GraphStateSchema
-from agent.runtime.native_workflow_engine import NativeWorkflowEngine
+from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema
 from agent.services.context_factory import ContextBundleFactory
 from agent.services.task_lifecycle import TaskLifecycleService
@@ -49,7 +49,7 @@ class SupervisorAgent:
             enable_llm_routing=enable_llm_routing,
             caller_agent=self.agent_name,
         )
-        self.workflow_engine = workflow_engine or NativeWorkflowEngine(
+        self.workflow_engine = workflow_engine or LangGraphWorkflowEngine(
             agent_registry=agent_registry,
             run_trace_recorder=run_trace_recorder,
         )

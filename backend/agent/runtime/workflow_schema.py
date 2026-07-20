@@ -36,7 +36,7 @@ class WorkflowStepSchema(SchemaBase):
     on_failure: str = "fail_task"
 
     max_retries: int = Field(default=0, ge=0)
-    timeout_seconds: float = Field(default=300.0, gt=0)
+    timeout_seconds: float = Field(default=1000.0, gt=0)
 
     # Successful/partial-success nodes always commit their validated delta.
     # Failed nodes default to discarding business-state changes. A business

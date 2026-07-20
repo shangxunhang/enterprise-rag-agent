@@ -8,7 +8,7 @@
 flowchart TB
     Entry["run_demo / run_pipeline"]
     App["MainlineApplicationService"]
-    Workflow["SupervisorAgent + NativeWorkflowEngine"]
+    Workflow["SupervisorAgent + LangGraphWorkflowEngine"]
     UseCase["SchemeGenerationUseCase"]
     RAGPort["RAGServicePort / EvidenceBundleSchema"]
     RAG["RetrievalRuntime + ParentChildRAGEngine"]

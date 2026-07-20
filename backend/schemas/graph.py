@@ -4,9 +4,8 @@
 # =============================================================================
 """Graph-state and workflow-node execution contracts.
 
-These contracts are framework-neutral.  The native workflow engine and the
-future LangGraph adapter must exchange the same schemas so business agents do
-not depend on a particular orchestration library.
+These contracts are framework-neutral.  The LangGraph workflow engine exchanges these schemas through a framework-neutral
+port so business Agents remain independent from the orchestration library.
 """
 
 from __future__ import annotations

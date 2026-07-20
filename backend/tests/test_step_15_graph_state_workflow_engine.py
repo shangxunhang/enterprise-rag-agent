@@ -1,6 +1,6 @@
 # =============================================================================
 # 中文阅读说明：自动化测试模块，用于验证主链、边界条件和回归行为。
-# 主要定义：_WriteAgent、_ReadAgent、_state、_workflow、_registry、test_legacy_agent_executes_on_copy_and_only_delta_commit_mutates_state、test_undeclared_state_write_is_rejected_and_not_committed、test_native_engine_uses_declared_node_inputs_and_revisioned_outputs、test_graph_node_projection_reports_missing_declared_inputs、test_engine_failure_stops_before_following_node_and_retains_graph_record等。建议先从公开入口函数开始，再沿调用关系向下阅读。
+# 主要定义：_WriteAgent、_ReadAgent、_state、_workflow、_registry、test_legacy_agent_executes_on_copy_and_only_delta_commit_mutates_state、test_undeclared_state_write_is_rejected_and_not_committed、test_langgraph_engine_uses_declared_node_inputs_and_revisioned_outputs、test_graph_node_projection_reports_missing_declared_inputs、test_engine_failure_stops_before_following_node_and_retains_graph_record等。建议先从公开入口函数开始，再沿调用关系向下阅读。
 # =============================================================================
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
-from agent.runtime.native_workflow_engine import NativeWorkflowEngine
+from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
 from agent.runtime.node_adapter import AgentNodeAdapter
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from contracts.workflow_engine import WorkflowEnginePort
@@ -212,7 +212,7 @@ def test_undeclared_state_write_is_rejected_and_not_committed() -> None:
         None
 
     阅读提示:
-        主要直接调用：AgentRegistry, registry.register, _ViolatingAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+        主要直接调用：AgentRegistry, registry.register, _ViolatingAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, LangGraphWorkflowEngine。
     """
     # 阅读注释（类）：封装 violating Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _ViolatingAgent(BaseAgent):
@@ -266,7 +266,7 @@ def test_undeclared_state_write_is_rejected_and_not_committed() -> None:
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert "undeclared_partial" not in state.contexts
@@ -276,24 +276,24 @@ def test_undeclared_state_write_is_rejected_and_not_committed() -> None:
     assert execution.node_outputs[0].metadata["write_contract_passed"] is False
 
 
-# 阅读注释（函数）：处理 测试 native engine uses declared node inputs and revisioned outputs 相关逻辑。
-def test_native_engine_uses_declared_node_inputs_and_revisioned_outputs() -> None:
-    """处理 测试 native engine uses declared node inputs and revisioned outputs 相关逻辑。
+# 阅读注释（函数）：处理 测试 LangGraph engine uses declared node inputs and revisioned outputs 相关逻辑。
+def test_langgraph_engine_uses_declared_node_inputs_and_revisioned_outputs() -> None:
+    """处理 测试 LangGraph engine uses declared node inputs and revisioned outputs 相关逻辑。
 
     返回:
         None
 
     阅读提示:
-        主要直接调用：_state, NativeWorkflowEngine, _registry, engine.execute, _workflow, isinstance, len, list。
+        主要直接调用：_state, LangGraphWorkflowEngine, _registry, engine.execute, _workflow, isinstance, len, list。
     """
     state = _state()
-    engine = NativeWorkflowEngine(_registry())
+    engine = LangGraphWorkflowEngine(_registry())
 
     execution = engine.execute(_workflow(), state)
 
     assert isinstance(engine, WorkflowEnginePort)
     assert execution.status == ExecutionStatus.SUCCESS
-    assert execution.engine_name == "native_workflow_engine"
+    assert execution.engine_name == "langgraph_workflow_engine"
     assert execution.final_revision == 2
     assert state.graph_revision == 2
     assert state.completed_node_ids == ["node_1", "node_2"]
@@ -409,7 +409,7 @@ def test_engine_failure_stops_before_following_node_and_retains_graph_record() -
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert execution.completed_node_ids == ["fail"]
@@ -426,7 +426,7 @@ def test_retryable_node_retries_without_committing_failed_attempt() -> None:
         None
 
     阅读提示:
-        主要直接调用：_RetryAgent, AgentRegistry, registry.register, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+        主要直接调用：_RetryAgent, AgentRegistry, registry.register, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, LangGraphWorkflowEngine。
     """
     # 阅读注释（类）：封装 retry Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _RetryAgent(BaseAgent):
@@ -503,7 +503,7 @@ def test_retryable_node_retries_without_committing_failed_attempt() -> None:
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.SUCCESS
     assert agent.calls == 2
@@ -522,7 +522,7 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
         None
 
     阅读提示:
-        主要直接调用：AgentRegistry, registry.register, _SlowAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+        主要直接调用：AgentRegistry, registry.register, _SlowAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, LangGraphWorkflowEngine。
     """
     import time
 
@@ -580,7 +580,7 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert state.final_result is None
@@ -598,7 +598,7 @@ def test_business_failure_can_commit_only_declared_partial_outputs() -> None:
         None
 
     阅读提示:
-        主要直接调用：AgentRegistry, registry.register, _BusinessGateAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+        主要直接调用：AgentRegistry, registry.register, _BusinessGateAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, LangGraphWorkflowEngine。
     """
     # 阅读注释（类）：封装 business gate Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _BusinessGateAgent(BaseAgent):
@@ -664,7 +664,7 @@ def test_business_failure_can_commit_only_declared_partial_outputs() -> None:
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     # Undeclared writes fail before commit, even when partial failure commit is enabled.
     assert execution.status == ExecutionStatus.FAILED
@@ -681,7 +681,7 @@ def test_allowed_business_failure_preserves_partial_result() -> None:
         None
 
     阅读提示:
-        主要直接调用：AgentRegistry, registry.register, _BusinessGateAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, NativeWorkflowEngine。
+        主要直接调用：AgentRegistry, registry.register, _BusinessGateAgent, WorkflowDefinitionSchema, WorkflowStepSchema, _state, execute, LangGraphWorkflowEngine。
     """
     # 阅读注释（类）：封装 business gate Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
     class _BusinessGateAgent(BaseAgent):
@@ -746,7 +746,7 @@ def test_allowed_business_failure_preserves_partial_result() -> None:
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert state.final_result == {"partial": True}
@@ -854,7 +854,7 @@ def test_explicit_failure_route_recovers_as_partial_success() -> None:
     )
     state = _state()
 
-    execution = NativeWorkflowEngine(registry).execute(workflow, state)
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
 
     assert execution.status == ExecutionStatus.PARTIAL_SUCCESS
     assert state.final_result == {"recovered": True}

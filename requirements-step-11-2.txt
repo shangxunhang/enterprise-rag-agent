@@ -5,3 +5,6 @@ sentence-transformers>=3,<6
 PyYAML>=6,<7
 numpy>=1.26,<3
 pydantic>=2.7,<3
+
+# Workflow orchestration runtime
+langgraph>=1.2,<2

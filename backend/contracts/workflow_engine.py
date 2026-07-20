@@ -2,7 +2,7 @@
 # 中文阅读说明：端口与协议定义模块，用于约束模块间依赖边界。
 # 主要定义：WorkflowEnginePort。建议先从公开入口函数开始，再沿调用关系向下阅读。
 # =============================================================================
-"""Workflow engine port implemented by native and future LangGraph adapters."""
+"""Framework-neutral workflow engine port implemented by LangGraph runtime."""
 
 from __future__ import annotations
 

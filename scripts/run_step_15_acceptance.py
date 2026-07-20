@@ -184,7 +184,7 @@ def main() -> int:
     check(
         "graph_state_is_canonical",
         graph_state.get("schema_version") == "graph_state_v1"
-        and graph_state.get("workflow_engine_name") == "native_workflow_engine"
+        and graph_state.get("workflow_engine_name") == "langgraph_workflow_engine"
         and int(graph_state.get("graph_revision") or 0) == 2,
         {
             "schema_version": graph_state.get("schema_version"),
@@ -196,7 +196,7 @@ def main() -> int:
     check(
         "workflow_engine_port_result",
         execution.get("schema_version") == "workflow_engine_result_v1"
-        and execution.get("engine_name") == "native_workflow_engine"
+        and execution.get("engine_name") == "langgraph_workflow_engine"
         and execution.get("engine_version") == "v1"
         and _status(execution.get("status")) == "success",
         {
