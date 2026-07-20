@@ -215,6 +215,7 @@ def get_settings(reload: bool = False) -> AppSettings:
         return _SETTINGS
 
     data_root = _resolve_path(_get_env("DATA_ROOT", "data"))
+    default_model_name = _get_env("DEFAULT_MODEL_NAME", "fake_llm")
 
     settings = AppSettings(
         app_name=_get_env("APP_NAME", "agent-rag-system"),
@@ -233,7 +234,7 @@ def get_settings(reload: bool = False) -> AppSettings:
         ),
         prompt_root=_resolve_path(_get_env("PROMPT_ROOT", "prompts")),
 
-        default_model_name=_get_env("DEFAULT_MODEL_NAME", "fake_llm"),
+        default_model_name=default_model_name,
         default_scheme_prompt_id=_get_env(
             "DEFAULT_SCHEME_PROMPT_ID",
             "scheme_generation_v1",
@@ -246,17 +247,17 @@ def get_settings(reload: bool = False) -> AppSettings:
         enable_llm_routing=_to_bool(_get_env("ENABLE_LLM_ROUTING", "true")),
         supervisor_model_name=_get_env(
             "SUPERVISOR_MODEL_NAME",
-            "local_qwen2_5_1_5b",
+            default_model_name,
         ),
 
         local_qwen_model_name=_get_env(
             "LOCAL_QWEN_MODEL_NAME",
-            "local_qwen2_5_1_5b",
+            default_model_name,
         ),
-        local_qwen_model_path=Path(
+        local_qwen_model_path=_resolve_path(
             _get_env(
                 "LOCAL_QWEN_MODEL_PATH",
-                r"D:\models\huggingface\llm\Qwen2.5-1.5B-Instruct",
+                "models/local_qwen",
             )
         ),
         local_qwen_device=_get_env("LOCAL_QWEN_DEVICE", "cuda"),

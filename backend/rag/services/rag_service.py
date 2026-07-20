@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from contracts.model_gateway import ModelGatewayPort
 from contracts.observability import TraceSink
 from contracts.rag import RAGServicePort
 from core.error_factory import ErrorFactory
@@ -13,6 +14,7 @@ from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
 from observability.trace_context import activate_span, current_span, new_span
 from rag.mapping.request_mapper import RAGRequestMapper
 from rag.mapping.result_mapper import RAGResultMapper
+from rag.runtime.parent_child_runtime_factory import ParentChildRuntimeFactory
 from rag.runtime.retrieval_runtime import RetrievalRuntime, RetrievalRuntimeConfig
 from schemas.rag import (
     EvidenceBundleSchema,
@@ -100,6 +102,8 @@ class RAGService(RAGServicePort):
         static_retrieval_spec_file: str | Path | None = None,
         intent_policy_file: str | Path | None = None,
         retrieval_gate_policy_file: str | Path | None = None,
+        model_gateway: ModelGatewayPort | None = None,
+        model_name: str | None = None,
         retrieval_runtime: Any | None = None,
         request_mapper: RAGRequestMapper | None = None,
         result_mapper: RAGResultMapper | None = None,
@@ -135,6 +139,10 @@ class RAGService(RAGServicePort):
                 retrieval_gate_policy_file=str(gate_file.resolve()),
             ),
             project_root=self.rag_project_root,
+            runtime_factory=ParentChildRuntimeFactory(
+                model_gateway=model_gateway,
+                model_name=model_name,
+            ),
         )
         self.request_mapper = request_mapper or RAGRequestMapper()
         self.result_mapper = result_mapper or RAGResultMapper()

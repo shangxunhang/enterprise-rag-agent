@@ -145,7 +145,14 @@ class SectionGapCorrectiveQueryPlanner:
             params.setdefault("temperature", 0.0)
             params.setdefault("do_sample", False)
             try:
-                raw_output = str(self.llm_generator.generate(prompt, **params) or "")
+                raw_output = str(
+                    self.llm_generator.generate(
+                        prompt,
+                        call_purpose="rag_corrective_query",
+                        **params,
+                    )
+                    or ""
+                )
                 queries = _dedup(_extract_queries(raw_output), original_query=query)
                 method = "llm_with_deterministic_completion"
             except Exception:

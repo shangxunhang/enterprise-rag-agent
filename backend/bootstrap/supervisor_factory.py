@@ -52,9 +52,14 @@ class SupervisorFactory:
             settings, runs_dir, captures_dir
         )
         prompt_manager = PromptManager(prompt_root=settings.prompt_root)
-        rag_service = self.rag_factory.build(options, trace)
-        rag_service_name = "RAGService" if options.use_real_rag else "FakeRAGService"
         model_gateway = self.model_factory.build(settings, trace)
+        rag_service = self.rag_factory.build(
+            options,
+            trace,
+            model_gateway=model_gateway,
+            model_name=settings.default_model_name,
+        )
+        rag_service_name = "RAGService" if options.use_real_rag else "FakeRAGService"
         agent_quality = self.agent_quality_factory.build(
             options=options,
             model_gateway=model_gateway,

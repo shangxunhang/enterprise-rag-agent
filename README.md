@@ -68,3 +68,5 @@ Data Capture 运行产物
 当前阶段
 
 原生 Agent-RAG 主链已经完成稳定性验收。下一阶段先进行完整架构、Schema、状态流、错误传播和历史代码梳理，再决定 LangGraph 迁移。
+
+<!-- DEVSPACE_WRITE_TEST -->

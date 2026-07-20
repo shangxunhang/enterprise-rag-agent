@@ -457,7 +457,14 @@ class CRAGJudge:
         return bool(self.use_llm and self.llm_generator is not None)
 
     # 阅读注释（函数）：处理 call LLM 相关逻辑。
-    def _call_llm(self, prompt: str, *, system_prompt: str, max_new_tokens: int = 256) -> str:
+    def _call_llm(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str,
+        max_new_tokens: int = 256,
+        call_purpose: str = "rag_evidence_assessment",
+    ) -> str:
         """处理 call LLM 相关逻辑。
 
         参数:
@@ -481,7 +488,12 @@ class CRAGJudge:
         params.setdefault("top_p", 0.9)
         params.setdefault("do_sample", False)
         try:
-            text = self.llm_generator.generate(prompt, system_prompt=system_prompt, **params)
+            text = self.llm_generator.generate(
+                prompt,
+                system_prompt=system_prompt,
+                call_purpose=call_purpose,
+                **params,
+            )
         except TypeError:
             text = self.llm_generator.generate(f"{system_prompt}\n\n{prompt}", **params)
         return _safe_str(text).strip()

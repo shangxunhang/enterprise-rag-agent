@@ -50,7 +50,11 @@ class LocalQwenLLMClient(BaseLLMClient):
         self.model_path = Path(model_path)
         self.device = device
         self.max_new_tokens = max_new_tokens
-        self.runtime = runtime or LocalHuggingFaceRuntime(self.model_path, device)
+        self.runtime = runtime or LocalHuggingFaceRuntime(
+            self.model_path,
+            device,
+            registered_model=self.model_name,
+        )
         self.formatter = formatter or ChatPromptFormatter()
 
     # 阅读注释（函数）：处理 tokenizer 相关逻辑。
@@ -163,8 +167,16 @@ class LocalQwenLLMClient(BaseLLMClient):
             request.max_tokens or self.max_new_tokens,
             self.max_new_tokens,
         )
+        requested_generation = request.extra.get("generation_params")
+        requested_generation = (
+            requested_generation
+            if isinstance(requested_generation, dict)
+            else {}
+        )
         temperature = request.temperature if request.temperature is not None else 0.0
-        do_sample = temperature > 0
+        do_sample = bool(
+            requested_generation.get("do_sample", temperature > 0)
+        )
         generation_kwargs: Dict[str, Any] = {
             "max_new_tokens": max_new_tokens,
             "do_sample": do_sample,
@@ -172,7 +184,10 @@ class LocalQwenLLMClient(BaseLLMClient):
         }
         if do_sample:
             generation_kwargs["temperature"] = max(temperature, 1e-5)
-            generation_kwargs["top_p"] = 0.9
+            generation_kwargs["top_p"] = max(
+                0.0,
+                min(1.0, float(requested_generation.get("top_p", 0.9))),
+            )
 
         inputs, output_ids, model_device = self.runtime.generate(
             prompt_text,

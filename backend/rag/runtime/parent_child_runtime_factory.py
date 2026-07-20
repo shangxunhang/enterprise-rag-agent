@@ -9,10 +9,20 @@ from typing import Any, TYPE_CHECKING
 from rag.common.pathing import resolve_path
 
 if TYPE_CHECKING:
+    from contracts.model_gateway import ModelGatewayPort
     from rag.rag_engine.parent_child_rag_engine import ParentChildRAGEngine
 
 
 class ParentChildRuntimeFactory:
+    def __init__(
+        self,
+        *,
+        model_gateway: "ModelGatewayPort | None" = None,
+        model_name: str | None = None,
+    ) -> None:
+        self.model_gateway = model_gateway
+        self.model_name = str(model_name or "").strip() or None
+
     def resolve_config(self, config: Any, project_root: Path) -> Any:
         cfg = config.__class__(**asdict(config))
         for name in (
@@ -78,7 +88,9 @@ class ParentChildRuntimeFactory:
         from rag.config.static_retrieval import StaticRetrievalSpecLoader
         from rag.context.context_gate import ContextGate, ContextRequirements
         from rag.data_capture.rag_run_capture import RagRunCapture
-        from rag.llm.local_llm import LocalLLMGenerator
+        from model_gateway.integrations.text_generator import (
+            ModelGatewayTextGenerator,
+        )
         from rag.planning.retrieval_planner import AdaptiveRetrievalPlanner
         from rag.query.query_transform_selector import QueryTransformSelector
         from rag.rag_engine.parent_child_rag_engine import ParentChildRAGEngine
@@ -144,10 +156,14 @@ class ParentChildRuntimeFactory:
         )
 
         query_llm = None
-        if cfg.enable_query_expansion_llm:
-            query_llm = LocalLLMGenerator(
-                model_name=cfg.query_expansion_llm_model,
-                device=cfg.query_expansion_llm_device,
+        if cfg.enable_query_expansion_llm and self.model_gateway is not None:
+            if not self.model_name:
+                raise ValueError(
+                    "model_name is required when RAG uses an injected ModelGateway"
+                )
+            query_llm = ModelGatewayTextGenerator(
+                model_gateway=self.model_gateway,
+                model_name=self.model_name,
             )
         generation_params = {
             "rewrite_max_new_tokens": cfg.query_rewrite_max_new_tokens,

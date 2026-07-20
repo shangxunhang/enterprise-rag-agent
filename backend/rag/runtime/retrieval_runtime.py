@@ -50,30 +50,6 @@ except Exception:  # pragma: no cover - standalone defaults
     PARENT_CHILD_RERANK_LOCAL_FILES_ONLY = True
     PARENT_CHILD_EVAL_TOP_K = 5
 
-try:
-    from rag.configs.LLMConfig import (
-        QUERY_EXPANSION_DO_SAMPLE,
-        QUERY_EXPANSION_LLM_DEVICE,
-        QUERY_EXPANSION_LLM_ENABLED,
-        QUERY_EXPANSION_LLM_MODEL_NAME,
-        QUERY_EXPANSION_TEMPERATURE,
-        QUERY_EXPANSION_TOP_P,
-        QUERY_HYDE_MAX_NEW_TOKENS,
-        QUERY_REWRITE_MAX_NEW_TOKENS,
-    )
-except Exception:  # pragma: no cover - standalone defaults
-    QUERY_EXPANSION_LLM_ENABLED = True
-    QUERY_EXPANSION_LLM_MODEL_NAME = (
-        r"D:\models\huggingface\llm\Qwen2.5-1.5B-Instruct"
-    )
-    QUERY_EXPANSION_LLM_DEVICE = "cuda"
-    QUERY_REWRITE_MAX_NEW_TOKENS = 192
-    QUERY_HYDE_MAX_NEW_TOKENS = 256
-    QUERY_EXPANSION_TEMPERATURE = 0.1
-    QUERY_EXPANSION_TOP_P = 0.9
-    QUERY_EXPANSION_DO_SAMPLE = False
-
-
 @dataclass
 class RetrievalRuntimeConfig:
     """Configuration used to build the parent-child retrieval runtime."""
@@ -119,15 +95,14 @@ class RetrievalRuntimeConfig:
     eval_top_k: int = int(PARENT_CHILD_EVAL_TOP_K)
 
     # Query transformation is retrieval-side generation (Multi-Query/HyDE),
-    # distinct from application answer generation.
-    enable_query_expansion_llm: bool = bool(QUERY_EXPANSION_LLM_ENABLED)
-    query_expansion_llm_model: str = str(QUERY_EXPANSION_LLM_MODEL_NAME)
-    query_expansion_llm_device: str = str(QUERY_EXPANSION_LLM_DEVICE)
-    query_rewrite_max_new_tokens: int = int(QUERY_REWRITE_MAX_NEW_TOKENS)
-    query_hyde_max_new_tokens: int = int(QUERY_HYDE_MAX_NEW_TOKENS)
-    query_expansion_temperature: float = float(QUERY_EXPANSION_TEMPERATURE)
-    query_expansion_top_p: float = float(QUERY_EXPANSION_TOP_P)
-    query_expansion_do_sample: bool = bool(QUERY_EXPANSION_DO_SAMPLE)
+    # distinct from application answer generation. Model selection and device
+    # configuration belong to the injected ModelGateway, not this config.
+    enable_query_expansion_llm: bool = True
+    query_rewrite_max_new_tokens: int = 192
+    query_hyde_max_new_tokens: int = 256
+    query_expansion_temperature: float = 0.1
+    query_expansion_top_p: float = 0.9
+    query_expansion_do_sample: bool = False
 
     pipeline_name: str = "parent_child_hybrid_retrieval"
     pipeline_version: str = "v1.0"

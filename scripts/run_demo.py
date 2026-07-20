@@ -43,7 +43,7 @@ from rag.offline.resolver import ActiveIndexResolver
 
 RUN_DEMO_VERSION = f"{MAINLINE_RUNTIME_VERSION}+e2e-console-v5"
 DEFAULT_USER_INPUT = "根据资料生成企业级 RAG-Agent 系统建设方案"
-REAL_MODEL_NAME = "local_qwen2_5_1_5b"
+REAL_MODEL_NAME = "local_qwen2_5_7b_gptq_int4"
 SUCCESS_LIKE_STATUSES = {"success", "partial_success"}
 
 

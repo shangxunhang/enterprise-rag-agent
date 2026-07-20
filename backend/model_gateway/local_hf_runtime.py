@@ -14,7 +14,13 @@ from typing import Any, Dict
 class LocalHuggingFaceRuntime:
     """封装 本地 hugging face 运行时，负责驱动实际运行流程并维护执行状态。"""
     # 阅读注释（函数）：初始化 LocalHuggingFaceRuntime，保存运行所需的依赖、配置或状态。
-    def __init__(self, model_path: str | Path, device: str = "cuda") -> None:
+    def __init__(
+        self,
+        model_path: str | Path,
+        device: str = "cuda",
+        *,
+        registered_model: str | None = None,
+    ) -> None:
         """初始化 LocalHuggingFaceRuntime，保存运行所需的依赖、配置或状态。
 
         参数:
@@ -29,6 +35,9 @@ class LocalHuggingFaceRuntime:
         """
         self.model_path = Path(model_path)
         self.device = device
+        self.registered_model = str(
+            registered_model or self.model_path.name
+        )
         self.tokenizer = None
         self.model = None
 
@@ -49,21 +58,37 @@ class LocalHuggingFaceRuntime:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        actual_device = "cuda" if self.device == "cuda" and torch.cuda.is_available() else "cpu"
+        load_device_map = "auto" if actual_device == "cuda" else None
+        print(
+            f"[ModelRuntime] registered_model={self.registered_model}",
+            flush=True,
+        )
+        print(f"[ModelRuntime] model_path={self.model_path}", flush=True)
+        print(
+            f"[ModelRuntime] requested_device={self.device} "
+            f"device_map={load_device_map}",
+            flush=True,
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(
             str(self.model_path), trust_remote_code=True
         )
-        actual_device = "cuda" if self.device == "cuda" and torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if actual_device == "cuda" else torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
             str(self.model_path),
             torch_dtype=dtype,
-            device_map="auto" if actual_device == "cuda" else None,
+            device_map=load_device_map,
             trust_remote_code=True,
         )
         if actual_device == "cpu":
             self.model.to("cpu")
         self.model.eval()
         self.device = actual_device
+        print(
+            f"[ModelRuntime] hf_device_map="
+            f"{getattr(self.model, 'hf_device_map', None)}",
+            flush=True,
+        )
 
     # 阅读注释（函数）：生成 LocalHuggingFaceRuntime。
     def generate(self, prompt_text: str, generation_kwargs: Dict[str, Any]):
