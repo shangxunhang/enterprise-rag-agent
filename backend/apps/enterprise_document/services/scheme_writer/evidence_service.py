@@ -23,6 +23,7 @@ from schemas.rag import (
     RAGEvidenceContractSchema,
     RAGToolInputSchema,
     RAGTraceSchema,
+    RetrievalAccessScopeSchema,
     RetrievedChunkSchema,
 )
 from schemas.tool import ToolResultSchema
@@ -227,6 +228,17 @@ class SchemeEvidenceService:
             if str(kb_id).strip()
         ))
         task_kb_ids = (shared_state.task or {}).get("kb_ids") or []
+        effective_kb_ids = list(dict.fromkeys([*task_kb_ids, *source_kb_ids]))
+        access_scope = (
+            RetrievalAccessScopeSchema(
+                tenant_id=project_input.tenant_id,
+                authorized_kb_ids=effective_kb_ids,
+                allowed_file_ids=source_file_ids,
+                allowed_doc_ids=source_doc_ids,
+            )
+            if effective_kb_ids
+            else None
+        )
         raw_suffix = call_suffix or scope
         safe_suffix = (
             re.sub(r"[^0-9A-Za-z_\-]+", "_", raw_suffix).strip("_")
@@ -276,7 +288,8 @@ class SchemeEvidenceService:
             run_id=shared_state.run_id,
             agent_name=self.agent_name,
             query=resolved_query,
-            kb_ids=list(dict.fromkeys([*task_kb_ids, *source_kb_ids])),
+            kb_ids=effective_kb_ids,
+            access_scope=access_scope,
             filters={
                 "tenant_id": project_input.tenant_id,
                 "doc_ids": source_doc_ids,

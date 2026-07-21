@@ -237,6 +237,9 @@ def build_milvus_schema_for_child_chunk_v1(dim: int, max_text_chars: int):
     # Parent-child linkage.
     schema.add_field(field_name="child_chunk_id", datatype=DataType.VARCHAR, max_length=512)
     schema.add_field(field_name="parent_chunk_id", datatype=DataType.VARCHAR, max_length=512)
+    schema.add_field(field_name="tenant_id", datatype=DataType.VARCHAR, max_length=256)
+    schema.add_field(field_name="kb_id", datatype=DataType.VARCHAR, max_length=512)
+    schema.add_field(field_name="file_id", datatype=DataType.VARCHAR, max_length=512)
     schema.add_field(field_name="doc_id", datatype=DataType.VARCHAR, max_length=512)
     schema.add_field(field_name="source_type", datatype=DataType.VARCHAR, max_length=64)
     schema.add_field(field_name="indexed_granularity", datatype=DataType.VARCHAR, max_length=64)
@@ -346,6 +349,9 @@ def build_milvus_child_chunk_record(
 
         "child_chunk_id": child_chunk_id,
         "parent_chunk_id": safe_str(child_chunk.get("parent_chunk_id")),
+        "tenant_id": safe_str(child_chunk.get("tenant_id"), "default"),
+        "kb_id": safe_str(child_chunk.get("kb_id"), "default"),
+        "file_id": safe_str(child_chunk.get("file_id")),
         "doc_id": safe_str(child_chunk.get("doc_id")),
         "source_type": safe_str(child_chunk.get("source_type"), "offline"),
         "indexed_granularity": DEFAULT_INDEXED_GRANULARITY,
@@ -439,6 +445,9 @@ def search_child_chunk_smoke_test(
             "indexed_chunk_id",
             "child_chunk_id",
             "parent_chunk_id",
+            "tenant_id",
+            "kb_id",
+            "file_id",
             "doc_id",
             "source_type",
             "indexed_granularity",

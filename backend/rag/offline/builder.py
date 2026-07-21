@@ -238,6 +238,33 @@ class OfflineIndexBuilder:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         records = load_jsonl_dicts(source_path)
+        # Stamp the retrieval access scope before chunking so the same boundary
+        # is preserved through parent/child artifacts, BM25 and Milvus records.
+        # Explicit per-record values win over dataset defaults.
+        doc_scopes: dict[str, tuple[str, str]] = {}
+        for record in records:
+            record["tenant_id"] = str(
+                record.get("tenant_id") or config.source.tenant_id or "default"
+            )
+            record["kb_id"] = str(
+                record.get("kb_id") or config.source.kb_id or "default"
+            )
+            record["file_id"] = str(
+                record.get("file_id")
+                or record.get("source_name")
+                or record.get("doc_id")
+                or ""
+            )
+            doc_id = str(record.get("doc_id") or "").strip()
+            if doc_id:
+                scope = (record["tenant_id"], record["kb_id"])
+                previous_scope = doc_scopes.setdefault(doc_id, scope)
+                if previous_scope != scope:
+                    raise ValueError(
+                        "doc_id must be globally unique inside one physical index; "
+                        f"doc_id={doc_id!r} appears in scopes "
+                        f"{previous_scope!r} and {scope!r}"
+                    )
         component_params = dict(config.chunker.params)
         component_params.setdefault("deterministic_created_at", config.deterministic_created_at)
         chunker_config = ComponentConfig(

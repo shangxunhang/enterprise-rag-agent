@@ -86,12 +86,17 @@ class ParentChildRetrievalPipeline:
         query_index: int,
         filter_expr: str | None,
         keyword_doc_ids: list[str] | None,
+        keyword_scope: dict[str, Any] | None,
         stage: str,
     ) -> tuple[CandidateSet, dict[str, Any]]:
+        scope = dict(keyword_scope or {})
         request = RetrievalRequest(
             query=retrieval_query,
             filter_expr=filter_expr,
-            doc_ids=list(keyword_doc_ids or []),
+            tenant_id=str(scope.get("tenant_id") or "").strip() or None,
+            kb_ids=list(scope.get("kb_ids") or []),
+            file_ids=list(scope.get("file_ids") or []),
+            doc_ids=list(scope.get("doc_ids") or keyword_doc_ids or []),
             metadata={"query_index": query_index, "retrieval_stage": stage},
         )
         source_sets = [retriever.retrieve(request) for retriever in self.retrievers]
@@ -162,6 +167,7 @@ class ParentChildRetrievalPipeline:
         correction_budget: int,
         filter_expr: str | None,
         keyword_doc_ids: list[str] | None,
+        keyword_scope: dict[str, Any] | None,
         request_context: dict[str, Any] | None,
     ) -> tuple[list[dict[str, Any]], EvidenceAssessment, dict[str, Any]]:
         completed_rounds = 0
@@ -205,6 +211,7 @@ class ParentChildRetrievalPipeline:
                     query_index=query_index,
                     filter_expr=filter_expr,
                     keyword_doc_ids=keyword_doc_ids,
+                    keyword_scope=keyword_scope,
                     stage="corrective_retrieval",
                 )
                 round_sets.append(candidate_set)
@@ -253,7 +260,8 @@ class ParentChildRetrievalPipeline:
         *,
         filter_expr: str | None,
         keyword_doc_ids: list[str] | None,
-        extra_metadata: dict[str, Any] | None,
+        keyword_scope: dict[str, Any] | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> RetrievalStageResult:
         plan = self.retrieval_planner.plan(
             query=query,
@@ -275,6 +283,7 @@ class ParentChildRetrievalPipeline:
                 query_index=index,
                 filter_expr=filter_expr,
                 keyword_doc_ids=keyword_doc_ids,
+                keyword_scope=keyword_scope,
                 stage="initial_retrieval",
             )
             query_candidate_sets.append(candidate_set)
@@ -314,6 +323,7 @@ class ParentChildRetrievalPipeline:
             correction_budget=plan.correction_budget,
             filter_expr=filter_expr,
             keyword_doc_ids=keyword_doc_ids,
+            keyword_scope=keyword_scope,
             request_context=extra_metadata,
         )
         expansion.metadata["configured_evidence_assessor"] = {

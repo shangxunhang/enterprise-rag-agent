@@ -17,6 +17,7 @@ class RAGServiceFactory:
         *,
         model_gateway: ModelGatewayPort | None = None,
         model_name: str | None = None,
+        allow_legacy_unscoped: bool = False,
     ) -> RAGServicePort:
         if options.use_real_rag:
             inner: RAGServicePort = RAGService(
@@ -26,6 +27,7 @@ class RAGServiceFactory:
                 retrieval_gate_policy_file=options.rag_retrieval_gate_policy_file,
                 model_gateway=model_gateway,
                 model_name=model_name,
+                allow_legacy_unscoped=allow_legacy_unscoped,
             )
         else:
             inner = FakeRAGService()

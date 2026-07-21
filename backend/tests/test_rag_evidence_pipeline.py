@@ -262,7 +262,9 @@ def test_legacy_service_prefers_full_selected_records_over_compact_preview() -> 
     from schemas.rag import RAGToolInputSchema
 
     service = RAGService(
-        rag_project_root=".", retrieval_runtime=_LegacyToolStub()
+        rag_project_root=".",
+        retrieval_runtime=_LegacyToolStub(),
+        allow_legacy_unscoped=True,
     )
     output = service.retrieve(
         RAGToolInputSchema(
@@ -352,7 +354,11 @@ def test_legacy_adapter_propagates_document_filters() -> None:
             }
 
     tool = FilterCaptureTool()
-    service = RAGService(rag_project_root=".", retrieval_runtime=tool)
+    service = RAGService(
+        rag_project_root=".",
+        retrieval_runtime=tool,
+        allow_legacy_unscoped=True,
+    )
     service.retrieve(
         RAGToolInputSchema(
             task_id="task_filter",

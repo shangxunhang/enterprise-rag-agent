@@ -58,6 +58,10 @@ class SourceDatasetConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     format: Literal["jsonl"] = "jsonl"
+    # Dataset-level defaults used when source records do not already carry an
+    # explicit retrieval scope.  Per-record values always win.
+    tenant_id: str = "default"
+    kb_id: str = "default"
 
     # 阅读注释（函数）：处理 路径 not blank 相关逻辑。
     @field_validator("path")

@@ -384,7 +384,9 @@ def test_legacy_service_publishes_step_12_contract() -> None:
         主要直接调用：LegacyRAGService, _LegacyContractToolStub, service.retrieve, RAGToolInputSchema, len。
     """
     service = RAGService(
-        rag_project_root=".", retrieval_runtime=_LegacyContractToolStub()
+        rag_project_root=".",
+        retrieval_runtime=_LegacyContractToolStub(),
+        allow_legacy_unscoped=True,
     )
     output = service.retrieve(
         RAGToolInputSchema(

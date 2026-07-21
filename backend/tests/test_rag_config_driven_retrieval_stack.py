@@ -83,7 +83,17 @@ class _FakeDenseBackend:
 class _FakeKeywordBackend:
     """封装 fake keyword 后端实现，集中封装相关状态、依赖和行为。"""
     # 阅读注释（函数）：搜索 _FakeKeywordBackend。
-    def search(self, *, query: str, top_k: int, doc_id=None, doc_ids=None):
+    def search(
+        self,
+        *,
+        query: str,
+        top_k: int,
+        tenant_id=None,
+        kb_ids=None,
+        file_ids=None,
+        doc_id=None,
+        doc_ids=None,
+    ):
         """搜索 _FakeKeywordBackend。
 
         参数:
@@ -98,7 +108,7 @@ class _FakeKeywordBackend:
         阅读提示:
             主要直接调用：enumerate。
         """
-        del query, doc_id, doc_ids
+        del query, tenant_id, kb_ids, file_ids, doc_id, doc_ids
         values = [
             ("child-2", "parent-1", 12.0),
             ("child-3", "parent-2", 10.0),

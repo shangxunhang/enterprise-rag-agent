@@ -148,6 +148,7 @@ class ParentChildRAGEngine:
         expected_keywords: Optional[List[str]] = None,
         filter_expr: Optional[str] = None,
         keyword_doc_ids: Optional[List[str]] = None,
+        keyword_scope: Optional[Dict[str, Any]] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not query or not str(query).strip():
@@ -159,6 +160,7 @@ class ParentChildRAGEngine:
             query=query,
             filter_expr=filter_expr,
             keyword_doc_ids=keyword_doc_ids,
+            keyword_scope=keyword_scope,
             extra_metadata=extra_metadata,
         )
         request_context = dict(extra_metadata or {})

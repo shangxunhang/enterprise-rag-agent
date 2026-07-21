@@ -151,6 +151,7 @@ class MainlineApplicationService:
             task_manager=task_manager,
             settings=settings,
             options=options,
+            allow_legacy_unscoped_rag=allow_demo_defaults,
         )
         # 阶段 7：正式进入 Agent/Workflow 主链；无论成功、失败还是异常，都统一释放本次运行持有的资源。
         try:

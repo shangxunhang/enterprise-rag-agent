@@ -11,10 +11,16 @@ import yaml
 from rag.config.static_retrieval import StaticRetrievalSpecLoader
 from rag.mapping.evidence_mapper import EvidenceMapper
 from rag.mapping.request_mapper import RAGRequestMapper
+from rag.mapping.result_mapper import RAGResultMapper
 from rag.plugins.context_packers import DefaultContextPacker
+from rag.retriever.bm25_child_retriever import BM25ChildRetriever
 from rag.registry.component_registry import ComponentRegistry
 from rag.registry.default_registrations import build_default_component_registry
-from schemas.rag import RAGToolInputSchema
+from schemas.rag import (
+    EvidenceAssessmentStatus,
+    RAGToolInputSchema,
+    RetrievalAccessScopeSchema,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -174,11 +180,144 @@ def test_legacy_strategy_name_no_longer_enables_online_plugins() -> None:
         extra={"retrieval_strategy": "c_rag_self_rag_hyde"},
     )
 
-    invocation = RAGRequestMapper().map(request)
+    invocation = RAGRequestMapper(allow_legacy_unscoped=True).map(request)
 
     assert "enable_hyde" not in invocation.payload
     assert "enable_crag" not in invocation.payload
     assert "enable_self_rag" not in invocation.payload
+
+
+def test_request_mapper_enforces_tenant_and_kb_scope_before_optional_filters() -> None:
+    request = RAGToolInputSchema(
+        task_id="task-scope",
+        run_id="run-scope",
+        agent_name="SchemeWriterAgent",
+        query="政务云",
+        access_scope=RetrievalAccessScopeSchema(
+            tenant_id="tenant-a",
+            authorized_kb_ids=["kb-design", "kb-policy"],
+            allowed_file_ids=["file-1"],
+            allowed_doc_ids=["doc-1", "doc-2"],
+        ),
+        filters={"doc_ids": ["doc-2"]},
+    )
+
+    invocation = RAGRequestMapper().map(request)
+
+    assert 'tenant_id == "tenant-a"' in invocation.payload["filter_expr"]
+    assert 'kb_id in ["kb-design", "kb-policy"]' in invocation.payload["filter_expr"]
+    assert 'file_id in ["file-1"]' in invocation.payload["filter_expr"]
+    assert 'doc_id in ["doc-2"]' in invocation.payload["filter_expr"]
+    assert invocation.payload["keyword_scope"] == {
+        "tenant_id": "tenant-a",
+        "kb_ids": ["kb-design", "kb-policy"],
+        "file_ids": ["file-1"],
+        "doc_ids": ["doc-2"],
+    }
+    assert invocation.payload["access_scope_enforced"] is True
+
+
+def test_request_mapper_fails_closed_when_requested_scope_is_disjoint() -> None:
+    request = RAGToolInputSchema(
+        task_id="task-scope-denied",
+        run_id="run-scope-denied",
+        agent_name="SchemeWriterAgent",
+        query="test",
+        kb_ids=["kb-forbidden"],
+        access_scope=RetrievalAccessScopeSchema(
+            tenant_id="tenant-a",
+            authorized_kb_ids=["kb-design"],
+            allowed_doc_ids=["doc-allowed"],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="outside the authorized retrieval scope"):
+        RAGRequestMapper().map(request)
+
+
+def test_request_mapper_rejects_tenant_without_kb_scope_outside_demo_mode() -> None:
+    request = RAGToolInputSchema(
+        task_id="task-missing-kb",
+        run_id="run-missing-kb",
+        agent_name="SchemeWriterAgent",
+        query="test",
+        filters={"tenant_id": "tenant-a"},
+    )
+
+    with pytest.raises(ValueError, match="retrieval access scope is required"):
+        RAGRequestMapper().map(request)
+
+
+def test_bm25_retriever_blocks_cross_tenant_and_cross_kb_hits() -> None:
+    retriever = BM25ChildRetriever(
+        [
+            {
+                "chunk_id": "a-design",
+                "child_chunk_id": "a-design",
+                "parent_chunk_id": "p-a-design",
+                "tenant_id": "tenant-a",
+                "kb_id": "kb-design",
+                "file_id": "file-a",
+                "doc_id": "doc-a",
+                "text": "政务云 建设 方案",
+            },
+            {
+                "chunk_id": "a-finance",
+                "child_chunk_id": "a-finance",
+                "parent_chunk_id": "p-a-finance",
+                "tenant_id": "tenant-a",
+                "kb_id": "kb-finance",
+                "file_id": "file-finance",
+                "doc_id": "doc-finance",
+                "text": "政务云 建设 方案",
+            },
+            {
+                "chunk_id": "b-design",
+                "child_chunk_id": "b-design",
+                "parent_chunk_id": "p-b-design",
+                "tenant_id": "tenant-b",
+                "kb_id": "kb-design",
+                "file_id": "file-b",
+                "doc_id": "doc-b",
+                "text": "政务云 建设 方案",
+            },
+        ]
+    )
+
+    hits = retriever.search(
+        "政务云 建设",
+        tenant_id="tenant-a",
+        kb_ids=["kb-design"],
+    )
+
+    assert [item["child_chunk_id"] for item in hits] == ["a-design"]
+    assert all(item["tenant_id"] == "tenant-a" for item in hits)
+    assert all(item["kb_id"] == "kb-design" for item in hits)
+
+
+def test_result_mapper_projects_final_evidence_assessment_into_contract() -> None:
+    assessment = RAGResultMapper._assessment_from_quality(
+        {
+            "metadata": {"judge": "CRAGJudge"},
+            "corrective_retrieval": {
+                "triggered": True,
+                "rounds": [{"round": 1}],
+                "final_assessment": {
+                    "sufficient": False,
+                    "confidence": 0.12,
+                    "reason": "relevant evidence below threshold",
+                    "relevant_chunk_count": 0,
+                },
+            },
+        }
+    )
+
+    assert assessment.status == EvidenceAssessmentStatus.INSUFFICIENT
+    assert assessment.judge_name == "CRAGJudge"
+    assert assessment.score == pytest.approx(0.12)
+    assert assessment.reason_codes == ["retrieval_evidence_insufficient"]
+    assert assessment.details["corrective_retrieval_triggered"] is True
+    assert assessment.details["correction_rounds"] == 1
 
 
 def test_online_pipeline_has_assessment_driven_correction_only() -> None:

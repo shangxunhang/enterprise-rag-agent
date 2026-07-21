@@ -157,6 +157,9 @@ class MilvusRetriever:
             entity = hit.get("entity", {}) or {}
 
             metadata = {
+                "tenant_id": entity.get("tenant_id", ""),
+                "kb_id": entity.get("kb_id", ""),
+                "file_id": entity.get("file_id", ""),
                 "doc_type": entity.get("doc_type", ""),
                 "title": entity.get("title", ""),
                 "chunk_index": entity.get("chunk_index"),
@@ -169,6 +172,9 @@ class MilvusRetriever:
             result = {
                 "rank": index + 1,
                 "score": float(hit.get("distance", 0.0)),
+                "tenant_id": str(entity.get("tenant_id", "")),
+                "kb_id": str(entity.get("kb_id", "")),
+                "file_id": str(entity.get("file_id", "")),
                 "doc_id": str(entity.get("doc_id", "")),
                 "chunk_id": str(entity.get("chunk_id", "")),
                 "text": str(entity.get("text", "")),

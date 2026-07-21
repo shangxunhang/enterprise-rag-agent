@@ -519,7 +519,11 @@ class GraphStateDiffer:
 
 # 阅读注释（类）：封装 graph 状态 applier，集中封装相关状态、依赖和行为。
 class GraphStateApplier:
-    """Atomically validate and commit one node delta."""
+    """Atomically validate and commit one controlled business-state delta.
+
+    ``graph_revision`` is the sequence number of these validated commits, not a
+    global version for every runtime/lifecycle mutation stored on GraphState.
+    """
 
     # 阅读注释（函数）：初始化 GraphStateApplier，保存运行所需的依赖、配置或状态。
     def __init__(

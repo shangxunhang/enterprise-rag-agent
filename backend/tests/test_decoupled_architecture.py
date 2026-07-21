@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from agent.runtime.shared_state_schema import SharedStateSchema
@@ -217,6 +218,23 @@ def test_fixed_chunkers_share_algorithm_but_preserve_legacy_metadata() -> None:
 
 
 # 阅读注释（函数）：处理 测试 运行时 packages do not depend on 评测 package 相关逻辑。
+def test_production_code_does_not_write_compatibility_contexts_directly() -> None:
+    """Compatibility state is a one-way projection owned by SharedStateWriter."""
+    root = Path(__file__).resolve().parents[1]
+    allowed = {
+        (root / "agent/runtime/state_access.py").resolve(),
+    }
+    assignment = re.compile(r"\b(?:state|shared_state)\.contexts\[[^\]]+\]\s*=")
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        resolved = path.resolve()
+        if resolved in allowed or "tests" in path.parts or "__pycache__" in path.parts:
+            continue
+        if assignment.search(path.read_text(encoding="utf-8")):
+            offenders.append(str(path.relative_to(root)))
+    assert offenders == []
+
+
 def test_runtime_packages_do_not_depend_on_eval_package() -> None:
     """处理 测试 运行时 packages do not depend on 评测 package 相关逻辑。
 

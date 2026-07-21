@@ -61,6 +61,23 @@ class SchemeGenerationUseCase:
         self.agent_type = agent_type
         self.rag_service_name = rag_service_name
         self.enable_semantic_gate = enable_semantic_gate
+
+    @staticmethod
+    def _evidence_assessment(normalized_output: dict) -> dict:
+        """Read one canonical evidence assessment from a normalized RAG output."""
+
+        contract = normalized_output.get("evidence")
+        contract = contract if isinstance(contract, dict) else {}
+        assessment = contract.get("assessment")
+        assessment = dict(assessment) if isinstance(assessment, dict) else {}
+        raw_status = assessment.get("status") or "not_assessed"
+        if hasattr(raw_status, "value"):
+            raw_status = raw_status.value
+        assessment["status"] = str(raw_status).strip().lower() or "not_assessed"
+        details = assessment.get("details")
+        assessment["details"] = dict(details) if isinstance(details, dict) else {}
+        return assessment
+
     # 阅读注释（函数）：执行 SchemeGenerationUseCase 的主流程。
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:
         """执行 SchemeGenerationUseCase 的主流程。
@@ -178,17 +195,12 @@ class SchemeGenerationUseCase:
                 )
             )
             evidence_contract = rag_output.get("evidence") or {}
-            evidence_assessment = (
-                evidence_contract.get("assessment")
-                if isinstance(evidence_contract, dict)
-                else {}
-            ) or {}
-            assessment_status = str(
-                evidence_assessment.get("status") or "not_assessed"
-            )
+            evidence_assessment = self._evidence_assessment(rag_output)
+            assessment_status = evidence_assessment["status"]
+            raw_evidence_available = evidence_assessment.get("evidence_available")
             evidence_available = bool(
-                evidence_assessment.get("evidence_available")
-                if isinstance(evidence_assessment, dict)
+                raw_evidence_available
+                if raw_evidence_available is not None
                 else (rag_context.context_item_count and citations)
             )
             semantic_sufficiency = (
@@ -274,11 +286,15 @@ class SchemeGenerationUseCase:
                 active_citations = list(citations)
                 active_query = project_input.user_query
                 active_scope = "document"
+                active_assessment = dict(evidence_assessment)
                 tool_call_ids = [rag_result.retrieval_trace_id] if rag_result else []
                 recovery_count = 0
                 retrieval_metadata: dict = {
                     "section_retrieval_enabled": section_retrieval_enabled,
                     "citation_required": citation_required,
+                    "evidence_assessment_status": active_assessment.get(
+                        "status", "not_assessed"
+                    ),
                 }
 
                 if section_retrieval_enabled and citation_required:
@@ -319,6 +335,12 @@ class SchemeGenerationUseCase:
                         )
                         all_chunks.extend(section_chunks)
                         all_rag_outputs.append(section_output)
+                        section_assessment = self._evidence_assessment(section_output)
+                        active_assessment = section_assessment
+                        retrieval_metadata["evidence_assessment_status"] = (
+                            section_assessment.get("status", "not_assessed")
+                        )
+                        retrieval_metadata["evidence_assessment"] = section_assessment
                         if section_citations and section_context.context_text.strip():
                             active_context = section_context
                             active_chunks = section_chunks
@@ -345,19 +367,43 @@ class SchemeGenerationUseCase:
                             flush=True,
                         )
 
-                with activate_workflow_budget(section_budget):
-                    section = self.section_generation_service._generate_section(
+                evidence_blocked = bool(
+                    citation_required
+                    and active_assessment.get("status") == "insufficient"
+                )
+                if evidence_blocked:
+                    retrieval_metadata["normal_generation_blocked"] = True
+                    retrieval_metadata["generation_block_reason"] = (
+                        "evidence_insufficient"
+                    )
+                    print(
+                        f"[EvidenceGate] BLOCK section={title} "
+                        "reason=evidence_insufficient",
+                        flush=True,
+                    )
+                    section = self.section_generation_service._build_insufficient_evidence_section(
                         shared_state,
-                        document_id=document_id,
                         project_input=project_input,
                         section_title=title,
                         section_order=order,
                         rag_context=active_context,
                         citations=active_citations,
-                        structured_facts=structured_facts,
-                        previous_sections=sections,
-                        generation_attempt=1,
+                        assessment=active_assessment,
                     )
+                else:
+                    with activate_workflow_budget(section_budget):
+                        section = self.section_generation_service._generate_section(
+                            shared_state,
+                            document_id=document_id,
+                            project_input=project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=active_context,
+                            citations=active_citations,
+                            structured_facts=structured_facts,
+                            previous_sections=sections,
+                            generation_attempt=1,
+                        )
 
                 generation_check = dict(
                     (section.extra or {}).get("generation_check") or {}
@@ -434,6 +480,7 @@ class SchemeGenerationUseCase:
                     )
                     all_chunks.extend(recovered_chunks)
                     all_rag_outputs.append(recovered_output)
+                    recovered_assessment = self._evidence_assessment(recovered_output)
                     if not recovered_context.context_text.strip():
                         round_trace["error"] = "empty_recovered_context"
                         self_rag_rounds.append(round_trace)
@@ -444,6 +491,41 @@ class SchemeGenerationUseCase:
                     active_citations = recovered_citations
                     active_query = self_rag_query
                     active_scope = "self_rag_recovery"
+                    active_assessment = recovered_assessment
+                    if (
+                        citation_required
+                        and recovered_assessment.get("status") == "insufficient"
+                    ):
+                        evidence_blocked = True
+                        retrieval_metadata["normal_generation_blocked"] = True
+                        retrieval_metadata["generation_block_reason"] = (
+                            "evidence_insufficient_after_self_rag_retrieval"
+                        )
+                        section = self.section_generation_service._build_insufficient_evidence_section(
+                            shared_state,
+                            project_input=project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=active_context,
+                            citations=active_citations,
+                            assessment=active_assessment,
+                        )
+                        generation_check = {}
+                        round_trace.update(
+                            {
+                                "error": "evidence_insufficient",
+                                "assessment": recovered_assessment,
+                                "retrieved_chunk_count": len(recovered_chunks),
+                                "citation_count": len(recovered_citations),
+                            }
+                        )
+                        self_rag_rounds.append(round_trace)
+                        print(
+                            f"[EvidenceGate] BLOCK section={title} "
+                            "reason=evidence_insufficient_after_self_rag_retrieval",
+                            flush=True,
+                        )
+                        break
                     with activate_workflow_budget(section_budget):
                         section = self.section_generation_service._generate_section(
                             shared_state,
@@ -495,6 +577,7 @@ class SchemeGenerationUseCase:
                 )
                 if (
                     citation_required
+                    and not evidence_blocked
                     and not citation_bound
                     and corrective_retrieval_enabled
                     and section_budget.retrieval_rounds
@@ -539,25 +622,35 @@ class SchemeGenerationUseCase:
                         )
                         all_chunks.extend(recovery_chunks)
                         all_rag_outputs.append(recovery_output)
+                        recovery_assessment = self._evidence_assessment(recovery_output)
+                        retrieval_metadata["corrective_evidence_assessment"] = (
+                            recovery_assessment
+                        )
                         if recovery_citations and recovery_context.context_text.strip():
-                            active_context = recovery_context
-                            active_chunks = recovery_chunks
-                            active_citations = recovery_citations
-                            active_query = recovery_query
-                            active_scope = "recovery"
-                            with activate_workflow_budget(section_budget):
-                                section = self.section_generation_service._generate_section(
-                                    shared_state,
-                                    document_id=document_id,
-                                    project_input=project_input,
-                                    section_title=title,
-                                    section_order=order,
-                                    rag_context=active_context,
-                                    citations=active_citations,
-                                    structured_facts=structured_facts,
-                                    previous_sections=sections,
-                                    generation_attempt=recovery_count + 1,
-                                )
+                            if recovery_assessment.get("status") == "insufficient":
+                                retrieval_metadata[
+                                    "corrective_generation_skipped"
+                                ] = "evidence_insufficient"
+                            else:
+                                active_context = recovery_context
+                                active_chunks = recovery_chunks
+                                active_citations = recovery_citations
+                                active_query = recovery_query
+                                active_scope = "recovery"
+                                active_assessment = recovery_assessment
+                                with activate_workflow_budget(section_budget):
+                                    section = self.section_generation_service._generate_section(
+                                        shared_state,
+                                        document_id=document_id,
+                                        project_input=project_input,
+                                        section_title=title,
+                                        section_order=order,
+                                        rag_context=active_context,
+                                        citations=active_citations,
+                                        structured_facts=structured_facts,
+                                        previous_sections=sections,
+                                        generation_attempt=recovery_count + 1,
+                                    )
                         retrieval_metadata["corrective_retrieval_success"] = True
                         retrieval_metadata["corrective_citation_count"] = len(
                             recovery_citations
@@ -578,6 +671,10 @@ class SchemeGenerationUseCase:
                             flush=True,
                         )
 
+                retrieval_metadata["evidence_assessment_status"] = (
+                    active_assessment.get("status", "not_assessed")
+                )
+                retrieval_metadata["evidence_assessment"] = active_assessment
                 contract_sha = str(
                     (active_context.extra or {}).get("evidence_contract_sha256") or ""
                 ) or None
@@ -680,6 +777,19 @@ class SchemeGenerationUseCase:
                 evidence_available
                 or any(bundle.citations for bundle in section_evidence_bundles)
             )
+            assessed_statuses = [assessment_status]
+            assessed_statuses.extend(
+                str((bundle.metadata or {}).get("evidence_assessment_status") or "not_assessed")
+                for bundle in section_evidence_bundles
+                if bundle.section_title in citation_required_titles
+            )
+            if "insufficient" in assessed_statuses:
+                semantic_evidence_sufficient = False
+            elif "sufficient" in assessed_statuses:
+                semantic_evidence_sufficient = True
+            else:
+                # Legacy/fake evidence contracts may still be not_assessed.
+                semantic_evidence_sufficient = evidence_available
             # 阶段 E：文档级硬门禁，检查章节完整性、引用约束、关键字段和输出 Schema。
             hard_gate = evaluate_scheme_draft(
                 draft,
@@ -694,9 +804,7 @@ class SchemeGenerationUseCase:
                     and required_sections
                 ),
                 output_schema_valid=bool(draft.full_text and draft.sections),
-                # Existing hard gate checks evidence presence. Semantic sufficiency
-                # remains "not_assessed" until the evidence grader stage.
-                evidence_sufficient=evidence_available,
+                evidence_sufficient=semantic_evidence_sufficient,
                 workflow_complete=True,
             )
             print(

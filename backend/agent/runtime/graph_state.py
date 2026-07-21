@@ -25,6 +25,11 @@ class GraphStateSchema(SharedStateSchema):
 
     schema_version: str = "graph_state_v1"
 
+    # Controlled business-state commit revision. It increments only when a
+    # validated GraphStateDelta is committed. Runtime lifecycle mutations such
+    # as step status, retry counters and node history are not globally versioned
+    # by this field; checkpoint/resume semantics must not treat it as a full
+    # GraphState snapshot version.
     graph_revision: int = 0
     current_node_id: Optional[str] = None
     completed_node_ids: List[str] = Field(default_factory=list)

@@ -215,6 +215,9 @@ CHUNK_V1_TEMPLATE: Dict[str, Any] = {
     "schema_version": CHUNK_SCHEMA_VERSION,
 
     "chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
     "doc_id": None,
     "source_type": DEFAULT_SOURCE_TYPE,
 
@@ -268,6 +271,9 @@ PARENT_CHUNK_V1_TEMPLATE: Dict[str, Any] = {
     "schema_version": PARENT_CHUNK_SCHEMA_VERSION,
 
     "parent_chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
     "doc_id": None,
     "source_type": DEFAULT_SOURCE_TYPE,
 
@@ -335,6 +341,9 @@ CHILD_CHUNK_V1_TEMPLATE: Dict[str, Any] = {
     "chunk_id": None,
     "child_chunk_id": None,
     "parent_chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
     "doc_id": None,
     "source_type": DEFAULT_SOURCE_TYPE,
 
@@ -400,6 +409,9 @@ VECTOR_INDEX_RECORD_V1_TEMPLATE: Dict[str, Any] = {
     "schema_version": VECTOR_INDEX_RECORD_SCHEMA_VERSION,
 
     "chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
     "doc_id": None,
     "source_type": DEFAULT_SOURCE_TYPE,
 
@@ -435,6 +447,9 @@ VECTOR_INDEX_RECORD_V2_TEMPLATE: Dict[str, Any] = {
     "chunk_id": None,
     "child_chunk_id": None,
     "parent_chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
     "doc_id": None,
     "source_type": DEFAULT_SOURCE_TYPE,
 

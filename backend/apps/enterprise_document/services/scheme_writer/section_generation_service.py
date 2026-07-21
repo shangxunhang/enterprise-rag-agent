@@ -59,6 +59,92 @@ class SectionGenerationService:
         self.generation_quality_metadata = dict(
             generation_quality_metadata or {}
         )
+
+    def _build_insufficient_evidence_section(
+        self,
+        shared_state: SharedStateSchema,
+        *,
+        project_input: ProjectInputSchema,
+        section_title: str,
+        section_order: int,
+        rag_context: RAGContextSchema,
+        citations: List[CitationSchema],
+        assessment: Dict[str, Any] | None = None,
+    ) -> SchemeSectionSchema:
+        """Fail closed when an evidence-required section lacks sufficient evidence."""
+
+        started_at = self.runtime_support._now_iso()
+        section_id = f"section_{shared_state.run_id}_{section_order:03d}"
+        assessment = dict(assessment or {})
+        reason = str(
+            assessment.get("reason")
+            or assessment.get("details", {}).get("final_assessment", {}).get("reason")
+            or "检索与纠正检索后仍未获得足以支撑本章节的可靠证据"
+        ).strip()
+        content = (
+            f"现有知识库证据不足，无法在不引入未经证实信息的前提下可靠编写“{section_title}”章节。"
+            "请补充与本章节直接相关的项目资料、政策依据、技术规范或经授权知识库内容后重新生成。"
+        )
+        truncation = detect_truncation(
+            content,
+            "stop",
+            project_input.generation_requirements.min_section_chars,
+        )
+        warning_name = "evidence_insufficient:normal_generation_blocked"
+        warning = WarningSchema(
+            warning_code="SECTION_EVIDENCE_INSUFFICIENT",
+            message=warning_name,
+            source=ErrorSourceSchema(
+                component="SchemeWriterAgent",
+                agent_name="SchemeWriterAgent",
+                step_name=section_id,
+            ),
+            details={
+                "section_title": section_title,
+                "assessment": assessment,
+                "reason": reason,
+            },
+            created_at=self.runtime_support._now_iso(),
+        )
+        return SchemeSectionSchema(
+            section_id=section_id,
+            section_title=section_title,
+            section_order=section_order,
+            input={
+                "project_input": project_input.model_dump(),
+                "rag_context": rag_context.model_dump(),
+                "available_citation_ids": [item.citation_id for item in citations],
+                "evidence_assessment": assessment,
+            },
+            prompt="",
+            model_output="",
+            content=content,
+            status=ExecutionStatus.PARTIAL_SUCCESS,
+            citation_ids=[],
+            citation_bindings=[],
+            truncation=truncation,
+            eval_result=SectionEvalSchema(
+                passed=True,
+                checks={
+                    "evidence_sufficient": False,
+                    "normal_generation_blocked": True,
+                    "content_nonempty": True,
+                    "not_truncated": not truncation.truncated,
+                    "citation_bound": False,
+                },
+                failures=[],
+                warnings=[warning_name],
+            ),
+            warnings=[warning],
+            started_at=started_at,
+            finished_at=self.runtime_support._now_iso(),
+            extra={
+                "generation_blocked": True,
+                "generation_block_reason": "evidence_insufficient",
+                "evidence_assessment": assessment,
+            },
+        )
+
     # 阅读注释（函数）：生成 章节。
     def _generate_section(
         self,

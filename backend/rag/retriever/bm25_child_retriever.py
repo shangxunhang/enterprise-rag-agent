@@ -198,6 +198,9 @@ def normalize_child_chunk_record(record: Dict[str, Any]) -> Dict[str, Any]:
     child["child_chunk_id"] = str(child_id or "")
     child["chunk_id"] = str(child.get("chunk_id") or child["child_chunk_id"])
     child["parent_chunk_id"] = str(child.get("parent_chunk_id") or "")
+    child["tenant_id"] = str(child.get("tenant_id") or "")
+    child["kb_id"] = str(child.get("kb_id") or "")
+    child["file_id"] = str(child.get("file_id") or "")
     child["doc_id"] = str(child.get("doc_id") or "")
     if "source_unit_ids" not in child:
         child["source_unit_ids"] = _parse_json_list(child.get("source_unit_ids_json"))
@@ -343,6 +346,9 @@ class BM25ChildRetriever:
         top_k: int = 10,
         *,
         min_score: float = 0.0,
+        tenant_id: Optional[str] = None,
+        kb_ids: Optional[Iterable[str]] = None,
+        file_ids: Optional[Iterable[str]] = None,
         doc_id: Optional[str] = None,
         doc_ids: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
@@ -367,12 +373,21 @@ class BM25ChildRetriever:
         if not query_terms:
             return []
 
+        required_tenant_id = str(tenant_id or "").strip()
+        allowed_kb_ids = {str(item) for item in (kb_ids or []) if str(item)}
+        allowed_file_ids = {str(item) for item in (file_ids or []) if str(item)}
         allowed_doc_ids = {str(item) for item in (doc_ids or []) if str(item)}
         if doc_id:
             allowed_doc_ids.add(str(doc_id))
 
         scored: List[tuple[float, int]] = []
         for idx, child in enumerate(self.child_chunks):
+            if required_tenant_id and str(child.get("tenant_id") or "") != required_tenant_id:
+                continue
+            if allowed_kb_ids and str(child.get("kb_id") or "") not in allowed_kb_ids:
+                continue
+            if allowed_file_ids and str(child.get("file_id") or "") not in allowed_file_ids:
+                continue
             if allowed_doc_ids and str(child.get("doc_id")) not in allowed_doc_ids:
                 continue
             score = self._score_doc(query_terms, idx)
@@ -390,6 +405,9 @@ class BM25ChildRetriever:
                 "chunk_id": child.get("chunk_id"),
                 "child_chunk_id": child.get("child_chunk_id"),
                 "parent_chunk_id": child.get("parent_chunk_id"),
+                "tenant_id": child.get("tenant_id"),
+                "kb_id": child.get("kb_id"),
+                "file_id": child.get("file_id"),
                 "doc_id": child.get("doc_id"),
                 "child_chunk": child,
                 "raw_hit": {

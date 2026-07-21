@@ -8,7 +8,13 @@ from rag.common.coercion import as_str_list
 from rag.evidence.contract import RAGEvidenceContractBuilder
 from rag.mapping.evidence_mapper import EvidenceMapper
 from rag.mapping.request_mapper import RAGInvocation
-from schemas.rag import EvidenceBundleSchema, RAGToolInputSchema, RAGTraceSchema
+from schemas.rag import (
+    EvidenceAssessmentStatus,
+    EvidenceBundleSchema,
+    RAGEvidenceAssessmentSchema,
+    RAGToolInputSchema,
+    RAGTraceSchema,
+)
 from schemas.status import ExecutionStatus
 
 
@@ -122,6 +128,60 @@ class RAGResultMapper:
             return []
         return [dict(item) for item in rounds if isinstance(item, dict)]
 
+    @staticmethod
+    def _assessment_from_quality(
+        evidence_quality: dict[str, Any],
+    ) -> RAGEvidenceAssessmentSchema:
+        """Project the retrieval grader result into the canonical evidence contract."""
+
+        corrective = evidence_quality.get("corrective_retrieval")
+        corrective = corrective if isinstance(corrective, dict) else {}
+        final_assessment = (
+            corrective.get("final_assessment")
+            or evidence_quality.get("final_assessment")
+            or evidence_quality.get("evidence_assessment")
+            or {}
+        )
+        final_assessment = (
+            dict(final_assessment) if isinstance(final_assessment, dict) else {}
+        )
+        sufficient = final_assessment.get("sufficient")
+        if sufficient is True:
+            status = EvidenceAssessmentStatus.SUFFICIENT
+            reason_codes = ["retrieval_evidence_sufficient"]
+        elif sufficient is False:
+            status = EvidenceAssessmentStatus.INSUFFICIENT
+            reason_codes = ["retrieval_evidence_insufficient"]
+        else:
+            status = EvidenceAssessmentStatus.NOT_ASSESSED
+            reason_codes = []
+
+        raw_score = final_assessment.get("confidence")
+        try:
+            score = float(raw_score) if raw_score is not None else None
+        except (TypeError, ValueError):
+            score = None
+        metadata = evidence_quality.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        return RAGEvidenceAssessmentSchema(
+            status=status,
+            judge_name=str(metadata.get("judge") or "") or None,
+            judge_version=str(metadata.get("version") or "") or None,
+            score=score,
+            reason_codes=reason_codes,
+            details={
+                "final_assessment": final_assessment,
+                "corrective_retrieval_triggered": bool(
+                    corrective.get("triggered")
+                ),
+                "correction_rounds": len(
+                    corrective.get("rounds")
+                    if isinstance(corrective.get("rounds"), list)
+                    else []
+                ),
+            },
+        )
+
     def map(
         self,
         *,
@@ -227,6 +287,11 @@ class RAGResultMapper:
             },
         )
         correction_rounds = self._correction_rounds(evidence_quality)
+        assessment = self._assessment_from_quality(evidence_quality)
+        assessment.evidence_available = bool(bundle.selected_evidence_ids)
+        assessment.selected_evidence_count = len(bundle.selected_evidence_ids)
+        assessment.dropped_evidence_count = len(bundle.dropped_evidence_ids)
+        assessment.citation_count = len(bundle.citations)
         trace_id = str(
             request.extra.get("retrieval_trace_id")
             or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
@@ -238,6 +303,7 @@ class RAGResultMapper:
                 "status": ExecutionStatus.SUCCESS,
                 "retrieval_trace_id": trace_id,
                 "correction_trace": correction_rounds,
+                "assessment": assessment,
                 "budget_usage": {
                     "retrieval_rounds": 1 + len(correction_rounds),
                     "queries_executed": 1 + len(rewritten_queries),

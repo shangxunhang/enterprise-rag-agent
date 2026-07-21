@@ -151,6 +151,9 @@ class BM25ChildRetrieverPlugin:
         hits = self.backend.search(
             query=request.query,
             top_k=self.top_k,
+            tenant_id=request.tenant_id,
+            kb_ids=list(request.kb_ids or []),
+            file_ids=list(request.file_ids or []),
             doc_ids=list(request.doc_ids or []),
         )
         return CandidateSet(
@@ -160,6 +163,9 @@ class BM25ChildRetrieverPlugin:
             metadata={
                 "top_k": self.top_k,
                 "hit_count": len(hits),
+                "tenant_id": request.tenant_id,
+                "kb_ids": list(request.kb_ids or []),
+                "file_ids": list(request.file_ids or []),
                 "doc_ids": list(request.doc_ids or []),
             },
         )

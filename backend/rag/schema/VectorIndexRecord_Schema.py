@@ -208,6 +208,9 @@ def build_vector_index_record_v1(
     record = deepcopy(VECTOR_INDEX_RECORD_V1_TEMPLATE)
     record.update({
         "chunk_id": safe_str(chunk.get("chunk_id")),
+        "tenant_id": safe_str(chunk.get("tenant_id"), "default"),
+        "kb_id": safe_str(chunk.get("kb_id"), "default"),
+        "file_id": safe_str(chunk.get("file_id")),
         "doc_id": safe_str(chunk.get("doc_id")),
         "source_type": safe_str(chunk.get("source_type"), "offline"),
         "embedding_model": embedding_model,
@@ -268,6 +271,9 @@ def build_vector_index_record_v2(
         "chunk_id": chunk_id,
         "child_chunk_id": chunk_id,
         "parent_chunk_id": safe_str(child_chunk.get("parent_chunk_id")),
+        "tenant_id": safe_str(child_chunk.get("tenant_id"), "default"),
+        "kb_id": safe_str(child_chunk.get("kb_id"), "default"),
+        "file_id": safe_str(child_chunk.get("file_id")),
         "doc_id": safe_str(child_chunk.get("doc_id")),
         "source_type": safe_str(child_chunk.get("source_type"), "offline"),
         "indexed_granularity": indexed_granularity,

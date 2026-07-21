@@ -162,6 +162,9 @@ def build_milvus_schema_for_chunk_v1(dim: int, max_text_chars: int):
     schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, is_primary=True, max_length=512)
     schema.add_field(field_name="vector", datatype=DataType.FLOAT_VECTOR, dim=dim)
 
+    schema.add_field(field_name="tenant_id", datatype=DataType.VARCHAR, max_length=256)
+    schema.add_field(field_name="kb_id", datatype=DataType.VARCHAR, max_length=512)
+    schema.add_field(field_name="file_id", datatype=DataType.VARCHAR, max_length=512)
     schema.add_field(field_name="doc_id", datatype=DataType.VARCHAR, max_length=512)
     schema.add_field(field_name="source_type", datatype=DataType.VARCHAR, max_length=64)
     schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=min(max_text_chars, 65535))
@@ -265,6 +268,9 @@ def build_milvus_chunk_record(
     return {
         "chunk_id": safe_str(chunk.get("chunk_id")),
         "vector": vector.astype(np.float32).tolist(),
+        "tenant_id": safe_str(chunk.get("tenant_id"), "default"),
+        "kb_id": safe_str(chunk.get("kb_id"), "default"),
+        "file_id": safe_str(chunk.get("file_id")),
         "doc_id": safe_str(chunk.get("doc_id")),
         "source_type": safe_str(chunk.get("source_type"), "offline"),
         "text": truncate_text(safe_str(chunk.get("text")), max_text_chars),
@@ -356,6 +362,9 @@ def search_smoke_test(
         search_params={"metric_type": metric_type},
         output_fields=[
             "chunk_id",
+            "tenant_id",
+            "kb_id",
+            "file_id",
             "doc_id",
             "source_type",
             "text",

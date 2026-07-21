@@ -69,4 +69,21 @@ Data Capture 运行产物
 
 原生 Agent-RAG 主链已经完成稳定性验收。下一阶段先进行完整架构、Schema、状态流、错误传播和历史代码梳理，再决定 LangGraph 迁移。
 
+架构治理约束
+
+1. Retrieval Access Scope
+   tenant_id 与 authorized_kb_ids 是 mandatory scope；file_id/doc_id 只能进一步缩小范围。
+   Dense 与 BM25 必须执行同一有效 scope。当前未建设 IAM/RBAC，授权范围由应用边界提供；未来由 AuthContext/PermissionService 生成同一契约。
+
+2. DATA_ROOT
+   DATA_ROOT 是运行数据唯一可配置根目录。tasks/runs/captures/eval_outputs/runtime 等目录全部从 DATA_ROOT 派生，不再作为独立环境变量配置。
+
+3. graph_revision
+   graph_revision 只表示经过 StateWriteContract 校验并成功提交的业务 GraphStateDelta 序号，不是整个 GraphState 的全局快照版本。未来引入 checkpoint/resume/exact replay 时再评估 BusinessState/RuntimeState 分离。
+
+4. Compatibility State
+   context_bundle 是新业务状态的 canonical source。兼容字段只允许 Canonical -> Compatibility 单向 projection；新生产代码禁止直接新增 state.contexts[...] 写入，也禁止用 compatibility 数据反向覆盖 canonical state。
+
+迁移路线：新代码只写 canonical -> 旧代码暂时可读 compatibility -> compatibility 收敛为纯 projection -> 最终删除 legacy aliases。
+
 <!-- DEVSPACE_WRITE_TEST -->

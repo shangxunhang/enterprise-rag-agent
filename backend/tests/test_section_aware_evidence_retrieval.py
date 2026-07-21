@@ -7,13 +7,22 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 
 from apps.enterprise_document.services.scheme_writer.evidence_service import (
     DocumentCitationRegistry,
     SchemeEvidenceService,
 )
+from apps.enterprise_document.services.scheme_writer.runtime_support import (
+    SchemeWriterRuntimeSupport,
+)
+from apps.enterprise_document.services.scheme_writer.section_generation_service import (
+    SectionGenerationService,
+)
 from core.config import get_settings
 from schemas.citation import CitationSchema
+from schemas.rag import RAGContextSchema
+from schemas.status import ExecutionStatus
 from run_demo import run_demo
 from mainline_runtime import build_project_input
 
@@ -109,6 +118,41 @@ def test_section_query_for_security_is_specific_and_recovery_is_stricter() -> No
 
 
 # 阅读注释（函数）：处理 测试 fake 主链 can explicitly enable 章节 aware 检索 相关逻辑。
+def test_insufficient_evidence_section_blocks_normal_generation() -> None:
+    service = object.__new__(SectionGenerationService)
+    service.runtime_support = SchemeWriterRuntimeSupport()
+    project_input = build_project_input(
+        "task_insufficient",
+        "生成一个政务云建设方案",
+        allow_demo_defaults=True,
+    )
+
+    section = service._build_insufficient_evidence_section(
+        SimpleNamespace(task_id="task_insufficient", run_id="run_insufficient"),
+        project_input=project_input,
+        section_title="安全设计",
+        section_order=6,
+        rag_context=RAGContextSchema(context_text="", used_context_chars=0),
+        citations=[],
+        assessment={
+            "status": "insufficient",
+            "details": {
+                "final_assessment": {
+                    "reason": "retrieval confidence below threshold"
+                }
+            },
+        },
+    )
+
+    assert section.status == ExecutionStatus.PARTIAL_SUCCESS
+    assert section.model_output == ""
+    assert "证据不足" in section.content
+    assert section.extra["generation_blocked"] is True
+    assert section.extra["generation_block_reason"] == "evidence_insufficient"
+    assert section.eval_result.checks["normal_generation_blocked"] is True
+    assert section.eval_result.checks["evidence_sufficient"] is False
+
+
 def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -> None:
     """处理 测试 fake 主链 can explicitly enable 章节 aware 检索 相关逻辑。
 
@@ -137,10 +181,6 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
         settings = replace(
             base,
             data_root=tmp_path,
-            run_trace_dir=tmp_path / "runs",
-            data_capture_dir=tmp_path / "captures",
-            eval_output_dir=tmp_path / "eval_outputs",
-            task_state_dir=tmp_path / "tasks",
             default_model_name="fake_llm",
             supervisor_model_name="fake_llm",
             enable_llm_routing=False,

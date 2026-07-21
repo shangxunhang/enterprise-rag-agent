@@ -65,7 +65,12 @@ class SharedStateReader:
 
 # 阅读注释（类）：封装 shared 状态 writer，集中封装相关状态、依赖和行为。
 class SharedStateWriter:
-    """封装 shared 状态 writer，集中封装相关状态、依赖和行为。"""
+    """Canonical state writer and the only owner of compatibility projections.
+
+    New code writes canonical state first. Legacy ``contexts`` fields may be
+    projected here for migration compatibility, but compatibility data must
+    never be used to overwrite canonical state.
+    """
     # 阅读注释（函数）：设置 项目 输入 normalization。
     def set_project_input_normalization(
         self,
@@ -101,7 +106,7 @@ class SharedStateWriter:
         state.context_bundle.business.manual_boundaries = manual_boundaries
         state.structured_facts = structured_facts
 
-        # Compatibility projection. New code should use context_bundle.
+        # One-way compatibility projection: canonical -> legacy view only.
         state.contexts["project_input"] = project_input
         state.contexts["table_agent_output"] = table_agent_output
 
@@ -336,7 +341,8 @@ class SharedStateWriter:
         scheme_writer_output: Dict[str, Any],
         rag_tool_output: Dict[str, Any],
     ) -> None:
-        # Compatibility projection retained for v1 callers.
+        # Compatibility projection retained for v1 callers. New features must
+        # not add direct ``state.contexts[...]`` writes outside this adapter.
         """设置 scheme outputs。
 
         参数:

@@ -22,6 +22,9 @@ class RetrievalRequest:
     """封装 检索 请求，集中封装相关状态、依赖和行为。"""
     query: str
     filter_expr: str | None = None
+    tenant_id: str | None = None
+    kb_ids: list[str] = field(default_factory=list)
+    file_ids: list[str] = field(default_factory=list)
     doc_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 

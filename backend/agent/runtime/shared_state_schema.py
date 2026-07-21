@@ -32,8 +32,11 @@ class SharedStateSchema(SchemaBase):
 
     context_bundle: ContextBundleSchema
 
-    # Compatibility views retained during migration. New code should prefer
-    # context_bundle.
+    # Compatibility views retained during migration. ``context_bundle`` is the
+    # canonical source of truth for new business/evidence/generation/runtime
+    # state. Compatibility views are one-way projections owned by
+    # SharedStateWriter; new production code must not write them directly or
+    # treat them as an authority that can overwrite canonical state.
     contexts: Dict[str, Any] = Field(default_factory=dict)
     structured_facts: List[Dict[str, Any]] = Field(default_factory=list)
 

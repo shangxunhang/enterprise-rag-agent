@@ -106,6 +106,7 @@ class RAGService(RAGServicePort):
         model_name: str | None = None,
         retrieval_runtime: Any | None = None,
         request_mapper: RAGRequestMapper | None = None,
+        allow_legacy_unscoped: bool = False,
         result_mapper: RAGResultMapper | None = None,
         error_factory: ErrorFactory | None = None,
         timer: Timer | None = None,
@@ -144,7 +145,9 @@ class RAGService(RAGServicePort):
                 model_name=model_name,
             ),
         )
-        self.request_mapper = request_mapper or RAGRequestMapper()
+        self.request_mapper = request_mapper or RAGRequestMapper(
+            allow_legacy_unscoped=allow_legacy_unscoped
+        )
         self.result_mapper = result_mapper or RAGResultMapper()
         self.error_factory = error_factory or ErrorFactory()
         self.timer = timer or MonotonicTimer()

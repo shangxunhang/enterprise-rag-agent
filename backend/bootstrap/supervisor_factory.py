@@ -46,6 +46,7 @@ class SupervisorFactory:
         task_manager: JsonlTaskManager,
         settings: AppSettings,
         options: RuntimeOptions,
+        allow_legacy_unscoped_rag: bool = False,
     ) -> SupervisorAgent:
         """Assemble one isolated runtime for a workflow execution."""
         trace, capture = self.observability_factory.build(
@@ -58,6 +59,7 @@ class SupervisorFactory:
             trace,
             model_gateway=model_gateway,
             model_name=settings.default_model_name,
+            allow_legacy_unscoped=allow_legacy_unscoped_rag,
         )
         rag_service_name = "RAGService" if options.use_real_rag else "FakeRAGService"
         agent_quality = self.agent_quality_factory.build(

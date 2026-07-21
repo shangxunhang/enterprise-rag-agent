@@ -20,6 +20,39 @@ from schemas.common import ErrorSchema, SchemaBase, WarningSchema
 from schemas.status import ExecutionStatus
 
 
+class RetrievalAccessScopeSchema(SchemaBase):
+    """System-authorized retrieval boundary enforced by every retriever.
+
+    This is not an authentication/RBAC model.  It is the effective retrieval
+    scope produced by the application/security boundary.  Agents may narrow
+    this scope, but must never broaden it.
+    """
+
+    schema_version: str = "retrieval_access_scope_v1"
+    tenant_id: str
+    authorized_kb_ids: List[str] = Field(default_factory=list)
+    allowed_file_ids: List[str] = Field(default_factory=list)
+    allowed_doc_ids: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "RetrievalAccessScopeSchema":
+        self.tenant_id = str(self.tenant_id or "").strip()
+        self.authorized_kb_ids = list(
+            dict.fromkeys(str(item).strip() for item in self.authorized_kb_ids if str(item).strip())
+        )
+        self.allowed_file_ids = list(
+            dict.fromkeys(str(item).strip() for item in self.allowed_file_ids if str(item).strip())
+        )
+        self.allowed_doc_ids = list(
+            dict.fromkeys(str(item).strip() for item in self.allowed_doc_ids if str(item).strip())
+        )
+        if not self.tenant_id:
+            raise ValueError("retrieval access scope requires tenant_id")
+        if not self.authorized_kb_ids:
+            raise ValueError("retrieval access scope requires at least one authorized_kb_id")
+        return self
+
+
 # 阅读注释（类）：封装 ragtool 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGToolInputSchema(SchemaBase):
     """封装 ragtool 输入 Schema，定义跨模块传递的数据结构与字段约束。"""
@@ -33,7 +66,10 @@ class RAGToolInputSchema(SchemaBase):
     rewritten_queries: List[str] = Field(default_factory=list)
 
     kb_ids: List[str] = Field(default_factory=list)
+    access_scope: Optional[RetrievalAccessScopeSchema] = None
 
+    # Legacy caller-provided narrowing filters.  Security-sensitive mandatory
+    # tenant/KB boundaries live in access_scope and cannot be overridden here.
     filters: Dict[str, Any] = Field(default_factory=dict)
 
     need_citation: bool = True

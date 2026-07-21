@@ -140,10 +140,6 @@ class AppSettings:
 
     project_root: Path
     data_root: Path
-    run_trace_dir: Path
-    data_capture_dir: Path
-    eval_output_dir: Path
-    task_state_dir: Path
     prompt_root: Path
 
     default_model_name: str
@@ -163,6 +159,31 @@ class AppSettings:
     local_qwen_model_path: Path
     local_qwen_device: str
     local_qwen_max_new_tokens: int
+
+    @property
+    def run_trace_dir(self) -> Path:
+        """Derived trace directory; DATA_ROOT is the single configurable root."""
+        return self.data_root / "runs"
+
+    @property
+    def data_capture_dir(self) -> Path:
+        """Derived capture directory; DATA_ROOT is the single configurable root."""
+        return self.data_root / "captures"
+
+    @property
+    def eval_output_dir(self) -> Path:
+        """Derived evaluation output directory."""
+        return self.data_root / "eval_outputs"
+
+    @property
+    def task_state_dir(self) -> Path:
+        """Derived task-state directory."""
+        return self.data_root / "tasks"
+
+    @property
+    def runtime_dir(self) -> Path:
+        """Derived runtime coordination directory."""
+        return self.data_root / "runtime"
 
     # 阅读注释（函数）：处理 as 字典 相关逻辑。
     def as_dict(self) -> dict:
@@ -222,16 +243,6 @@ def get_settings(reload: bool = False) -> AppSettings:
         app_env=_get_env("APP_ENV", "dev"),
         project_root=PROJECT_ROOT,
         data_root=data_root,
-        run_trace_dir=_resolve_path(_get_env("RUN_TRACE_DIR", str(data_root / "runs"))),
-        data_capture_dir=_resolve_path(
-            _get_env("DATA_CAPTURE_DIR", str(data_root / "captures"))
-        ),
-        eval_output_dir=_resolve_path(
-            _get_env("EVAL_OUTPUT_DIR", str(data_root / "eval_outputs"))
-        ),
-        task_state_dir=_resolve_path(
-            _get_env("TASK_STATE_DIR", str(data_root / "tasks"))
-        ),
         prompt_root=_resolve_path(_get_env("PROMPT_ROOT", "prompts")),
 
         default_model_name=default_model_name,
@@ -262,7 +273,7 @@ def get_settings(reload: bool = False) -> AppSettings:
         ),
         local_qwen_device=_get_env("LOCAL_QWEN_DEVICE", "cuda"),
         local_qwen_max_new_tokens=_to_int(
-            _get_env("LOCAL_QWEN_MAX_NEW_TOKENS", "256")
+            _get_env("LOCAL_QWEN_MAX_NEW_TOKENS", "1536")
         ),
     )
 

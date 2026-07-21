@@ -47,7 +47,7 @@ class _RecordingGateway:
 def _generator(gateway: _RecordingGateway) -> ModelGatewayTextGenerator:
     return ModelGatewayTextGenerator(
         model_gateway=gateway,
-        model_name="local_qwen2_5_7b_gptq_int4",
+        model_name="local_qwen2_5_1_5b",
     )
 
 
@@ -85,7 +85,7 @@ def test_text_generator_translates_to_canonical_gateway_request() -> None:
     assert len(gateway.requests) == 1
     request = gateway.requests[0]
     assert request.schema_version == "model_request_v1"
-    assert request.model_name == "local_qwen2_5_7b_gptq_int4"
+    assert request.model_name == "local_qwen2_5_1_5b"
     assert request.task_id == "task-1"
     assert request.run_id == "run-1"
     assert request.extra["call_purpose"] == "rag_query_rewrite"
@@ -194,7 +194,7 @@ def test_rag_service_factory_injects_the_same_gateway_instance() -> None:
         rag_project_root=PROJECT_ROOT,
         enable_agent_self_rag=True,
         enable_semantic_gate=False,
-        semantic_gate_model_name="local_qwen2_5_7b_gptq_int4",
+        semantic_gate_model_name="local_qwen2_5_1_5b",
         rag_static_retrieval_spec_file=(
             PROJECT_ROOT / "backend/rag/config/static_retrieval_v1.yaml"
         ),
@@ -209,14 +209,14 @@ def test_rag_service_factory_injects_the_same_gateway_instance() -> None:
     observed = RAGServiceFactory().build(
         options,
         model_gateway=gateway,
-        model_name="local_qwen2_5_7b_gptq_int4",
+        model_name="local_qwen2_5_1_5b",
     )
 
     assert isinstance(observed, ObservedRAGService)
     assert isinstance(observed.inner, RAGService)
     runtime_factory = observed.inner.retrieval_runtime.runtime_factory
     assert runtime_factory.model_gateway is gateway
-    assert runtime_factory.model_name == "local_qwen2_5_7b_gptq_int4"
+    assert runtime_factory.model_name == "local_qwen2_5_1_5b"
 
 
 def test_public_rag_schema_contract_is_unchanged() -> None:

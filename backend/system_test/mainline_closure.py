@@ -60,10 +60,6 @@ def run_fake_mainline_scenario(
         settings = replace(
             base,
             data_root=output_root,
-            run_trace_dir=output_root / "runs",
-            data_capture_dir=output_root / "captures",
-            eval_output_dir=output_root / "eval_outputs",
-            task_state_dir=output_root / "tasks",
             default_model_name="fake_llm",
             supervisor_model_name="fake_llm",
             enable_llm_routing=False,
