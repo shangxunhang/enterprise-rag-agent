@@ -17,6 +17,7 @@ user input -> ProjectInput -> Supervisor -> WorkflowEngine -> Agent nodes
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import sys
@@ -45,6 +46,59 @@ RUN_DEMO_VERSION = f"{MAINLINE_RUNTIME_VERSION}+e2e-console-v5"
 DEFAULT_USER_INPUT = "根据资料生成企业级 RAG-Agent 系统建设方案"
 REAL_MODEL_NAME = "local_qwen2_5_7b_gptq_int4"
 SUCCESS_LIKE_STATUSES = {"success", "partial_success"}
+RUN_DEMO_LOCK_PATH = PROJECT_ROOT / "data" / "runtime" / "run_demo.lock"
+
+
+class RunDemoAlreadyRunningError(RuntimeError):
+    """Raised when another direct run_demo.py process already owns the demo lock."""
+
+
+@contextmanager
+def _single_instance_lock(lock_path: Path = RUN_DEMO_LOCK_PATH):
+    """Hold one non-blocking OS file lock for the lifetime of a direct demo run."""
+    lock_path = Path(lock_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+b")
+    acquired = False
+    try:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RunDemoAlreadyRunningError(
+                "Another scripts/run_demo.py instance is already running. "
+                f"Lock: {lock_path}"
+            ) from exc
+
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            try:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lock_file.close()
 
 
 # 阅读注释（函数）：规范化 状态 value。
@@ -943,4 +997,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        with _single_instance_lock():
+            main()
+    except RunDemoAlreadyRunningError as exc:
+        print(f"[run_demo] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc

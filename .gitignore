@@ -37,6 +37,7 @@ data/tasks/
 data/captures/
 data/eval_outputs/
 data/cache/
+data/runtime/
 
 # Local raw/processed data
 data/raw/

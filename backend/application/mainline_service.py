@@ -152,8 +152,11 @@ class MainlineApplicationService:
             settings=settings,
             options=options,
         )
-        # 阶段 7：正式进入 Agent/Workflow 主链；此调用返回整个任务的统一 AgentResult。
-        result = supervisor.run(task)
+        # 阶段 7：正式进入 Agent/Workflow 主链；无论成功、失败还是异常，都统一释放本次运行持有的资源。
+        try:
+            result = supervisor.run(task)
+        finally:
+            supervisor.close()
 
         scheme_draft: Dict[str, Any] = {}
         scheme_writer_output: Dict[str, Any] = {}

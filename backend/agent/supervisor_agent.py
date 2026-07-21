@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import traceback
-from typing import Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from agent.agent_registry import AgentRegistry
 from agent.runtime.graph_state import GraphStateSchema
@@ -40,6 +40,7 @@ class SupervisorAgent:
         supervisor_model_name: str = "fake_llm",
         enable_llm_routing: bool = True,
         workflow_engine: WorkflowEnginePort | None = None,
+        owned_resources: Iterable[Any] | None = None,
     ) -> None:
         self.catalog = WorkflowCatalog(workflows)
         self.router = WorkflowRouter(
@@ -57,6 +58,22 @@ class SupervisorAgent:
         self.lifecycle = TaskLifecycleService(task_manager)
         self.trace = WorkflowTraceService(run_trace_recorder)
         self.error_factory = ErrorFactory()
+        self._owned_resources = tuple(owned_resources or ())
+
+    def close(self) -> None:
+        """Release runtime resources owned by this supervisor instance."""
+        seen: set[int] = set()
+        for resource in reversed(self._owned_resources):
+            if resource is None or id(resource) in seen:
+                continue
+            seen.add(id(resource))
+            close = getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    # Shutdown is best-effort and must not mask the task result.
+                    pass
 
     def run(self, task: TaskSchema) -> AgentResultSchema:
         """Execute the selected workflow and own its lifecycle and trace."""

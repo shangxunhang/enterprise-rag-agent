@@ -100,4 +100,5 @@ class SupervisorFactory:
             model_gateway=model_gateway,
             supervisor_model_name=settings.supervisor_model_name,
             enable_llm_routing=settings.enable_llm_routing,
+            owned_resources=(rag_service,),
         )

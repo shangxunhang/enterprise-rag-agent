@@ -303,3 +303,9 @@ class ObservedRAGService(RAGServicePort):
             tags=["trace_v2", "rag"],
         )
         return bundle
+
+    def close(self) -> None:
+        """Forward lifecycle shutdown to the wrapped RAG service."""
+        close = getattr(self.inner, "close", None)
+        if callable(close):
+            close()
