@@ -524,7 +524,7 @@ def test_agent_final_section_runs_checker_after_binding_and_rechecks_repair() ->
             )
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -576,7 +576,7 @@ def test_agent_final_section_runs_checker_after_binding_and_rechecks_repair() ->
         generated_outputs={},
     )
 
-    section = _Agent().section_generation_service._generate_section(
+    section = _Agent().section_generation_service.generate_section(
         state,
         document_id="document_quality",
         project_input=project,

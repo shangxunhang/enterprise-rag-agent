@@ -9,9 +9,11 @@ import os
 from dataclasses import replace
 from types import SimpleNamespace
 
-from apps.enterprise_document.services.scheme_writer.evidence_service import (
+from apps.enterprise_document.services.scheme_writer.document_citation_registry import (
     DocumentCitationRegistry,
-    SchemeEvidenceService,
+)
+from apps.enterprise_document.services.scheme_writer.section_retrieval_query_builder import (
+    SectionRetrievalQueryBuilder,
 )
 from apps.enterprise_document.services.scheme_writer.runtime_support import (
     SchemeWriterRuntimeSupport,
@@ -103,10 +105,10 @@ def test_section_query_for_security_is_specific_and_recovery_is_stricter() -> No
         "生成一个政务云建设方案",
         allow_demo_defaults=True,
     )
-    normal = SchemeEvidenceService._build_section_query(
+    normal = SectionRetrievalQueryBuilder.build(
         project_input, "安全设计", recovery=False
     )
-    recovery = SchemeEvidenceService._build_section_query(
+    recovery = SectionRetrievalQueryBuilder.build(
         project_input, "安全设计", recovery=True
     )
 
@@ -127,7 +129,7 @@ def test_insufficient_evidence_section_blocks_normal_generation() -> None:
         allow_demo_defaults=True,
     )
 
-    section = service._build_insufficient_evidence_section(
+    section = service.build_insufficient_evidence_section(
         SimpleNamespace(task_id="task_insufficient", run_id="run_insufficient"),
         project_input=project_input,
         section_title="安全设计",

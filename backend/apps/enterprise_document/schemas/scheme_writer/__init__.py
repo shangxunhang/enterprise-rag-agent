@@ -15,6 +15,8 @@ from .evaluation import (
 from .document import SchemeDraftSchema, SchemeSectionSchema
 from .output import SchemeWriterOutputSchema
 from .evidence import SectionEvidenceBundleSchema
+from .section_execution import SectionExecutionRequestSchema, SectionExecutionResultSchema
+from .document_assembly import DocumentAssemblyRequestSchema, DocumentAssemblyResultSchema
 
 __all__ = [
     "SchemeGenerationOptionsSchema",
@@ -30,4 +32,8 @@ __all__ = [
     "SchemeDraftSchema",
     "SchemeWriterOutputSchema",
     "SectionEvidenceBundleSchema",
+    "SectionExecutionRequestSchema",
+    "SectionExecutionResultSchema",
+    "DocumentAssemblyRequestSchema",
+    "DocumentAssemblyResultSchema",
 ]

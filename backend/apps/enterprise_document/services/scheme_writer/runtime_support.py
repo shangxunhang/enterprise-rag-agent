@@ -19,7 +19,7 @@ class SchemeWriterRuntimeSupport:
 
     # 阅读注释（函数）：处理 now iso 相关逻辑。
     @classmethod
-    def _now_iso(cls) -> str:
+    def now_iso(cls) -> str:
         """处理 now iso 相关逻辑。
 
         返回:
@@ -32,7 +32,7 @@ class SchemeWriterRuntimeSupport:
 
     # 阅读注释（函数）：处理 错误 相关逻辑。
     @classmethod
-    def _error(
+    def error(
         cls,
         code: str,
         exc_or_message: Exception | str,

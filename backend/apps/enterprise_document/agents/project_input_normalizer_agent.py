@@ -14,11 +14,6 @@ from __future__ import annotations
 from agent.base_agent import BaseAgent
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.state_access import SharedStateWriter
-from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
-from apps.enterprise_document.schemas.table_agent_schema import (
-    StructuredFactSchema,
-    TableAnalysisSchema,
-)
 from apps.enterprise_document.services.project_input_normalization import (
     ProjectInputNormalizationUseCase,
 )
@@ -59,8 +54,6 @@ class ProjectInputNormalizerAgent(BaseAgent):
         self.use_case = use_case or ProjectInputNormalizationUseCase(clock=self.clock)
         self.error_factory = error_factory or ErrorFactory(self.clock)
 
-    # Compatibility methods retained for callers/tests that used the old
-    # private API. They delegate to isolated services and contain no logic.
     # 阅读注释（函数）：处理 now iso 相关逻辑。
     def _now_iso(self) -> str:
         """处理 now iso 相关逻辑。
@@ -72,88 +65,6 @@ class ProjectInputNormalizerAgent(BaseAgent):
             主要直接调用：self.clock.now_iso。
         """
         return self.clock.now_iso()
-
-    # 阅读注释（函数）：读取 项目 输入。
-    def _read_project_input(self, state: SharedStateSchema) -> ProjectInputSchema:
-        """读取 项目 输入。
-
-        参数:
-            state: 工作流共享状态。
-
-        返回:
-            ProjectInputSchema
-
-        阅读提示:
-            主要直接调用：self.use_case.reader.read。
-        """
-        return self.use_case.reader.read(state)
-
-    # 阅读注释（函数）：处理 hardware summary 相关逻辑。
-    def _hardware_summary(self, project_input: ProjectInputSchema) -> str:
-        """处理 hardware summary 相关逻辑。
-
-        参数:
-            project_input: 规范化后的项目输入。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self.use_case.table_builder.summaries.hardware_summary。
-        """
-        return self.use_case.table_builder.summaries.hardware_summary(project_input)
-
-    # 阅读注释（函数）：处理 organization summary 相关逻辑。
-    def _organization_summary(self, project_input: ProjectInputSchema) -> str:
-        """处理 organization summary 相关逻辑。
-
-        参数:
-            project_input: 规范化后的项目输入。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self.use_case.fact_extractor.summaries.organization_summary。
-        """
-        return self.use_case.fact_extractor.summaries.organization_summary(project_input)
-
-    # 阅读注释（函数）：构建 table analysis。
-    def _build_table_analysis(self, project_input: ProjectInputSchema) -> TableAnalysisSchema:
-        """构建 table analysis。
-
-        参数:
-            project_input: 规范化后的项目输入。
-
-        返回:
-            TableAnalysisSchema
-
-        阅读提示:
-            主要直接调用：self.use_case.table_builder.build。
-        """
-        return self.use_case.table_builder.build(project_input)
-
-    # 阅读注释（函数）：构建 structured facts。
-    def _build_structured_facts(
-        self,
-        state: SharedStateSchema,
-        project_input: ProjectInputSchema,
-        created_at: str,
-    ) -> list[StructuredFactSchema]:
-        """构建 structured facts。
-
-        参数:
-            state: 工作流共享状态。
-            project_input: 规范化后的项目输入。
-            created_at: created at，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            list[StructuredFactSchema]
-
-        阅读提示:
-            主要直接调用：self.use_case.fact_extractor.extract。
-        """
-        return self.use_case.fact_extractor.extract(state, project_input, created_at)
 
     # 阅读注释（函数）：执行 ProjectInputNormalizerAgent 的主流程。
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:

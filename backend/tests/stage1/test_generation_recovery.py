@@ -81,7 +81,7 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
             ]
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -111,7 +111,7 @@ def test_truncated_section_uses_compact_full_retry_without_continuation() -> Non
         }
     )
     state = SimpleNamespace(run_id="run_retry", task_id="task_retry")
-    section = RetryAgent().section_generation_service._generate_section(
+    section = RetryAgent().section_generation_service.generate_section(
         state,
         document_id="document_retry",
         project_input=item,
@@ -184,7 +184,7 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
             ]
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -214,7 +214,7 @@ def test_overlong_section_uses_dedicated_compression_pass() -> None:
             "output_schema": {"required_sections": ["技术方案"]},
         }
     )
-    section = CompressionAgent().section_generation_service._generate_section(
+    section = CompressionAgent().section_generation_service.generate_section(
         SimpleNamespace(run_id="run_compress", task_id="task_compress"),
         document_id="document_compress",
         project_input=item,
@@ -285,7 +285,7 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
             ]
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -314,7 +314,7 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
             "output_schema": {"required_sections": ["正文"]},
         }
     )
-    section = _Agent().section_generation_service._generate_section(
+    section = _Agent().section_generation_service.generate_section(
         SimpleNamespace(run_id="run_safe_trim", task_id="task_safe_trim"),
         document_id="document_safe_trim",
         project_input=item,

@@ -25,7 +25,7 @@ class SchemeCaptureService:
         self.agent_name = agent_name
     """封装 scheme capture 服务，封装一组可复用的业务能力。"""
     # 阅读注释（函数）：记录并沉淀 SchemeCaptureService。
-    def _capture(
+    def capture(
         self,
         shared_state: SharedStateSchema,
         scheme_input: SchemeWriterInputSchema,

@@ -486,7 +486,7 @@ def test_scheme_layer_trusts_contract_not_poisoned_legacy_fields() -> None:
         created_at="2026-07-17T00:00:00+00:00",
     )
 
-    context, chunks, citations, normalized = SchemeEvidenceService._extract_rag_output(
+    context, chunks, citations, normalized = SchemeEvidenceService.extract_rag_output(
         _shared_state(), result
     )
 

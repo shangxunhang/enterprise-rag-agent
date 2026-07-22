@@ -18,6 +18,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from apps.enterprise_document.quality.budget import current_workflow_budget
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SemanticGateIssueSchema,
@@ -477,6 +478,9 @@ class SemanticSectionJudge:
                 "section_title": section_title,
             },
         )
+        budget = current_workflow_budget()
+        if budget is not None:
+            budget.reserve_llm_call(max_tokens=request.max_tokens)
         response = self.model_gateway.generate(request)
         if not response.success:
             return (

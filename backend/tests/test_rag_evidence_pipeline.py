@@ -172,7 +172,7 @@ def test_supported_binding_is_marked_grounding_verified() -> None:
         quote_text=evidence.quote_text,
     )
 
-    supported = CitationService._supported_bindings([binding], [evidence])
+    supported = CitationService.supported_bindings([binding], [evidence])
 
     assert len(supported) == 1
     assert supported[0].metadata["grounding_verified"] is True

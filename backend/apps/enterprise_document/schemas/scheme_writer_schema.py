@@ -4,6 +4,8 @@
 # =============================================================================
 """Compatibility exports for the decomposed scheme-writer schemas."""
 from apps.enterprise_document.schemas.scheme_writer import (
+    DocumentAssemblyRequestSchema,
+    DocumentAssemblyResultSchema,
     DocumentPlanSchema,
     HardGateResultSchema,
     SchemeDraftSchema,
@@ -12,6 +14,8 @@ from apps.enterprise_document.schemas.scheme_writer import (
     SchemeWriterInputSchema,
     SchemeWriterOutputSchema,
     SectionEvidenceBundleSchema,
+    SectionExecutionRequestSchema,
+    SectionExecutionResultSchema,
     SectionEvalSchema,
     SectionPlanSchema,
     SemanticGateIssueSchema,
@@ -33,4 +37,8 @@ __all__ = [
     "SchemeDraftSchema",
     "SchemeWriterOutputSchema",
     "SectionEvidenceBundleSchema",
+    "SectionExecutionRequestSchema",
+    "SectionExecutionResultSchema",
+    "DocumentAssemblyRequestSchema",
+    "DocumentAssemblyResultSchema",
 ]

@@ -206,7 +206,7 @@ def test_task_and_rag_filters_preserve_source_material_ids() -> None:
         tool_results={},
     )
     project_input = ProjectInputSchema.model_validate(payload)
-    agent.evidence_service._call_rag_tool(state, project_input)
+    agent.evidence_service.retrieve(state, project_input)
 
     assert executor.call.filters["doc_ids"] == ["doc_1", "doc_2"]
     assert executor.call.filters["file_ids"] == ["file_1"]
@@ -240,7 +240,7 @@ def test_document_plan_is_derived_from_project_input_without_fixed_sections() ->
             },
         }
     )
-    plan = DocumentPlanningService._build_document_plan(
+    plan = DocumentPlanningService.build_document_plan(
         run_id="run_plan",
         document_id="document_plan",
         project_input=item,

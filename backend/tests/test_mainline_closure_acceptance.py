@@ -203,7 +203,14 @@ def test_business_failure_preserves_partial_answer_and_report(tmp_path) -> None:
     assert report["status"] == "failed"
     assert report["business_gate_failure"] is True
     assert report["hard_gate"]["passed"] is False
-    assert report["metrics"]["failed_section_count"] >= 1
+    assert any(
+        section.get("status") == "failed"
+        for section in report["sections"]
+    )
+    assert any(
+        "workflow_budget_exhausted:retrieval_rounds" in (section.get("warnings") or [])
+        for section in report["sections"]
+    )
     assert report["metrics"]["corrective_retrieval_count"] >= 1
     assert report["paths"]["answer_markdown"] == str(answer_path)
     assert report["paths"]["e2e_report"] == str(report_path)

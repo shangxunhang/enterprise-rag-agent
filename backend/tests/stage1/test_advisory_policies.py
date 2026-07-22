@@ -54,7 +54,7 @@ def test_project_fact_boundary_rejects_invented_resources() -> None:
             "output_schema": {"required_sections": ["资源"]},
         }
     )
-    violations = SectionAdvisoryService._project_fact_violations(
+    violations = SectionAdvisoryService.project_fact_violations(
         "项目将采购两台GPU服务器，并组建5人技术团队。",
         item,
         [],
@@ -103,7 +103,7 @@ def test_project_fact_boundary_accepts_qualified_or_supported_facts() -> None:
         "GPU服务器数量需项目方确认。"
     )
 
-    assert SectionAdvisoryService._project_fact_violations(content, item, [evidence]) == []
+    assert SectionAdvisoryService.project_fact_violations(content, item, [evidence]) == []
 
 
 # 阅读注释（函数）：处理 测试 项目 fact boundary ignores structural enumeration 相关逻辑。
@@ -127,7 +127,7 @@ def test_project_fact_boundary_ignores_structural_enumeration() -> None:
             "output_schema": {"required_sections": ["正文"]},
         }
     )
-    assert SectionAdvisoryService._project_fact_violations(
+    assert SectionAdvisoryService.project_fact_violations(
         "本章节从以下四个方面展开说明。",
         item,
         [],
@@ -154,7 +154,7 @@ def test_stage1_minimal_gate_does_not_block_domain_content() -> None:
     class InventingAgent(SchemeWriterAgent):
         """封装 inventing Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -191,7 +191,7 @@ def test_stage1_minimal_gate_does_not_block_domain_content() -> None:
             "output_schema": {"required_sections": ["资源说明"]},
         }
     )
-    section = InventingAgent().section_generation_service._generate_section(
+    section = InventingAgent().section_generation_service.generate_section(
         SimpleNamespace(run_id="run_invented", task_id="task_invented"),
         document_id="document_invented",
         project_input=item,
@@ -235,7 +235,7 @@ def test_project_fact_boundary_ignores_generic_technical_design_terms() -> None:
         "安全设计可采用JWT认证，并通过WebSocket推送运行事件。"
     )
 
-    assert SectionAdvisoryService._project_fact_violations(content, item, []) == []
+    assert SectionAdvisoryService.project_fact_violations(content, item, []) == []
 
 
 # 阅读注释（函数）：处理 测试 项目 fact boundary accepts resource recommendation but rejects commitment 相关逻辑。
@@ -260,12 +260,12 @@ def test_project_fact_boundary_accepts_resource_recommendation_but_rejects_commi
         }
     )
 
-    assert SectionAdvisoryService._project_fact_violations(
+    assert SectionAdvisoryService.project_fact_violations(
         "建议根据实际并发量测算服务器数量，GPU型号需项目方确认。",
         item,
         [],
     ) == []
-    assert SectionAdvisoryService._project_fact_violations(
+    assert SectionAdvisoryService.project_fact_violations(
         "本项目将配置两台GPU服务器。",
         item,
         [],
@@ -351,8 +351,8 @@ def test_project_fact_boundary_distinguishes_goal_training_and_resource_commitme
         "同时招聘高级技术人员并组建项目小组。"
     )
 
-    assert SectionAdvisoryService._project_fact_violations(allowed, item, []) == []
-    violations = SectionAdvisoryService._project_fact_violations(rejected, item, [])
+    assert SectionAdvisoryService.project_fact_violations(allowed, item, []) == []
+    violations = SectionAdvisoryService.project_fact_violations(rejected, item, [])
     assert len(violations) == 2
 
 
@@ -401,7 +401,7 @@ def test_resource_contract_degrades_to_sizing_principles_without_inputs() -> Non
         }
     )
 
-    contract = SectionPromptService._section_generation_contract("资源配置", item)
+    contract = SectionPromptService.section_generation_contract("资源配置", item)
     assert "测算维度" in contract
     assert "采购" in contract
     assert "确定承诺" in contract
@@ -452,7 +452,7 @@ def test_stage1_minimal_gate_does_not_invoke_semantic_rewrite() -> None:
             ]
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -481,7 +481,7 @@ def test_stage1_minimal_gate_does_not_invoke_semantic_rewrite() -> None:
             "output_schema": {"required_sections": ["资源配置"]},
         }
     )
-    section = ValidationRewriteAgent().section_generation_service._generate_section(
+    section = ValidationRewriteAgent().section_generation_service.generate_section(
         SimpleNamespace(run_id="run_resource_rewrite", task_id="task_resource_rewrite"),
         document_id="document_resource_rewrite",
         project_input=item,
@@ -568,7 +568,7 @@ def test_semantic_scope_issue_is_partial_not_failed() -> None:
             self.section_generation_service.semantic_judge = _ScopeJudge()
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -606,7 +606,7 @@ def test_semantic_scope_issue_is_partial_not_failed() -> None:
             "output_schema": {"required_sections": ["章节A", "章节B"]},
         }
     )
-    section = _Agent().section_generation_service._generate_section(
+    section = _Agent().section_generation_service.generate_section(
         SimpleNamespace(run_id="run_scope", task_id="task_scope"),
         document_id="document_scope",
         project_input=item,
@@ -843,7 +843,7 @@ def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
             self.section_generation_service.semantic_judge = _Judge()
 
         # 阅读注释（函数）：处理 call 模型 相关逻辑。
-        def _call_model(self, *args, **kwargs):  # type: ignore[override]
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
             """处理 call 模型 相关逻辑。
 
             参数:
@@ -881,7 +881,7 @@ def test_semantic_hard_issue_is_advisory_only_in_stage1() -> None:
             "output_schema": {"required_sections": ["说明"]},
         }
     )
-    section = _Agent().section_generation_service._generate_section(
+    section = _Agent().section_generation_service.generate_section(
         SimpleNamespace(run_id="run_semantic_advisory", task_id="task_semantic_advisory"),
         document_id="document_semantic_advisory",
         project_input=item,

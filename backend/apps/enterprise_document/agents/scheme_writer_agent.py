@@ -16,11 +16,17 @@ from apps.enterprise_document.services.scheme_writer.capture_service import (
 from apps.enterprise_document.services.scheme_writer.citation_service import (
     CitationService,
 )
+from apps.enterprise_document.services.scheme_writer.document_assembler import (
+    DocumentAssembler,
+)
 from apps.enterprise_document.services.scheme_writer.document_planning_service import (
     DocumentPlanningService,
 )
 from apps.enterprise_document.services.scheme_writer.evidence_service import (
     SchemeEvidenceService,
+)
+from apps.enterprise_document.services.scheme_writer.grounding_repair_service import (
+    GroundingRepairService,
 )
 from apps.enterprise_document.services.scheme_writer.input_service import SchemeInputService
 from apps.enterprise_document.services.scheme_writer.model_service import SectionModelService
@@ -28,8 +34,14 @@ from apps.enterprise_document.services.scheme_writer.prompt_service import Secti
 from apps.enterprise_document.services.scheme_writer.runtime_support import (
     SchemeWriterRuntimeSupport,
 )
+from apps.enterprise_document.services.scheme_writer.section_execution_coordinator import (
+    SectionExecutionCoordinator,
+)
 from apps.enterprise_document.services.scheme_writer.section_generation_service import (
     SectionGenerationService,
+)
+from apps.enterprise_document.services.scheme_writer.section_retrieval_query_builder import (
+    SectionRetrievalQueryBuilder,
 )
 from apps.enterprise_document.services.scheme_writer.use_case import (
     SchemeGenerationUseCase,
@@ -72,6 +84,7 @@ class SchemeWriterAgent(BaseAgent):
 
         self.runtime_support = SchemeWriterRuntimeSupport()
         self.input_service = SchemeInputService()
+        self.section_retrieval_query_builder = SectionRetrievalQueryBuilder()
         self.evidence_service = SchemeEvidenceService(
             rag_service=rag_service,
             agent_name=self.agent_name,
@@ -91,16 +104,17 @@ class SchemeWriterAgent(BaseAgent):
             runtime_support=self.runtime_support,
         )
 
-        # Temporary migration hook for tests that still subclass the old agent
-        # to fake model calls.  Those callers are migrated in this refactor and
-        # the hook is removed once no override remains.
-        legacy_model_override = self.__class__.__dict__.get("_call_model")
-        if legacy_model_override is not None:
-            self.model_service._call_model = self._call_model  # type: ignore[attr-defined,method-assign]
+        # Public test seam: specialized test agents may override call_model
+        # without reaching into SectionModelService private implementation details.
+        model_override = self.__class__.__dict__.get("call_model")
+        if model_override is not None:
+            self.model_service.call_model = self.call_model  # type: ignore[attr-defined,method-assign]
 
-        self.citation_service = CitationService(
+        self.citation_service = CitationService()
+        self.grounding_repair_service = GroundingRepairService(
             model_service=self.model_service,
             prompt_service=self.prompt_service,
+            citation_service=self.citation_service,
         )
         self.advisory_service = SectionAdvisoryService()
         self.section_generation_service = SectionGenerationService(
@@ -108,6 +122,7 @@ class SchemeWriterAgent(BaseAgent):
             prompt_service=self.prompt_service,
             model_service=self.model_service,
             citation_service=self.citation_service,
+            grounding_repair_service=self.grounding_repair_service,
             advisory_service=self.advisory_service,
             semantic_judge=SemanticSectionJudge(
                 model_gateway=model_gateway,
@@ -120,6 +135,14 @@ class SchemeWriterAgent(BaseAgent):
             repair_strategy=repair_strategy,
             generation_quality_metadata=generation_quality_metadata,
         )
+        self.section_execution_coordinator = SectionExecutionCoordinator(
+            evidence_service=self.evidence_service,
+            query_builder=self.section_retrieval_query_builder,
+            section_generation_service=self.section_generation_service,
+            runtime_support=self.runtime_support,
+            generation_quality_metadata=generation_quality_metadata,
+        )
+        self.document_assembler = DocumentAssembler()
         self.document_planning_service = DocumentPlanningService()
         self.capture_service = SchemeCaptureService(
             data_capture_recorder=data_capture_recorder,
@@ -128,7 +151,8 @@ class SchemeWriterAgent(BaseAgent):
         self.use_case = SchemeGenerationUseCase(
             input_service=self.input_service,
             evidence_service=self.evidence_service,
-            section_generation_service=self.section_generation_service,
+            section_execution_coordinator=self.section_execution_coordinator,
+            document_assembler=self.document_assembler,
             document_planning_service=self.document_planning_service,
             capture_service=self.capture_service,
             runtime_support=self.runtime_support,

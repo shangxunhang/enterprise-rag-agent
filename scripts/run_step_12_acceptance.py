@@ -246,7 +246,7 @@ def main() -> int:
     )
     shared_state = SimpleNamespace(task_id=output.task_id, run_id=output.run_id)
     business_context, business_chunks, business_citations, normalized = (
-        SchemeEvidenceService._extract_rag_output(shared_state, result)
+        SchemeEvidenceService.extract_rag_output(shared_state, result)
     )
     check(
         "scheme_consumes_contract_without_reinterpretation",

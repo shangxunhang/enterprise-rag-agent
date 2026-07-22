@@ -17,7 +17,7 @@ from apps.enterprise_document.schemas.table_agent_schema import StructuredFactSc
 class SchemeInputService:
     """封装 scheme 输入 服务，封装一组可复用的业务能力。"""
     # 阅读注释（函数）：读取 inputs。
-    def _read_inputs(
+    def read_inputs(
         self, shared_state: SharedStateSchema
     ) -> Tuple[ProjectInputSchema, TableAnalysisSchema, List[StructuredFactSchema]]:
         """读取 inputs。

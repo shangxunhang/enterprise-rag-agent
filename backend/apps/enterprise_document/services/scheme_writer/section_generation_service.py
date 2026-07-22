@@ -22,9 +22,12 @@ from apps.enterprise_document.services.semantic_section_judge import SemanticSec
 from .advisory_service import SectionAdvisoryService
 from .citation_service import CitationService
 from .constants import CITATION_PATTERN as _CITATION_PATTERN
+from .grounding_repair_service import GroundingRepairService
 from .model_service import SectionModelService
 from .prompt_service import SectionPromptService
 from .runtime_support import SchemeWriterRuntimeSupport
+from .section_content_recovery import SectionContentRecovery
+from .section_quality_evaluator import SectionQualityEvaluator
 
 
 # 阅读注释（类）：封装 章节 生成 服务，封装一组可复用的业务能力。
@@ -38,6 +41,7 @@ class SectionGenerationService:
         prompt_service: SectionPromptService,
         model_service: SectionModelService,
         citation_service: CitationService,
+        grounding_repair_service: GroundingRepairService,
         advisory_service: SectionAdvisoryService,
         semantic_judge: SemanticSectionJudge,
         enable_semantic_gate: bool,
@@ -50,6 +54,7 @@ class SectionGenerationService:
         self.prompt_service = prompt_service
         self.model_service = model_service
         self.citation_service = citation_service
+        self.grounding_repair_service = grounding_repair_service
         self.advisory_service = advisory_service
         self.semantic_judge = semantic_judge
         self.enable_semantic_gate = enable_semantic_gate
@@ -59,8 +64,15 @@ class SectionGenerationService:
         self.generation_quality_metadata = dict(
             generation_quality_metadata or {}
         )
+        self.content_recovery = SectionContentRecovery(
+            model_service=self.model_service,
+            prompt_service=self.prompt_service,
+        )
+        self.quality_evaluator = SectionQualityEvaluator(
+            runtime_support=self.runtime_support,
+        )
 
-    def _build_insufficient_evidence_section(
+    def build_insufficient_evidence_section(
         self,
         shared_state: SharedStateSchema,
         *,
@@ -73,7 +85,7 @@ class SectionGenerationService:
     ) -> SchemeSectionSchema:
         """Fail closed when an evidence-required section lacks sufficient evidence."""
 
-        started_at = self.runtime_support._now_iso()
+        started_at = self.runtime_support.now_iso()
         section_id = f"section_{shared_state.run_id}_{section_order:03d}"
         assessment = dict(assessment or {})
         reason = str(
@@ -104,7 +116,7 @@ class SectionGenerationService:
                 "assessment": assessment,
                 "reason": reason,
             },
-            created_at=self.runtime_support._now_iso(),
+            created_at=self.runtime_support.now_iso(),
         )
         return SchemeSectionSchema(
             section_id=section_id,
@@ -137,7 +149,7 @@ class SectionGenerationService:
             ),
             warnings=[warning],
             started_at=started_at,
-            finished_at=self.runtime_support._now_iso(),
+            finished_at=self.runtime_support.now_iso(),
             extra={
                 "generation_blocked": True,
                 "generation_block_reason": "evidence_insufficient",
@@ -146,7 +158,7 @@ class SectionGenerationService:
         )
 
     # 阅读注释（函数）：生成 章节。
-    def _generate_section(
+    def generate_section(
         self,
         shared_state: SharedStateSchema,
         *,
@@ -178,9 +190,9 @@ class SectionGenerationService:
             SchemeSectionSchema
 
         阅读提示:
-            主要直接调用：self._now_iso, self._render_section_prompt, dict, get, self._call_model, self._error, SchemeSectionSchema, project_input.model_dump。
+            主要直接调用：self.runtime_support.now_iso, self.prompt_service.render_section_prompt, dict, get, self.model_service.call_model, self.runtime_support.error, SchemeSectionSchema, project_input.model_dump。
         """
-        started_at = self.runtime_support._now_iso()
+        started_at = self.runtime_support.now_iso()
         section_id = f"section_{shared_state.run_id}_{section_order:03d}"
         model_section_id = (
             section_id
@@ -188,7 +200,7 @@ class SectionGenerationService:
             else f"{section_id}_attempt_{generation_attempt}"
         )
         # 生成阶段 1：组装章节边界、项目事实、RAG 证据和历史章节，并渲染 Prompt。
-        prompt_result = self.prompt_service._render_section_prompt(
+        prompt_result = self.prompt_service.render_section_prompt(
             shared_state,
             project_input,
             section_id,
@@ -202,7 +214,7 @@ class SectionGenerationService:
             (prompt_result.extra or {}).get("llm_context_package") or {}
         )
         # 生成阶段 2：通过 ModelGateway 调用 LLM 生成章节。
-        response = self.model_service._call_model(
+        response = self.model_service.call_model(
             shared_state,
             prompt=prompt_result.rendered_text,
             section_id=model_section_id,
@@ -214,7 +226,7 @@ class SectionGenerationService:
             prompt_version=prompt_result.prompt_version,
         )
         if not response.success:
-            error = response.error or self.runtime_support._error(
+            error = response.error or self.runtime_support.error(
                 "SECTION_MODEL_CALL_FAILED",
                 response.error_message or "model call failed",
                 node=section_id,
@@ -241,144 +253,28 @@ class SectionGenerationService:
                     failures=["模型调用失败"],
                 ),
                 started_at=started_at,
-                finished_at=self.runtime_support._now_iso(),
+                finished_at=self.runtime_support.now_iso(),
             )
 
-        content = response.content.strip()
-        truncation = detect_truncation(
-            content,
-            response.finish_reason,
-            project_input.generation_requirements.min_section_chars,
-        )
         continuation_response: Optional[ModelResponseSchema] = None
-        truncation_retry_responses: list[ModelResponseSchema] = []
-        truncation_recovery_strategy: Optional[str] = None
-        remaining_retries = max(
-            0, project_input.generation_requirements.max_section_retries
+        recovery = self.content_recovery.recover(
+            shared_state,
+            response=response,
+            model_section_id=model_section_id,
+            section_title=section_title,
+            project_input=project_input,
+            citations=citations,
+            rag_context=rag_context,
         )
-        target_section_chars = self.prompt_service._target_section_chars(
-            project_input
-        )
-        max_section_chars = int(target_section_chars * 1.5)
-        overlong = len(content) > max_section_chars
-        retry_index = 1
-        # Token-limit recovery uses a fresh compact generation.  Do not append
-        # a continuation: small local models tend to keep expanding and hit the
-        # limit again, producing a longer but still incomplete section.
-        while truncation.truncated and remaining_retries > 0:
-            retry_response = self.model_service._retry_truncated_section(
-                shared_state,
-                section_id=model_section_id,
-                section_title=section_title,
-                project_input=project_input,
-                citations=citations,
-                rag_context=rag_context,
-                retry_index=retry_index,
-            )
-            truncation_retry_responses.append(retry_response)
-            remaining_retries -= 1
-            retry_index += 1
-            if not retry_response.success or not retry_response.content.strip():
-                continue
-            candidate = retry_response.content.strip()
-            candidate_truncation = detect_truncation(
-                candidate,
-                retry_response.finish_reason,
-                project_input.generation_requirements.min_section_chars,
-            )
-            content = candidate
-            truncation = candidate_truncation
-            overlong = len(content) > max_section_chars
-
-        # If the compact retry still reaches the model limit, retain only a
-        # sufficiently long prefix ending at a complete sentence/list item.
-        # This is explicit recovery and is recorded for traceability.
-        if truncation.truncated:
-            recovered = self.model_service._recover_complete_prefix(
-                content,
-                min_chars=project_input.generation_requirements.min_section_chars,
-                max_chars=max_section_chars,
-            )
-            if recovered:
-                content = recovered
-                truncation = detect_truncation(
-                    content,
-                    "stop",
-                    project_input.generation_requirements.min_section_chars,
-                )
-                overlong = len(content) > max_section_chars
-                truncation_recovery_strategy = "complete_sentence_prefix"
-                print(
-                    f"[TruncationRecovery] section={section_title} "
-                    f"strategy={truncation_recovery_strategy} chars={len(content)}",
-                    flush=True,
-                )
-
-        compression_response: Optional[ModelResponseSchema] = None
-        compression_fallback_strategy: Optional[str] = None
-        if overlong and not truncation.truncated:
-            print(
-                f"[SectionCompression] START section={section_title} chars={len(content)} "
-                f"limit={max_section_chars}",
-                flush=True,
-            )
-            compression_response = self.model_service._compress_overlong_section(
-                shared_state,
-                original_content=content,
-                section_id=model_section_id,
-                section_title=section_title,
-                project_input=project_input,
-                citations=citations,
-            )
-            if compression_response.success and compression_response.content.strip():
-                candidate = compression_response.content.strip()
-                candidate_truncation = detect_truncation(
-                    candidate,
-                    compression_response.finish_reason,
-                    project_input.generation_requirements.min_section_chars,
-                )
-                if not candidate_truncation.truncated and len(candidate) < len(content):
-                    content = candidate
-                    truncation = candidate_truncation
-                    overlong = len(content) > max_section_chars
-                elif candidate_truncation.truncated:
-                    recovered_candidate = self.model_service._recover_complete_prefix(
-                        candidate,
-                        min_chars=project_input.generation_requirements.min_section_chars,
-                        max_chars=max_section_chars,
-                    )
-                    if recovered_candidate and len(recovered_candidate) < len(content):
-                        content = recovered_candidate
-                        truncation = detect_truncation(
-                            content,
-                            "stop",
-                            project_input.generation_requirements.min_section_chars,
-                        )
-                        overlong = len(content) > max_section_chars
-                        compression_fallback_strategy = "compressed_complete_sentence_prefix"
-            if overlong:
-                deterministic = self.model_service._recover_complete_prefix(
-                    content,
-                    min_chars=project_input.generation_requirements.min_section_chars,
-                    max_chars=max_section_chars,
-                )
-                if deterministic and len(deterministic) < len(content):
-                    content = deterministic
-                    truncation = detect_truncation(
-                        content,
-                        "stop",
-                        project_input.generation_requirements.min_section_chars,
-                    )
-                    overlong = len(content) > max_section_chars
-                    compression_fallback_strategy = (
-                        compression_fallback_strategy
-                        or "deterministic_complete_sentence_prefix"
-                    )
-            print(
-                f"[SectionCompression] END   section={section_title} chars={len(content)} "
-                f"overlong={overlong}",
-                flush=True,
-            )
+        content = recovery.content
+        truncation = recovery.truncation
+        truncation_retry_responses = recovery.truncation_retry_responses
+        truncation_recovery_strategy = recovery.truncation_recovery_strategy
+        compression_response = recovery.compression_response
+        compression_fallback_strategy = recovery.compression_fallback_strategy
+        target_section_chars = recovery.target_section_chars
+        max_section_chars = recovery.max_section_chars
+        overlong = recovery.overlong
 
         # Semantic review is optional and advisory only in stage 1.  The core
         # runtime must not spend one extra model call per section, rewrite the
@@ -396,7 +292,7 @@ class SectionGenerationService:
         deterministic_fact_candidates: list[Dict[str, Any]] = []
         semantic_gate_response: Optional[ModelResponseSchema] = None
         if self.enable_semantic_gate:
-            deterministic_fact_candidates = self.advisory_service._project_fact_violations(
+            deterministic_fact_candidates = self.advisory_service.project_fact_violations(
                 content, project_input, citations
             )
             print(
@@ -408,7 +304,7 @@ class SectionGenerationService:
             semantic_gate, semantic_gate_response = self.semantic_judge.judge(
                 task_id=shared_state.task_id,
                 run_id=shared_state.run_id,
-                created_at=self.runtime_support._now_iso(),
+                created_at=self.runtime_support.now_iso(),
                 section_id=model_section_id,
                 section_title=section_title,
                 content=content,
@@ -455,11 +351,11 @@ class SectionGenerationService:
         content = _CITATION_PATTERN.sub("", content)
         deterministic_matches: list[Tuple[str, str, float]] = []
         if citations:
-            content, deterministic_matches = self.citation_service._insert_deterministic_citations(
+            content, deterministic_matches = self.citation_service.insert_deterministic_citations(
                 content, citations
             )
-        bindings = self.citation_service._supported_bindings(
-            self.citation_service._bind_citations(
+        bindings = self.citation_service.supported_bindings(
+            self.citation_service.bind_citations(
                 document_id=document_id,
                 section_id=section_id,
                 content=content,
@@ -483,7 +379,7 @@ class SectionGenerationService:
                 f"[CitationRepair] START section={section_title} available={len(citations)}",
                 flush=True,
             )
-            repaired_content, citation_repair_response = self.citation_service._repair_section_citations(
+            repaired_content, citation_repair_response = self.grounding_repair_service.repair_section_citations(
                 shared_state,
                 content=content,
                 section_id=model_section_id,
@@ -491,8 +387,8 @@ class SectionGenerationService:
                 project_input=project_input,
                 citations=citations,
             )
-            repaired_bindings = self.citation_service._supported_bindings(
-                self.citation_service._bind_citations(
+            repaired_bindings = self.citation_service.supported_bindings(
+                self.citation_service.bind_citations(
                     document_id=document_id,
                     section_id=section_id,
                     content=repaired_content,
@@ -523,7 +419,7 @@ class SectionGenerationService:
                 f"available={len(citations)}",
                 flush=True,
             )
-            grounded_regeneration_response = self.citation_service._regenerate_section_from_evidence(
+            grounded_regeneration_response = self.grounding_repair_service.regenerate_section_from_evidence(
                 shared_state,
                 original_content=content,
                 section_id=model_section_id,
@@ -541,8 +437,8 @@ class SectionGenerationService:
                     grounded_regeneration_response.finish_reason,
                     project_input.generation_requirements.min_section_chars,
                 )
-                candidate_bindings = self.citation_service._supported_bindings(
-                    self.citation_service._bind_citations(
+                candidate_bindings = self.citation_service.supported_bindings(
+                    self.citation_service.bind_citations(
                         document_id=document_id,
                         section_id=section_id,
                         content=candidate_content,
@@ -572,7 +468,7 @@ class SectionGenerationService:
         repair_strategy = self.repair_strategy
         quality_query = (
             f"{project_input.user_query}\n当前章节：{section_title}\n"
-            f"章节边界：{self.prompt_service._section_generation_contract(section_title, project_input)}"
+            f"章节边界：{self.prompt_service.section_generation_contract(section_title, project_input)}"
         )
         citation_payload = [item.model_dump() for item in citations]
         binding_payload = [item.model_dump() for item in bindings]
@@ -656,11 +552,11 @@ class SectionGenerationService:
                     "", repair_output.answer.strip()
                 )
                 if citations:
-                    candidate_content, _ = self.citation_service._insert_deterministic_citations(
+                    candidate_content, _ = self.citation_service.insert_deterministic_citations(
                         candidate_content, citations
                     )
-                candidate_bindings = self.citation_service._supported_bindings(
-                    self.citation_service._bind_citations(
+                candidate_bindings = self.citation_service.supported_bindings(
+                    self.citation_service.bind_citations(
                         document_id=document_id,
                         section_id=section_id,
                         content=candidate_content,
@@ -726,7 +622,6 @@ class SectionGenerationService:
             )
 
         citation_ok = (not citation_required) or bool(bindings)
-        content_ok = bool(content.strip())
 
         # Citation repair / grounded regeneration may have replaced the prose.
         # Re-run the semantic judge only when the non-marker text actually
@@ -737,13 +632,13 @@ class SectionGenerationService:
             "", semantic_gate_evaluated_content
         ).strip()
         if self.enable_semantic_gate and final_semantic_plain != evaluated_semantic_plain:
-            deterministic_fact_candidates = self.advisory_service._project_fact_violations(
+            deterministic_fact_candidates = self.advisory_service.project_fact_violations(
                 content, project_input, citations
             )
             semantic_gate, final_semantic_response = self.semantic_judge.judge(
                 task_id=shared_state.task_id,
                 run_id=shared_state.run_id,
-                created_at=self.runtime_support._now_iso(),
+                created_at=self.runtime_support.now_iso(),
                 section_id=model_section_id,
                 section_title=section_title,
                 content=content,
@@ -759,149 +654,24 @@ class SectionGenerationService:
                     final_semantic_response.model_call_id
                 ] = final_semantic_response.model_dump()
 
-        semantic_hard_issues = [
-            item for item in semantic_gate.issues if item.severity == "hard_failure"
-        ]
-        semantic_soft_issues = [
-            item for item in semantic_gate.issues if item.severity == "soft_failure"
-        ]
-        semantic_warning_issues = [
-            item for item in semantic_gate.issues if item.severity == "warning"
-        ]
-        semantic_fact_issues = [
-            item
-            for item in semantic_gate.issues
-            if item.issue_type
-            in {
-                "unsupported_quantitative_claim",
-                "unsupported_resource_commitment",
-                "fabricated_project_fact",
-                "evidence_contradiction",
-                "missing_context_qualification",
-            }
-        ]
-        semantic_scope_issues = [
-            item
-            for item in semantic_gate.issues
-            if item.issue_type in {"section_scope_drift", "minor_scope_drift"}
-        ]
-
-        # Stage-1 hard gate is deliberately thin and cross-domain.  Semantic
-        # review, fact style and chapter scope are advisory only; they must not
-        # block the core retrieve -> generate -> cite pipeline.
-        hard_checks = {
-            "model_success": True,
-            "content_nonempty": content_ok,
-            "not_truncated": not truncation.truncated,
-            "citation_bound": citation_ok,
-        }
-        generation_supported = (
-            generation_check_result is None
-            or (
-                bool(generation_check_result.get("is_supported"))
-                and not bool(generation_check_result.get("need_rewrite"))
-            )
+        quality = self.quality_evaluator.evaluate(
+            section_id=section_id,
+            section_title=section_title,
+            content=content,
+            truncation=truncation,
+            max_section_chars=max_section_chars,
+            citation_ok=citation_ok,
+            semantic_gate=semantic_gate,
+            generation_check_result=generation_check_result,
+            repair_result=repair_result,
+            repair_accepted=repair_accepted,
+            truncation_recovery_strategy=truncation_recovery_strategy,
+            compression_fallback_strategy=compression_fallback_strategy,
         )
-        generation_retrieval_sufficient = (
-            generation_check_result is None
-            or not bool(generation_check_result.get("need_retrieve_more"))
-        )
-        advisory_checks = {
-            "section_length_within_limit": len(content) <= max_section_chars,
-            "project_fact_boundary_respected": not semantic_fact_issues,
-            "section_scope_respected": not semantic_scope_issues,
-            "generation_checker_passed": generation_supported,
-            "generation_retrieval_sufficient": generation_retrieval_sufficient,
-        }
-        checks = {**hard_checks, **advisory_checks}
-        failures = [name for name, passed in hard_checks.items() if not passed]
-        warning_names: list[str] = []
-        if truncation_recovery_strategy:
-            warning_names.append(
-                f"truncation_recovered:{truncation_recovery_strategy}"
-            )
-        if compression_fallback_strategy:
-            warning_names.append(
-                f"compression_fallback:{compression_fallback_strategy}"
-            )
-        if not advisory_checks["section_length_within_limit"]:
-            warning_names.append("section_length_exceeds_recommended_limit")
-        if not advisory_checks["generation_checker_passed"]:
-            warning_names.append("self_rag:generation_check_failed")
-        if not advisory_checks["generation_retrieval_sufficient"]:
-            warning_names.append("self_rag:retrieve_more_required")
-        if repair_result is not None and repair_result.get("repaired") and not repair_accepted:
-            warning_names.append("self_rag:repair_rejected")
-        warning_names.extend(
-            f"semantic:{item.issue_type}"
-            for item in [
-                *semantic_hard_issues,
-                *semantic_soft_issues,
-                *semantic_warning_issues,
-            ]
-        )
-        warning_names = list(dict.fromkeys(warning_names))
-
-        if failures:
-            status = ExecutionStatus.FAILED
-        elif warning_names:
-            status = ExecutionStatus.PARTIAL_SUCCESS
-        else:
-            status = ExecutionStatus.SUCCESS
-
-        if failures or warning_names:
-            print(
-                f"[SectionValidation] section={section_title} status={status.value} "
-                f"hard_failures={failures} warnings={warning_names} "
-                f"chars={len(content)} semantic_decision={semantic_gate.decision}",
-                flush=True,
-            )
-
-        error = None
-        if failures:
-            error = self.runtime_support._error(
-                "SECTION_HARD_GATE_FAILED",
-                "; ".join(failures),
-                node=section_id,
-                retryable=True,
-                user_message=f"‘{section_title}’章节存在不可放行的运行完整性问题。",
-            )
-
-        section_warnings = [
-            WarningSchema(
-                warning_code=(
-                    "SECTION_LENGTH_RECOMMENDATION"
-                    if name == "section_length_exceeds_recommended_limit"
-                    else (
-                        "SECTION_TRUNCATION_RECOVERED"
-                        if name.startswith("truncation_recovered:")
-                        else (
-                            "SECTION_COMPRESSION_FALLBACK"
-                            if name.startswith("compression_fallback:")
-                            else (
-                                "SECTION_SELF_RAG_WARNING"
-                                if name.startswith("self_rag:")
-                                else "SECTION_SEMANTIC_WARNING"
-                            )
-                        )
-                    )
-                ),
-                message=name,
-                source=ErrorSourceSchema(
-                    component="SchemeWriterAgent",
-                    agent_name="SchemeWriterAgent",
-                    step_name=section_id,
-                ),
-                details={
-                    "section_title": section_title,
-                    "semantic_gate": semantic_gate.model_dump(),
-                    "generation_check": generation_check_result,
-                    "repair_result": repair_result,
-                },
-                created_at=self.runtime_support._now_iso(),
-            )
-            for name in warning_names
-        ]
+        status = quality.status
+        error = quality.error
+        section_warnings = quality.warnings
+        semantic_scope_issues = quality.semantic_scope_issues
 
         return SchemeSectionSchema(
             section_id=section_id,
@@ -922,16 +692,10 @@ class SectionGenerationService:
             citation_bindings=bindings,
             source_fact_ids=[item.fact_id for item in structured_facts],
             truncation=truncation,
-            eval_result=SectionEvalSchema(
-                passed=not failures,
-                checks=checks,
-                failures=failures,
-                warnings=warning_names,
-                semantic_gate=semantic_gate,
-            ),
+            eval_result=quality.eval_result,
             warnings=section_warnings,
             started_at=started_at,
-            finished_at=self.runtime_support._now_iso(),
+            finished_at=self.runtime_support.now_iso(),
             extra={
                 "context_package_id": context_package.get("package_id"),
                 "context_sha256": context_package.get("context_sha256"),

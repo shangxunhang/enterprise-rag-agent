@@ -42,7 +42,7 @@ class SectionModelService:
         self.prompt_service = prompt_service
         self.runtime_support = runtime_support
     # 阅读注释（函数）：处理 call 模型 相关逻辑。
-    def _call_model(
+    def call_model(
         self,
         shared_state: SharedStateSchema,
         *,
@@ -78,7 +78,7 @@ class SectionModelService:
             ModelResponseSchema
 
         阅读提示:
-            主要直接调用：RuntimeError, self.context_manager.build_passthrough, int, project_input.generation_requirements.extra.get, passthrough.model_dump, ModelRequestSchema, self._now_iso, self._context_package_summary。
+            主要直接调用：RuntimeError, self.context_manager.build_passthrough, int, project_input.generation_requirements.extra.get, passthrough.model_dump, ModelRequestSchema, self.runtime_support.now_iso, self._context_package_summary。
         """
         if self.model_gateway is None:
             raise RuntimeError("ModelGateway is not configured")
@@ -119,7 +119,7 @@ class SectionModelService:
                 if max_tokens_override is not None
                 else project_input.generation_requirements.max_tokens_per_section
             ),
-            created_at=self.runtime_support._now_iso(),
+            created_at=self.runtime_support.now_iso(),
             extra={
                 "call_purpose": purpose,
                 "section_id": section_id,
@@ -220,12 +220,12 @@ class SectionModelService:
             ModelResponseSchema
 
         阅读提示:
-            主要直接调用：max, self._target_section_chars, len, self._citation_catalog, self._runtime._call_model, min。
+            主要直接调用：max, self.prompt_service.target_section_chars, len, self.prompt_service.citation_catalog, self.call_model, min。
         """
         reduced_context = rag_context.context_text[: max(1000, rag_context.max_context_chars // 2)]
         remaining_chars = max(
             160,
-            self.prompt_service._target_section_chars(project_input)
+            self.prompt_service.target_section_chars(project_input)
             - len(original_content),
         )
         prompt = (
@@ -234,9 +234,9 @@ class SectionModelService:
             "不得新增其他章节、标题、分隔线或大段扩展。\n\n"
             f"已完成内容：\n{original_content}\n\n"
             f"缩短后的证据上下文：\n{reduced_context}\n\n"
-            f"可用引用：\n{self.prompt_service._citation_catalog(citations)}"
+            f"可用引用：\n{self.prompt_service.citation_catalog(citations)}"
         )
-        return self._call_model(
+        return self.call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -249,7 +249,7 @@ class SectionModelService:
         )
 
     # 阅读注释（函数）：重试 truncated 章节。
-    def _retry_truncated_section(
+    def retry_truncated_section(
         self,
         shared_state: SharedStateSchema,
         *,
@@ -271,9 +271,9 @@ class SectionModelService:
         divisor = max(2, retry_index + 1)
         reduced_chars = max(800, rag_context.max_context_chars // divisor)
         reduced_context = rag_context.context_text[:reduced_chars]
-        target_chars = self.prompt_service._target_section_chars(project_input)
+        target_chars = self.prompt_service.target_section_chars(project_input)
         compact_target_chars = min(800, max(480, int(target_chars * 0.68)))
-        contract = self.prompt_service._section_generation_contract(
+        contract = self.prompt_service.section_generation_contract(
             section_title, project_input
         )
         prompt = (
@@ -285,9 +285,9 @@ class SectionModelService:
             f"章节边界：{contract}\n\n"
             f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
             f"缩短后的证据上下文：\n{reduced_context}\n\n"
-            f"可用引用：\n{self.prompt_service._citation_catalog(citations)}"
+            f"可用引用：\n{self.prompt_service.citation_catalog(citations)}"
         )
-        return self._call_model(
+        return self.call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -303,7 +303,7 @@ class SectionModelService:
 
     # 阅读注释（函数）：恢复 complete prefix。
     @staticmethod
-    def _recover_complete_prefix(
+    def recover_complete_prefix(
         content: str,
         *,
         min_chars: int,
@@ -336,7 +336,7 @@ class SectionModelService:
         return candidate
 
     # 阅读注释（函数）：处理 compress overlong 章节 相关逻辑。
-    def _compress_overlong_section(
+    def compress_overlong_section(
         self,
         shared_state: SharedStateSchema,
         *,
@@ -348,9 +348,9 @@ class SectionModelService:
     ) -> ModelResponseSchema:
         """Compress a complete but overlong section instead of free regeneration."""
 
-        target_chars = self.prompt_service._target_section_chars(project_input)
+        target_chars = self.prompt_service.target_section_chars(project_input)
         hard_limit = int(target_chars * 1.5)
-        contract = self.prompt_service._section_generation_contract(
+        contract = self.prompt_service.section_generation_contract(
             section_title, project_input
         )
         prompt = (
@@ -362,9 +362,9 @@ class SectionModelService:
             "只输出压缩后的完整正文，并以完整句子结束。\n\n"
             f"章节边界：\n{contract}\n\n"
             f"原始正文：\n{original_content}\n\n"
-            f"可用引用目录：\n{self.prompt_service._citation_catalog(citations)}"
+            f"可用引用目录：\n{self.prompt_service.citation_catalog(citations)}"
         )
-        return self._call_model(
+        return self.call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,
@@ -394,8 +394,8 @@ class SectionModelService:
     ) -> ModelResponseSchema:
         """Apply one issue-directed rewrite based on semantic gate output."""
 
-        target_chars = self.prompt_service._target_section_chars(project_input)
-        contract = self.prompt_service._section_generation_contract(
+        target_chars = self.prompt_service.target_section_chars(project_input)
+        contract = self.prompt_service.section_generation_contract(
             section_title, project_input
         )
         prompt = (
@@ -409,9 +409,9 @@ class SectionModelService:
             f"语义评审问题：\n{json.dumps(semantic_issues, ensure_ascii=False, indent=2)}\n\n"
             f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
             f"原始正文：\n{original_content}\n\n"
-            f"可用引用目录：\n{self.prompt_service._citation_catalog(citations)}"
+            f"可用引用目录：\n{self.prompt_service.citation_catalog(citations)}"
         )
-        return self._call_model(
+        return self.call_model(
             shared_state,
             prompt=prompt,
             section_id=section_id,

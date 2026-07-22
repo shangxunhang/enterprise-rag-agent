@@ -37,7 +37,7 @@ class SectionPromptService:
         self.prompt_id = prompt_id
     # 阅读注释（函数）：处理 引用 catalog 相关逻辑。
     @staticmethod
-    def _citation_catalog(citations: Iterable[CitationSchema]) -> str:
+    def citation_catalog(citations: Iterable[CitationSchema]) -> str:
         """处理 引用 catalog 相关逻辑。
 
         参数:
@@ -68,7 +68,7 @@ class SectionPromptService:
 
     # 阅读注释（函数）：处理 target 章节 chars 相关逻辑。
     @staticmethod
-    def _target_section_chars(project_input: ProjectInputSchema) -> int:
+    def target_section_chars(project_input: ProjectInputSchema) -> int:
         """Return a conservative Chinese-character budget for one section."""
 
         max_tokens = max(256, int(project_input.generation_requirements.max_tokens_per_section))
@@ -100,7 +100,7 @@ class SectionPromptService:
 
     # 阅读注释（函数）：处理 章节 生成 contract 相关逻辑。
     @classmethod
-    def _section_generation_contract(
+    def section_generation_contract(
         cls,
         section_title: str,
         project_input: ProjectInputSchema,
@@ -160,7 +160,7 @@ class SectionPromptService:
         return []
 
     # 阅读注释（函数）：渲染 章节 提示词。
-    def _render_section_prompt(
+    def render_section_prompt(
         self,
         shared_state: SharedStateSchema,
         project_input: ProjectInputSchema,
@@ -187,9 +187,9 @@ class SectionPromptService:
             PromptRenderResultSchema
 
         阅读提示:
-            主要直接调用：self._target_section_chars, self.context_policy.build_request, self._section_generation_contract, self.context_manager.build, self.prompt_manager.exists, self.prompt_manager.render, PromptRenderResultSchema, dict。
+            主要直接调用：self.target_section_chars, self.context_policy.build_request, self.section_generation_contract, self.context_manager.build, self.prompt_manager.exists, self.prompt_manager.render, PromptRenderResultSchema, dict。
         """
-        target_chars = self._target_section_chars(project_input)
+        target_chars = self.target_section_chars(project_input)
         build_request = self.context_policy.build_request(
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
@@ -197,7 +197,7 @@ class SectionPromptService:
             section_title=section_title,
             section_order=section_order,
             project_input=project_input,
-            section_contract=self._section_generation_contract(section_title, project_input),
+            section_contract=self.section_generation_contract(section_title, project_input),
             target_section_chars=target_chars,
             rag_context=rag_context,
             citations=citations,

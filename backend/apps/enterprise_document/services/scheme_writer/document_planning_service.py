@@ -16,7 +16,7 @@ class DocumentPlanningService:
     """封装 文档 planning 服务，封装一组可复用的业务能力。"""
     # 阅读注释（函数）：构建 文档 计划。
     @staticmethod
-    def _build_document_plan(
+    def build_document_plan(
         *,
         run_id: str,
         document_id: str,

@@ -90,7 +90,7 @@ class SectionAdvisoryService:
 
     # 阅读注释（函数）：处理 项目 fact violations 相关逻辑。
     @classmethod
-    def _project_fact_violations(
+    def project_fact_violations(
         cls,
         content: str,
         project_input: ProjectInputSchema,
@@ -115,7 +115,7 @@ class SectionAdvisoryService:
                 ),
             ]
         )
-        support_tokens = CitationService._citation_match_tokens(support_text)
+        support_tokens = CitationService.citation_match_tokens(support_text)
         support_plain = unicodedata.normalize("NFKC", support_text).lower()
         violations: list[Dict[str, Any]] = []
 
@@ -174,7 +174,7 @@ class SectionAdvisoryService:
             if specific_values and all(value in support_plain for value in specific_values):
                 continue
 
-            claim_tokens = CitationService._citation_match_tokens(plain_claim)
+            claim_tokens = CitationService.citation_match_tokens(plain_claim)
             overlap = claim_tokens & support_tokens
             coverage = len(overlap) / max(1, len(claim_tokens))
             long_overlap = sum(1 for token in overlap if len(token) >= 4)

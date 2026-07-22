@@ -106,7 +106,7 @@ class _RepairStubAgent(SchemeWriterAgent):
         self.response_content = response_content
 
     # 阅读注释（函数）：处理 call 模型 相关逻辑。
-    def _call_model(self, *args, **kwargs) -> ModelResponseSchema:  # type: ignore[override]
+    def call_model(self, *args, **kwargs) -> ModelResponseSchema:  # type: ignore[override]
         """处理 call 模型 相关逻辑。
 
         参数:
@@ -152,7 +152,7 @@ class CitationBindingRegressionTest(unittest.TestCase):
         )
         agent = _RepairStubAgent(original + "[C1]")
 
-        repaired, _ = agent.citation_service._repair_section_citations(
+        repaired, _ = agent.grounding_repair_service.repair_section_citations(
             SimpleNamespace(run_id="run_test"),
             content=original,
             section_id="section_security",
