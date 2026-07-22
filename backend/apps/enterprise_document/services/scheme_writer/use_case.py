@@ -8,6 +8,7 @@
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.state_access import SharedStateWriter
+from apps.enterprise_document.quality.budget import WorkflowBudget, activate_workflow_budget
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     DocumentAssemblyRequestSchema,
     SchemeGenerationOptionsSchema,
@@ -153,9 +154,29 @@ class SchemeGenerationUseCase:
             timer = MonotonicTimer()
             rag_started = timer.now()
             # 阶段 C：执行一次文档级 RAG，为整篇方案取得可复用的通用证据。
-            rag_result = self.evidence_service.retrieve(
-                shared_state, project_input
+            # 文档级检索发生在 section quality loop 之前，因此必须拥有独立的
+            # auxiliary model-call safety fuse，避免 Query Rewrite / HyDE / CRAG /
+            # Corrective Planner 逃逸出 WorkflowBudget 统计范围。
+            document_budget_config = {
+                "max_retrieval_rounds": 4,
+                "max_rewrite_rounds": 2,
+                "max_total_llm_calls": 16,
+                "max_total_tokens": 32000,
+                "human_review_on_exhaustion": True,
+                **dict(
+                    project_input.generation_requirements.extra.get(
+                        "document_rag_budget", {}
+                    )
+                    or {}
+                ),
+            }
+            document_rag_budget = WorkflowBudget.from_policy_metadata(
+                document_budget_config
             )
+            with activate_workflow_budget(document_rag_budget):
+                rag_result = self.evidence_service.retrieve(
+                    shared_state, project_input
+                )
             rag_elapsed_ms = elapsed_ms(timer, rag_started)
             print(
                 f"[RAG] END   success={bool(rag_result and rag_result.success)} latency_ms={rag_elapsed_ms}",
@@ -163,6 +184,9 @@ class SchemeGenerationUseCase:
             )
             rag_context, chunks, citations, rag_output = self.evidence_service.extract_rag_output(
                 shared_state, rag_result
+            )
+            rag_output.setdefault("extra", {})["document_rag_model_budget"] = (
+                document_rag_budget.snapshot()
             )
             # 创建全局引用注册表，把文档级和章节级检索结果映射到稳定且不冲突的引用编号。
             citation_registry = DocumentCitationRegistry()

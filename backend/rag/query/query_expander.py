@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
+from model_gateway.call_boundary import ModelCallBudgetExceeded
 from rag.ports.generation import TextGenerator
 
 
@@ -39,6 +40,8 @@ class QueryExpansionResult:
     hyde_query: Optional[str] = None
     retrieval_queries: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Internal execution lineage only; intentionally excluded from to_dict().
+    runtime_context: Dict[str, Any] = field(default_factory=dict)
 
     # 阅读注释（函数）：把 QueryExpansionResult 转换为 字典。
     def to_dict(self) -> Dict[str, Any]:
@@ -141,18 +144,27 @@ class QueryExpander:
         *,
         query: str,
         num_rewrites: int,
+        runtime_context: Dict[str, Any] | None = None,
     ) -> tuple[List[str], Dict[str, Any]]:
         """Generate query rewrites without interpreting a strategy string."""
-        return self._rewrite_queries(query=query, num_rewrites=num_rewrites)
+        return self._rewrite_queries(
+            query=query,
+            num_rewrites=num_rewrites,
+            runtime_context=runtime_context,
+        )
 
     # 阅读注释（函数）：构建 hypothetical 文档。
     def build_hypothetical_document(
         self,
         *,
         query: str,
+        runtime_context: Dict[str, Any] | None = None,
     ) -> tuple[Optional[str], Dict[str, Any]]:
         """Generate one HyDE document without interpreting a strategy string."""
-        return self._build_hypothetical_document(query=query)
+        return self._build_hypothetical_document(
+            query=query,
+            runtime_context=runtime_context,
+        )
 
     # 阅读注释（函数）：处理 LLM available 相关逻辑。
     def _llm_available(self) -> bool:
@@ -177,6 +189,7 @@ class QueryExpander:
         top_p: float = 0.9,
         do_sample: bool = False,
         call_purpose: str = "rag_query_transform",
+        runtime_context: Dict[str, Any] | None = None,
     ) -> str:
         """处理 call LLM 相关逻辑。
 
@@ -211,6 +224,7 @@ class QueryExpander:
                 prompt,
                 system_prompt=system_prompt,
                 call_purpose=call_purpose,
+                runtime_context=runtime_context,
                 **params,
             )
         except TypeError:
@@ -282,7 +296,12 @@ class QueryExpander:
         return self._dedup_keep_order(candidates)[: max(0, int(num_rewrites))]
 
     # 阅读注释（函数）：改写 查询集合。
-    def _rewrite_queries(self, query: str, num_rewrites: int) -> tuple[List[str], Dict[str, Any]]:
+    def _rewrite_queries(
+        self,
+        query: str,
+        num_rewrites: int,
+        runtime_context: Dict[str, Any] | None = None,
+    ) -> tuple[List[str], Dict[str, Any]]:
         """改写 查询集合。
 
         参数:
@@ -327,6 +346,7 @@ class QueryExpander:
                     top_p=0.9,
                     do_sample=False,
                     call_purpose="rag_query_rewrite",
+                    runtime_context=runtime_context,
                 )
                 meta["latency_ms"] = elapsed_ms(self.timer, t0)
                 meta["raw_output"] = raw
@@ -335,6 +355,8 @@ class QueryExpander:
                     meta["parsed_count"] = len(rewrites)
                     return rewrites, meta
                 raise ValueError("LLM rewrite output produced no valid query")
+            except ModelCallBudgetExceeded:
+                raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:
                     raise
@@ -347,7 +369,11 @@ class QueryExpander:
         return rewrites, meta
 
     # 阅读注释（函数）：构建 hypothetical 文档。
-    def _build_hypothetical_document(self, query: str) -> tuple[Optional[str], Dict[str, Any]]:
+    def _build_hypothetical_document(
+        self,
+        query: str,
+        runtime_context: Dict[str, Any] | None = None,
+    ) -> tuple[Optional[str], Dict[str, Any]]:
         """构建 hypothetical 文档。
 
         参数:
@@ -389,6 +415,7 @@ class QueryExpander:
                     top_p=0.9,
                     do_sample=False,
                     call_purpose="rag_hyde",
+                    runtime_context=runtime_context,
                 )
                 meta["latency_ms"] = elapsed_ms(self.timer, t0)
                 meta["raw_output"] = raw
@@ -397,6 +424,8 @@ class QueryExpander:
                     meta["char_count"] = len(hyde)
                     return hyde, meta
                 raise ValueError("LLM HyDE output is empty")
+            except ModelCallBudgetExceeded:
+                raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:
                     raise

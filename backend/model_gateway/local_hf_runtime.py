@@ -41,6 +41,28 @@ class LocalHuggingFaceRuntime:
         self.tokenizer = None
         self.model = None
 
+    @property
+    def is_loaded(self) -> bool:
+        return self.tokenizer is not None and self.model is not None
+
+    def unload(self) -> None:
+        """Release an on-demand local model and return CUDA cache to the pool."""
+        if not self.is_loaded:
+            return
+        self.model = None
+        self.tokenizer = None
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            # Lifecycle cleanup must not hide the original model-call result.
+            pass
+
     # 阅读注释（函数）：确保 loaded 满足运行约束。
     def ensure_loaded(self) -> None:
         """确保 loaded 满足运行约束。
@@ -51,7 +73,7 @@ class LocalHuggingFaceRuntime:
         阅读提示:
             主要直接调用：self.model_path.exists, FileNotFoundError, AutoTokenizer.from_pretrained, str, torch.cuda.is_available, AutoModelForCausalLM.from_pretrained, self.model.to, self.model.eval。
         """
-        if self.tokenizer is not None and self.model is not None:
+        if self.is_loaded:
             return
         if not self.model_path.exists():
             raise FileNotFoundError(f"Local Qwen model path not found: {self.model_path}")

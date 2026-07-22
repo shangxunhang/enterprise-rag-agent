@@ -137,6 +137,20 @@ class RAGRequestMapper:
             keyword_scope = {"doc_ids": allowed_doc_ids}
 
         planner_context = dict(request_data.get("extra_metadata") or {})
+        # Keep workflow/model-call lineage inside RAG's existing extra-metadata
+        # channel; no public RAG schema fields are added.
+        planner_context.setdefault("task_id", request.task_id)
+        planner_context.setdefault("run_id", request.run_id)
+        planner_context.setdefault("workflow_run_id", request.run_id)
+        planner_context.setdefault("caller_agent", request.agent_name)
+        planner_context.setdefault(
+            "retrieval_trace_id",
+            request.extra.get("retrieval_trace_id"),
+        )
+        planner_context.setdefault(
+            "retrieval_scope",
+            request.extra.get("retrieval_scope"),
+        )
         planner_context.setdefault("need_citation", bool(request.need_citation))
         context_requirements = dict(
             planner_context.get("context_requirements") or {}

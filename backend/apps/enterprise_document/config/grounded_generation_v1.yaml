@@ -18,7 +18,7 @@ repair_strategy:
     fallback_to_original: true
 max_retrieval_rounds: 1
 max_rewrite_rounds: 1
-max_total_llm_calls: 8
+max_total_llm_calls: 35
 max_total_tokens: 24000
 human_review_on_exhaustion: true
 budget_scope: section

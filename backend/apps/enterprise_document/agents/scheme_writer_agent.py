@@ -88,12 +88,14 @@ class SchemeWriterAgent(BaseAgent):
         self.evidence_service = SchemeEvidenceService(
             rag_service=rag_service,
             agent_name=self.agent_name,
+            model_gateway=model_gateway,
         )
         self.prompt_service = SectionPromptService(
             context_manager=context_manager,
             context_policy=context_policy,
             prompt_manager=prompt_manager,
             prompt_id=prompt_id,
+            model_gateway=model_gateway,
         )
         self.model_service = SectionModelService(
             model_gateway=model_gateway,

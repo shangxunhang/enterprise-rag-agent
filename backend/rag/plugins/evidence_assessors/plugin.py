@@ -78,11 +78,11 @@ class CRAGEvidenceAssessorPlugin:
         results: list[dict[str, Any]],
         runtime_context: dict[str, Any] | None = None,
     ) -> EvidenceAssessment:
-        del runtime_context
         report_object = self.backend.evaluate(
             query=query,
             results=deepcopy(list(results or [])),
             max_judge_chunks=self.max_judge_chunks,
+            runtime_context=runtime_context,
         )
         report = report_object.to_dict()
         item_judgements = self._item_judgements(report)

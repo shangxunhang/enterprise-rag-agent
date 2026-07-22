@@ -156,14 +156,18 @@ class ParentChildRAGEngine:
 
         run_id = self.run_id_generator.new_id("rag_run")
         started_at = self.clock.now_iso()
+        runtime_metadata = {
+            **dict(extra_metadata or {}),
+            "rag_run_id": run_id,
+        }
         retrieval = self.retrieval_pipeline.run(
             query=query,
             filter_expr=filter_expr,
             keyword_doc_ids=keyword_doc_ids,
             keyword_scope=keyword_scope,
-            extra_metadata=extra_metadata,
+            extra_metadata=runtime_metadata,
         )
-        request_context = dict(extra_metadata or {})
+        request_context = dict(runtime_metadata)
         context_requirements = ContextRequirements.from_mapping(
             request_context.get("context_requirements"),
             defaults=self.context_gate.default_requirements,
@@ -200,7 +204,7 @@ class ParentChildRAGEngine:
             enable_query_expansion_llm=self.enable_query_expansion_llm,
             query_llm_generator=self.query_llm_generator,
             query_expansion_generation_params=self.query_expansion_generation_params,
-            extra_metadata=extra_metadata,
+            extra_metadata=runtime_metadata,
         )
         run_record = self.record_builder.build_record(
             run_id=run_id,

@@ -16,6 +16,7 @@ from schemas.citation import CitationSchema
 from schemas.prompt import PromptRenderResultSchema
 from schemas.rag import RAGContextSchema
 from context_manager import LLMContextManager, SectionGenerationContextPolicy
+from model_gateway.model_contract import ModelRole
 from prompt_manager.prompt_manager import PromptManager
 
 
@@ -30,11 +31,13 @@ class SectionPromptService:
         context_policy: SectionGenerationContextPolicy,
         prompt_manager: PromptManager | None,
         prompt_id: str,
+        model_gateway: Any | None = None,
     ) -> None:
         self.context_manager = context_manager
         self.context_policy = context_policy
         self.prompt_manager = prompt_manager
         self.prompt_id = prompt_id
+        self.model_gateway = model_gateway
     # 阅读注释（函数）：处理 引用 catalog 相关逻辑。
     @staticmethod
     def citation_catalog(citations: Iterable[CitationSchema]) -> str:
@@ -203,6 +206,35 @@ class SectionPromptService:
             citations=citations,
             previous_sections=previous_sections,
         )
+        capability_plan: dict[str, Any] = {}
+        resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)
+        if callable(resolve_capabilities):
+            capability_plan = dict(
+                resolve_capabilities(model_role=ModelRole.SECTION_GENERATION.value)
+            )
+            configured_limit = project_input.generation_requirements.extra.get(
+                "max_input_context_tokens"
+            )
+            safe_context_window = int(capability_plan["safe_context_window"])
+            max_input_tokens = (
+                min(safe_context_window, int(configured_limit))
+                if configured_limit is not None
+                else safe_context_window
+            )
+            reserved_output_tokens = min(
+                int(project_input.generation_requirements.max_tokens_per_section),
+                int(capability_plan["safe_max_output_tokens"]),
+            )
+            build_request = build_request.model_copy(
+                update={
+                    "max_input_tokens": max_input_tokens,
+                    "reserved_output_tokens": reserved_output_tokens,
+                    "metadata": {
+                        **dict(build_request.metadata or {}),
+                        "model_capability_plan": capability_plan,
+                    },
+                }
+            )
         context_package = self.context_manager.build(build_request)
         variables = {
             "document_title": project_input.output_schema.document_title,

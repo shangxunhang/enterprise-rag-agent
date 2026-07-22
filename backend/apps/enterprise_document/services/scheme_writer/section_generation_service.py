@@ -528,6 +528,10 @@ class SectionGenerationService:
             budget = current_workflow_budget()
             if budget is not None:
                 budget.consume_rewrite_round()
+            gateway = getattr(self.model_service, "model_gateway", None)
+            record_escalation = getattr(gateway, "record_quality_escalation", None)
+            if callable(record_escalation):
+                record_escalation()
             print(
                 f"[RepairStrategy] START section={section_title}",
                 flush=True,

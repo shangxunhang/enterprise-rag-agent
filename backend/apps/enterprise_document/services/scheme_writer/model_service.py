@@ -16,6 +16,7 @@ from schemas.citation import CitationSchema
 from schemas.model import ModelRequestSchema, ModelResponseSchema
 from schemas.rag import RAGContextSchema
 from context_manager import LLMContextManager
+from model_gateway.call_boundary import infer_model_role
 from model_gateway.model_gateway import ModelGateway
 from .prompt_service import SectionPromptService
 from .runtime_support import SchemeWriterRuntimeSupport
@@ -82,7 +83,35 @@ class SectionModelService:
         """
         if self.model_gateway is None:
             raise RuntimeError("ModelGateway is not configured")
+        resolved_role = infer_model_role(purpose)
+        requested_max_tokens = int(
+            max_tokens_override
+            if max_tokens_override is not None
+            else project_input.generation_requirements.max_tokens_per_section
+        )
+        capability_plan: Dict[str, Any] = {}
+        resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)
+        if callable(resolve_capabilities):
+            capability_plan = dict(
+                resolve_capabilities(model_role=resolved_role.value)
+            )
+            requested_max_tokens = min(
+                requested_max_tokens,
+                int(capability_plan["safe_max_output_tokens"]),
+            )
         if not context_package:
+            configured_input_limit = project_input.generation_requirements.extra.get(
+                "max_input_context_tokens"
+            )
+            if capability_plan:
+                safe_context_window = int(capability_plan["safe_context_window"])
+                max_input_tokens = (
+                    min(safe_context_window, int(configured_input_limit))
+                    if configured_input_limit is not None
+                    else safe_context_window
+                )
+            else:
+                max_input_tokens = int(configured_input_limit or 8192)
             passthrough = self.context_manager.build_passthrough(
                 task_id=shared_state.task_id,
                 run_id=shared_state.run_id,
@@ -93,32 +122,24 @@ class SectionModelService:
                 max_context_chars=int(
                     project_input.generation_requirements.max_context_chars
                 ),
-                max_input_tokens=int(
-                    project_input.generation_requirements.extra.get(
-                        "max_input_context_tokens", 8192
-                    )
-                ),
-                reserved_output_tokens=(
-                    max_tokens_override
-                    if max_tokens_override is not None
-                    else project_input.generation_requirements.max_tokens_per_section
-                ),
-                lineage={"context_mode": "auxiliary_passthrough"},
+                max_input_tokens=max_input_tokens,
+                reserved_output_tokens=requested_max_tokens,
+                lineage={
+                    "context_mode": "auxiliary_passthrough",
+                    "model_capability_plan": capability_plan,
+                },
             )
             context_package = passthrough.model_dump()
         request = ModelRequestSchema(
             model_call_id=f"model_call_{shared_state.run_id}_{section_id}{suffix}",
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
-            model_name=self.model_name,
+            model_role=resolved_role.value,
+            model_name=None,
             caller_agent=self.agent_name,
             prompt=prompt,
             temperature=0.2,
-            max_tokens=(
-                max_tokens_override
-                if max_tokens_override is not None
-                else project_input.generation_requirements.max_tokens_per_section
-            ),
+            max_tokens=requested_max_tokens,
             created_at=self.runtime_support.now_iso(),
             extra={
                 "call_purpose": purpose,
@@ -129,6 +150,7 @@ class SectionModelService:
                 "prompt_id": prompt_id,
                 "prompt_version": prompt_version,
                 "llm_context_summary": self._context_package_summary(context_package),
+                "model_capability_plan": capability_plan,
             },
         )
         budget = current_workflow_budget()

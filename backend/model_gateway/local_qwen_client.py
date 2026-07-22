@@ -116,6 +116,10 @@ class LocalQwenLLMClient(BaseLLMClient):
         self.runtime.ensure_loaded()
         self.device = self.runtime.device
 
+    def release(self) -> None:
+        """Release model residency for on-demand profiles."""
+        self.runtime.unload()
+
     # 阅读注释（函数）：构建 消息集合。
     def _build_messages(self, request: ModelRequestSchema) -> list[dict[str, str]]:
         """构建 消息集合。

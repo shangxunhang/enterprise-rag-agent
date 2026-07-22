@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
+from model_gateway.call_boundary import ModelCallBudgetExceeded
 from rag.ports.generation import TextGenerator
 
 
@@ -374,6 +375,7 @@ class CRAGJudge:
         query: str,
         results: List[Dict[str, Any]],
         max_judge_chunks: int = 8,
+        runtime_context: Dict[str, Any] | None = None,
     ) -> CRAGJudgeResult:
         """Observe reranked evidence and return quality labels only."""
         t0 = self.timer.now()
@@ -386,6 +388,7 @@ class CRAGJudge:
                     query=query,
                     result=result,
                     rank=index,
+                    runtime_context=runtime_context,
                 )
             else:
                 judgement = self._skip_judgement(result=result, rank=index)
@@ -416,7 +419,14 @@ class CRAGJudge:
         )
 
     # 阅读注释（函数）：处理 judge 文本块 相关逻辑。
-    def judge_chunk(self, *, query: str, result: Dict[str, Any], rank: int) -> Dict[str, Any]:
+    def judge_chunk(
+        self,
+        *,
+        query: str,
+        result: Dict[str, Any],
+        rank: int,
+        runtime_context: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         """处理 judge 文本块 相关逻辑。
 
         参数:
@@ -434,7 +444,14 @@ class CRAGJudge:
         # Self-RAG 优先使用 Judge 模型；失败时可回退到确定性规则。
         if self._llm_available():
             try:
-                return self._llm_judge_chunk(query=query, result=result, rank=rank)
+                return self._llm_judge_chunk(
+                    query=query,
+                    result=result,
+                    rank=rank,
+                    runtime_context=runtime_context,
+                )
+            except ModelCallBudgetExceeded:
+                raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:
                     raise
@@ -464,6 +481,7 @@ class CRAGJudge:
         system_prompt: str,
         max_new_tokens: int = 256,
         call_purpose: str = "rag_evidence_assessment",
+        runtime_context: Dict[str, Any] | None = None,
     ) -> str:
         """处理 call LLM 相关逻辑。
 
@@ -492,6 +510,7 @@ class CRAGJudge:
                 prompt,
                 system_prompt=system_prompt,
                 call_purpose=call_purpose,
+                runtime_context=runtime_context,
                 **params,
             )
         except TypeError:
@@ -499,7 +518,14 @@ class CRAGJudge:
         return _safe_str(text).strip()
 
     # 阅读注释（函数）：处理 LLM judge 文本块 相关逻辑。
-    def _llm_judge_chunk(self, *, query: str, result: Dict[str, Any], rank: int) -> Dict[str, Any]:
+    def _llm_judge_chunk(
+        self,
+        *,
+        query: str,
+        result: Dict[str, Any],
+        rank: int,
+        runtime_context: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         """处理 LLM judge 文本块 相关逻辑。
 
         参数:
@@ -527,7 +553,13 @@ class CRAGJudge:
             f"片段内容：{text}"
         )
         t0 = self.timer.now()
-        raw = self._call_llm(prompt, system_prompt=system_prompt, max_new_tokens=256)
+        raw = self._call_llm(
+            prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=256,
+            call_purpose="rag_evidence_assessment",
+            runtime_context=runtime_context,
+        )
         obj = _extract_json_object(raw)
         if not obj:
             raise ValueError("LLM C-RAG judge did not return JSON")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from apps.enterprise_document.quality.model_adapter import reserve_current_workflow_budget
 from bootstrap.runtime_options import RuntimeOptions
 from contracts.model_gateway import ModelGatewayPort
 from contracts.observability import TraceSink
@@ -27,6 +28,7 @@ class RAGServiceFactory:
                 retrieval_gate_policy_file=options.rag_retrieval_gate_policy_file,
                 model_gateway=model_gateway,
                 model_name=model_name,
+                model_budget_hook=reserve_current_workflow_budget,
                 allow_legacy_unscoped=allow_legacy_unscoped,
             )
         else:

@@ -7,8 +7,10 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Iterator
 
+from model_gateway.call_boundary import ModelCallBudgetExceeded
 
-class WorkflowBudgetExceeded(RuntimeError):
+
+class WorkflowBudgetExceeded(ModelCallBudgetExceeded):
     def __init__(self, resource: str, limit: int) -> None:
         self.resource = resource
         self.limit = int(limit)
@@ -35,7 +37,7 @@ class WorkflowBudget:
         return cls(
             max_retrieval_rounds=max(0, int(raw.get("max_retrieval_rounds", 1))),
             max_rewrite_rounds=max(0, int(raw.get("max_rewrite_rounds", 1))),
-            max_total_llm_calls=max(1, int(raw.get("max_total_llm_calls", 8))),
+            max_total_llm_calls=max(1, int(raw.get("max_total_llm_calls", 35))),
             max_total_tokens=max(256, int(raw.get("max_total_tokens", 24000))),
             human_review_on_exhaustion=bool(
                 raw.get("human_review_on_exhaustion", True)

@@ -160,6 +160,21 @@ class AppSettings:
     local_qwen_device: str
     local_qwen_max_new_tokens: int
 
+    # Multi-model profiles.  Legacy local_qwen_* above remains a compatibility
+    # alias for the 1.5B profile until all callers use ModelRole.
+    local_qwen_1_5b_model_name: str
+    local_qwen_1_5b_model_path: Path
+    local_qwen_3b_model_name: str
+    local_qwen_3b_model_path: Path
+    local_qwen_7b_model_name: str
+    local_qwen_7b_model_path: Path
+
+    # OpenAI-compatible remote provider.
+    deepseek_model_name: str
+    deepseek_provider_model_name: str
+    deepseek_base_url: str
+    deepseek_api_key: str
+
     @property
     def run_trace_dir(self) -> Path:
         """Derived trace directory; DATA_ROOT is the single configurable root."""
@@ -216,6 +231,16 @@ class AppSettings:
             "local_qwen_model_path": str(self.local_qwen_model_path),
             "local_qwen_device": self.local_qwen_device,
             "local_qwen_max_new_tokens": self.local_qwen_max_new_tokens,
+            "local_qwen_1_5b_model_name": self.local_qwen_1_5b_model_name,
+            "local_qwen_1_5b_model_path": str(self.local_qwen_1_5b_model_path),
+            "local_qwen_3b_model_name": self.local_qwen_3b_model_name,
+            "local_qwen_3b_model_path": str(self.local_qwen_3b_model_path),
+            "local_qwen_7b_model_name": self.local_qwen_7b_model_name,
+            "local_qwen_7b_model_path": str(self.local_qwen_7b_model_path),
+            "deepseek_model_name": self.deepseek_model_name,
+            "deepseek_provider_model_name": self.deepseek_provider_model_name,
+            "deepseek_base_url": self.deepseek_base_url,
+            "deepseek_api_key_configured": bool(self.deepseek_api_key),
         }
 
 
@@ -275,6 +300,44 @@ def get_settings(reload: bool = False) -> AppSettings:
         local_qwen_max_new_tokens=_to_int(
             _get_env("LOCAL_QWEN_MAX_NEW_TOKENS", "1536")
         ),
+        local_qwen_1_5b_model_name=_get_env(
+            "LOCAL_QWEN_1_5B_MODEL_NAME",
+            _get_env("LOCAL_QWEN_MODEL_NAME", "local_qwen2_5_1_5b"),
+        ),
+        local_qwen_1_5b_model_path=_resolve_path(
+            _get_env(
+                "LOCAL_QWEN_1_5B_MODEL_PATH",
+                r"D:\models\huggingface\llm\Qwen2.5-1.5B-Instruct",
+            )
+        ),
+        local_qwen_3b_model_name=_get_env(
+            "LOCAL_QWEN_3B_MODEL_NAME",
+            "local_qwen2_5_3b",
+        ),
+        local_qwen_3b_model_path=_resolve_path(
+            _get_env(
+                "LOCAL_QWEN_3B_MODEL_PATH",
+                r"D:\models\huggingface\llm\Qwen2.5-3B-Instruct",
+            )
+        ),
+        local_qwen_7b_model_name=_get_env(
+            "LOCAL_QWEN_7B_MODEL_NAME",
+            "local_qwen2_5_7b_gptq_int4",
+        ),
+        local_qwen_7b_model_path=_resolve_path(
+            _get_env(
+                "LOCAL_QWEN_7B_MODEL_PATH",
+                r"D:\models\huggingface\llm\Qwen2.5-7B-Instruct-GPTQ-Int4",
+            )
+        ),
+        deepseek_model_name=_get_env("DEEPSEEK_MODEL_NAME", "deepseek_api"),
+        deepseek_provider_model_name=_get_env(
+            "DEEPSEEK_PROVIDER_MODEL_NAME", "deepseek-chat"
+        ),
+        deepseek_base_url=_get_env(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ),
+        deepseek_api_key=_get_env("DEEPSEEK_API_KEY", ""),
     )
 
     _SETTINGS = settings

@@ -186,6 +186,7 @@ class MultiQueryTransformer:
         rewrites, details = self.expander.rewrite_queries(
             query=state.original_query,
             num_rewrites=self.num_rewrites,
+            runtime_context=state.runtime_context,
         )
         state.rewritten_queries = self.expander.dedup_keep_order(
             [*state.rewritten_queries, *rewrites]
@@ -251,6 +252,7 @@ class HyDEQueryTransformer:
         """
         hyde_query, details = self.expander.build_hypothetical_document(
             query=state.original_query,
+            runtime_context=state.runtime_context,
         )
         state.hyde_query = hyde_query
         if hyde_query:

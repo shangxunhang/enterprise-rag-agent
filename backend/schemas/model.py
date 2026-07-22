@@ -40,7 +40,11 @@ class ModelRequestSchema(SchemaBase):
     task_id: str
     run_id: str
 
-    model_name: str
+    # ``model_role`` is the stable business intent. ``model_name`` is now an
+    # optional explicit override used by tests/debugging and compatibility
+    # callers; normal production routing should prefer the role.
+    model_role: Optional[str] = None
+    model_name: Optional[str] = None
     caller_agent: Optional[str] = None
 
     prompt: str

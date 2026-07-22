@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：ModelGateway。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Facade over model registry, routing, invocation and observability."""
+"""Facade over model registry, routing, invocation, fallback and observability."""
 
 from __future__ import annotations
 
@@ -10,19 +6,20 @@ from typing import Any, Dict, Optional
 
 from contracts.base_client import BaseLLMClient
 from contracts.observability import TraceSink
+from model_gateway.failure_policy import AvailabilityFailurePolicy
+from model_gateway.model_contract import ModelSelection, ResidencyPolicy
 from model_gateway.model_invoker import ModelInvoker
 from model_gateway.model_observer import ModelCallObserver
 from model_gateway.model_registry import ModelRegistry
 from model_gateway.model_router import ModelRouter
+from model_gateway.usage_ledger import ModelUsageLedger
 from observability.trace_context import activate_span
 from schemas.model import ModelRequestSchema, ModelResponseSchema
-from schemas.status import ExecutionStatus
 
 
-# 阅读注释（类）：封装 模型 网关，集中封装相关状态、依赖和行为。
 class ModelGateway:
-    """封装 模型 网关，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 ModelGateway，保存运行所需的依赖、配置或状态。
+    """Stable model boundary with role routing and availability fallback."""
+
     def __init__(
         self,
         default_model_name: str = "fake_llm",
@@ -32,63 +29,61 @@ class ModelGateway:
         router: ModelRouter | None = None,
         invoker: ModelInvoker | None = None,
         observer: ModelCallObserver | None = None,
+        failure_policy: AvailabilityFailurePolicy | None = None,
+        usage_ledger: ModelUsageLedger | None = None,
     ) -> None:
-        """初始化 ModelGateway，保存运行所需的依赖、配置或状态。
-
-        参数:
-            default_model_name: default 模型 名称，具体约束请结合类型标注和调用方确认。
-            run_trace_recorder: run Trace recorder，具体约束请结合类型标注和调用方确认。
-            registry: 注册表，具体约束请结合类型标注和调用方确认。
-            router: 路由器，具体约束请结合类型标注和调用方确认。
-            invoker: invoker，具体约束请结合类型标注和调用方确认。
-            observer: observer，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：ModelRegistry, ModelRouter, ModelInvoker, ModelCallObserver。
-        """
         self.default_model_name = default_model_name
         self.run_trace_recorder = run_trace_recorder
         self.registry = registry or ModelRegistry()
         self.router = router or ModelRouter(default_model_name)
         self.invoker = invoker or ModelInvoker(self.registry)
         self.observer = observer or ModelCallObserver(run_trace_recorder)
+        self.failure_policy = failure_policy or AvailabilityFailurePolicy()
+        self.usage_ledger = usage_ledger or ModelUsageLedger()
         # Compatibility alias for existing introspection/tests.
         self._clients = self.registry._clients
 
-    # 阅读注释（函数）：注册 客户端。
     def register_client(self, client: BaseLLMClient) -> None:
-        """注册 客户端。
-
-        参数:
-            client: 下游客户端。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.registry.register。
-        """
         self.registry.register(client)
 
-    # 阅读注释（函数）：获取 客户端。
     def get_client(self, model_name: str) -> BaseLLMClient:
-        """获取 客户端。
-
-        参数:
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            BaseLLMClient
-
-        阅读提示:
-            主要直接调用：self.registry.get。
-        """
         return self.registry.get(model_name)
 
-    # 阅读注释（函数）：记录 ModelGateway。
+    def usage_snapshot(self) -> dict[str, Any]:
+        return self.usage_ledger.snapshot()
+
+    def routing_capabilities(
+        self,
+        *,
+        model_role: str,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve fallback-safe capabilities before prompt construction."""
+        probe = ModelRequestSchema(
+            model_call_id="model_capability_probe",
+            task_id="model_capability_probe",
+            run_id="model_capability_probe",
+            model_role=model_role,
+            model_name=model_name,
+            prompt="",
+            created_at="capability_probe",
+        )
+        selections = self.router.plan(probe)
+        profiles = [item.profile for item in selections]
+        return {
+            "model_role": model_role,
+            "candidate_profiles": [item.profile_id for item in selections],
+            "candidate_models": [item.model_name for item in selections],
+            "safe_context_window": min(item.context_window for item in profiles),
+            "safe_max_output_tokens": min(item.max_output_tokens for item in profiles),
+            "primary_context_window": profiles[0].context_window,
+            "primary_max_output_tokens": profiles[0].max_output_tokens,
+        }
+
+    def record_quality_escalation(self) -> None:
+        """Called by quality-layer orchestration, never inferred by Gateway."""
+        self.usage_ledger.record_quality_escalation()
+
     def _record(
         self,
         request: ModelRequestSchema,
@@ -96,49 +91,143 @@ class ModelGateway:
         status: str,
         payload: Dict[str, Any],
     ) -> None:
-        """记录 ModelGateway。
-
-        参数:
-            request: 当前请求对象。
-            event_type: 事件 类型，具体约束请结合类型标注和调用方确认。
-            status: 状态，具体约束请结合类型标注和调用方确认。
-            payload: 跨层传递的数据载荷。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.observer.record。
-        """
         self.observer.record(
             request,
             event_type=event_type,
             status=status,
             payload=payload,
-            model_name=request.model_name or self.default_model_name,
+            model_name=str(request.model_name or self.default_model_name),
         )
 
-    # 阅读注释（函数）：生成 ModelGateway。
+    @staticmethod
+    def _attempt_request(
+        request: ModelRequestSchema,
+        selection: ModelSelection,
+        *,
+        attempt_index: int,
+        fallback_chain: list[str],
+    ) -> ModelRequestSchema:
+        extra = {
+            **dict(request.extra),
+            "model_role": (
+                selection.role.value
+                if selection.role is not None
+                else request.model_role
+            ),
+            "selected_profile": selection.profile_id,
+            "selected_model": selection.model_name,
+            "provider": selection.provider,
+            "model_candidate_index": attempt_index,
+            "availability_fallback_from": list(fallback_chain),
+        }
+        # Keep the caller's explicit override semantics in the original request,
+        # while each provider receives the concrete selected model for traceability.
+        return request.model_copy(
+            update={
+                "model_role": (
+                    selection.role.value
+                    if selection.role is not None
+                    else request.model_role
+                ),
+                "model_name": selection.model_name,
+                "max_tokens": min(
+                    int(request.max_tokens),
+                    int(selection.profile.max_output_tokens),
+                ),
+                "extra": extra,
+            }
+        )
+
+    @staticmethod
+    def _annotate_response(
+        response: ModelResponseSchema,
+        selection: ModelSelection,
+        *,
+        attempt_index: int,
+        candidate_count: int,
+        fallback_chain: list[str],
+    ) -> None:
+        response.metadata = {
+            **dict(response.metadata or {}),
+            "model_role": selection.role.value if selection.role else None,
+            "selected_profile": selection.profile_id,
+            "selected_model": selection.model_name,
+            "provider": selection.provider,
+            "model_candidate_index": attempt_index,
+            "model_candidate_count": candidate_count,
+            "availability_fallback_from": list(fallback_chain),
+            "availability_fallback_used": bool(fallback_chain),
+        }
+
+    def _release_if_on_demand(self, selection: ModelSelection) -> None:
+        if selection.profile.residency_policy != ResidencyPolicy.ON_DEMAND:
+            return
+        if not self.registry.contains(selection.model_name):
+            return
+        try:
+            self.registry.release(selection.model_name)
+        except Exception:
+            # Cleanup is best-effort and must not mask the provider result.
+            pass
+
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
-        """生成 ModelGateway。
+        """Route and execute one model call with bounded availability fallback."""
 
-        参数:
-            request: 当前请求对象。
+        selections = self.router.plan(request)
+        fallback_chain: list[str] = []
+        last_response: ModelResponseSchema | None = None
 
-        返回:
-            ModelResponseSchema
+        for attempt_index, selection in enumerate(selections):
+            attempt_request = self._attempt_request(
+                request,
+                selection,
+                attempt_index=attempt_index,
+                fallback_chain=fallback_chain,
+            )
+            span_handle = self.observer.start(
+                attempt_request,
+                model_name=selection.model_name,
+            )
+            try:
+                with activate_span(span_handle):
+                    response = self.invoker.invoke(
+                        attempt_request,
+                        selection.model_name,
+                    )
+            finally:
+                self._release_if_on_demand(selection)
 
-        阅读提示:
-            主要直接调用：self.router.select, self.observer.start, activate_span, self.invoker.invoke, self.observer.finish。
-        """
-        model_name = self.router.select(request)
-        span_handle = self.observer.start(request, model_name=model_name)
-        with activate_span(span_handle):
-            response = self.invoker.invoke(request, model_name)
-        self.observer.finish(
-            request,
-            response,
-            model_name=model_name,
-            handle=span_handle,
-        )
-        return response
+            self._annotate_response(
+                response,
+                selection,
+                attempt_index=attempt_index,
+                candidate_count=len(selections),
+                fallback_chain=fallback_chain,
+            )
+            self.observer.finish(
+                attempt_request,
+                response,
+                model_name=selection.model_name,
+                handle=span_handle,
+            )
+            self.usage_ledger.record_attempt(
+                selection=selection,
+                response=response,
+            )
+            last_response = response
+            if response.success:
+                return response
+
+            has_next = attempt_index + 1 < len(selections)
+            if not has_next or not self.failure_policy.is_availability_failure(
+                response,
+                selection,
+            ):
+                return response
+
+            fallback_chain.append(selection.profile_id)
+            self.usage_ledger.record_availability_fallback()
+
+        if last_response is None:  # pragma: no cover - router forbids empty plans
+            raise RuntimeError("model routing returned no candidates")
+        return last_response

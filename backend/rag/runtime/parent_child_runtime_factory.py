@@ -19,9 +19,13 @@ class ParentChildRuntimeFactory:
         *,
         model_gateway: "ModelGatewayPort | None" = None,
         model_name: str | None = None,
+        model_budget_hook: Any | None = None,
     ) -> None:
         self.model_gateway = model_gateway
+        # Compatibility/introspection only. Production RAG calls route by role;
+        # this legacy name is no longer injected as an explicit model override.
         self.model_name = str(model_name or "").strip() or None
+        self.model_budget_hook = model_budget_hook
 
     def resolve_config(self, config: Any, project_root: Path) -> Any:
         cfg = config.__class__(**asdict(config))
@@ -157,13 +161,11 @@ class ParentChildRuntimeFactory:
 
         query_llm = None
         if cfg.enable_query_expansion_llm and self.model_gateway is not None:
-            if not self.model_name:
-                raise ValueError(
-                    "model_name is required when RAG uses an injected ModelGateway"
-                )
             query_llm = ModelGatewayTextGenerator(
                 model_gateway=self.model_gateway,
-                model_name=self.model_name,
+                default_purpose="rag_internal_generation",
+                call_suffix="rag",
+                budget_hook=self.model_budget_hook,
             )
         generation_params = {
             "rewrite_max_new_tokens": cfg.query_rewrite_max_new_tokens,

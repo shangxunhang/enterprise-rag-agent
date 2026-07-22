@@ -41,7 +41,7 @@ class GroundedGenerationPolicyConfig(BaseModel):
     repair_strategy: GenerationPluginConfig
     max_retrieval_rounds: int = Field(default=1, ge=0, le=3)
     max_rewrite_rounds: int = Field(default=1, ge=0, le=3)
-    max_total_llm_calls: int = Field(default=8, ge=1, le=64)
+    max_total_llm_calls: int = Field(default=35, ge=1, le=64)
     max_total_tokens: int = Field(default=24000, ge=256)
     human_review_on_exhaustion: bool = True
     budget_scope: Literal["section"] = "section"

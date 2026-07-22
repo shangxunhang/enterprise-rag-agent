@@ -11,6 +11,7 @@ from contracts.observability import TraceSink
 from contracts.rag import RAGServicePort
 from core.error_factory import ErrorFactory
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
+from model_gateway.call_boundary import ModelCallBudgetExceeded
 from observability.trace_context import activate_span, current_span, new_span
 from rag.mapping.request_mapper import RAGRequestMapper
 from rag.mapping.result_mapper import RAGResultMapper
@@ -104,6 +105,7 @@ class RAGService(RAGServicePort):
         retrieval_gate_policy_file: str | Path | None = None,
         model_gateway: ModelGatewayPort | None = None,
         model_name: str | None = None,
+        model_budget_hook: Any | None = None,
         retrieval_runtime: Any | None = None,
         request_mapper: RAGRequestMapper | None = None,
         allow_legacy_unscoped: bool = False,
@@ -143,6 +145,7 @@ class RAGService(RAGServicePort):
             runtime_factory=ParentChildRuntimeFactory(
                 model_gateway=model_gateway,
                 model_name=model_name,
+                model_budget_hook=model_budget_hook,
             ),
         )
         self.request_mapper = request_mapper or RAGRequestMapper(
@@ -165,6 +168,8 @@ class RAGService(RAGServicePort):
                 rag_project_root=str(self.rag_project_root),
                 service_name=self.service_name,
             )
+        except ModelCallBudgetExceeded:
+            raise
         except Exception as exc:
             trace = RAGTraceSchema(
                 retrieval_mode="adaptive",

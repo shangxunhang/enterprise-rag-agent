@@ -41,6 +41,7 @@ class QueryTransformSelector:
         query: str,
         *,
         mode: QueryTransformMode,
+        runtime_context: dict | None = None,
     ) -> QueryExpansionResult:
         normalized_query = str(query or "").strip()
         if not normalized_query:
@@ -60,6 +61,7 @@ class QueryTransformSelector:
                 "spec_version": self.spec_version,
                 "transformers": [],
             },
+            runtime_context=dict(runtime_context or {}),
         )
         transformed = transformer.transform(state)
         transformed.retrieval_queries = self._dedup(transformed.retrieval_queries)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
 from rag.planning.retrieval_planner import RetrievalPlannerPort
@@ -268,10 +269,18 @@ class ParentChildRetrievalPipeline:
             request_context=extra_metadata,
         )
         retrieval_plan = plan.to_dict()
-        expansion = self.query_transform_selector.transform(
-            query,
-            mode=plan.query_transform_mode,
-        )
+        transform = self.query_transform_selector.transform
+        transform_params = inspect.signature(transform).parameters
+        if "runtime_context" in transform_params:
+            expansion = transform(
+                query,
+                mode=plan.query_transform_mode,
+                runtime_context=dict(extra_metadata or {}),
+            )
+        else:
+            # Compatibility for narrow test/legacy selector ports. Production
+            # QueryTransformSelector exposes runtime_context explicitly.
+            expansion = transform(query, mode=plan.query_transform_mode)
         expansion.metadata["retrieval_plan"] = retrieval_plan
 
         query_candidate_sets: list[CandidateSet] = []

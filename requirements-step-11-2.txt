@@ -8,3 +8,6 @@ pydantic>=2.7,<3
 
 # Workflow orchestration runtime
 langgraph>=1.2,<2
+
+# OpenAI-compatible provider adapter (DeepSeek through LangChainChatModelClient)
+langchain-openai>=0.3,<2

@@ -82,7 +82,10 @@ class LLMContextManager:
         if len(normalized) > configured_chars:
             warnings.append("compatibility_passthrough_exceeds_char_budget")
         if estimated > usable_tokens:
-            warnings.append("compatibility_passthrough_exceeds_estimated_token_budget")
+            raise ContextBudgetExceededError(
+                "auxiliary passthrough exceeds selected-model token capacity: "
+                f"estimated_input_tokens={estimated} usable_tokens={usable_tokens}"
+            )
         item = ContextItemSchema(
             item_id="operation_prompt",
             source_type="operation",
@@ -131,7 +134,7 @@ class LLMContextManager:
                 "selected_item_count": 1,
                 "decision_count": 1,
                 "token_estimator": "deterministic_mixed_text_v1",
-                "budget_enforced": False,
+                "budget_enforced": True,
             },
         )
 

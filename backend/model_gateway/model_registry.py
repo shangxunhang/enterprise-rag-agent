@@ -69,6 +69,13 @@ class ModelRegistry:
         """
         return model_name in self._clients
 
+    def release(self, model_name: str) -> None:
+        """Release an on-demand client when it exposes a lifecycle hook."""
+        client = self.get(model_name)
+        release = getattr(client, "release", None)
+        if callable(release):
+            release()
+
     # 阅读注释（函数）：处理 names 相关逻辑。
     def names(self) -> list[str]:
         """处理 names 相关逻辑。

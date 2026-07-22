@@ -15,6 +15,7 @@ from observability.trace_summary import canonical_sha256
 from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from contracts.rag import RAGServicePort
+from model_gateway.model_contract import ModelRole
 from rag.evidence.contract import RAGEvidenceContractReader
 from schemas.citation import CitationSchema
 from schemas.rag import (
@@ -37,9 +38,11 @@ class SchemeEvidenceService:
         *,
         rag_service: RAGServicePort | None,
         agent_name: str,
+        model_gateway: Any | None = None,
     ) -> None:
         self.rag_service = rag_service
         self.agent_name = agent_name
+        self.model_gateway = model_gateway
 
     def retrieve(
         self,
@@ -108,21 +111,41 @@ class SchemeEvidenceService:
             or "document"
         )
         retrieval_trace_id = f"rag_{shared_state.run_id}_{safe_suffix}"
+        capability_plan: Dict[str, Any] = {}
+        resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)
+        configured_context_limit = requirements.extra.get("max_input_context_tokens")
+        if callable(resolve_capabilities):
+            capability_plan = dict(
+                resolve_capabilities(model_role=ModelRole.SECTION_GENERATION.value)
+            )
+            safe_context_window = int(capability_plan["safe_context_window"])
+            model_context_window = (
+                min(safe_context_window, int(configured_context_limit))
+                if configured_context_limit is not None
+                else safe_context_window
+            )
+            safe_output_tokens = int(capability_plan["safe_max_output_tokens"])
+        else:
+            model_context_window = int(configured_context_limit or 8192)
+            safe_output_tokens = int(requirements.max_tokens_per_section)
+        requested_reserved_tokens = int(
+            requirements.extra.get(
+                "prompt_reserved_tokens",
+                requirements.max_tokens_per_section + 512,
+            )
+        )
+        prompt_reserved_tokens = min(
+            requested_reserved_tokens,
+            safe_output_tokens + 512,
+        )
         extra_metadata = {
             "task_type": project_input.task_type,
             "retrieval_scope": scope,
             "section_id": section_id,
             "section_title": section_title,
             "context_requirements": {
-                "model_context_window": int(
-                    requirements.extra.get("max_input_context_tokens", 8192)
-                ),
-                "prompt_reserved_tokens": int(
-                    requirements.extra.get(
-                        "prompt_reserved_tokens",
-                        requirements.max_tokens_per_section + 512,
-                    )
-                ),
+                "model_context_window": model_context_window,
+                "prompt_reserved_tokens": prompt_reserved_tokens,
                 "section_token_budget": int(
                     requirements.extra.get("max_evidence_context_tokens", 4096)
                 ),
@@ -130,6 +153,7 @@ class SchemeEvidenceService:
                     requirements.extra.get("max_evidence_items", 5)
                 ),
                 "max_context_chars": int(requirements.max_context_chars),
+                "model_capability_plan": capability_plan,
             },
             "document_context": {
                 "project_name": project_input.project_name,
