@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import traceback
 
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from core.error_factory import ErrorFactory
 from model_gateway.model_registry import ModelRegistry
 from schemas.model import ModelRequestSchema, ModelResponseSchema
@@ -57,6 +58,10 @@ class ModelInvoker:
         """
         try:
             return self.registry.get(model_name).generate(request)
+        except WorkflowExecutionCancelled:
+            # Cancellation is control flow, not provider availability.  Let it
+            # abort the logical call instead of normalizing it into fallback.
+            raise
         except Exception as exc:
             error = self.error_factory.create(
                 error_code="MODEL_GATEWAY_CALL_FAILED",

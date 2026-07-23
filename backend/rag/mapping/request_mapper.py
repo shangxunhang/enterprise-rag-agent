@@ -138,11 +138,12 @@ class RAGRequestMapper:
 
         planner_context = dict(request_data.get("extra_metadata") or {})
         # Keep workflow/model-call lineage inside RAG's existing extra-metadata
-        # channel; no public RAG schema fields are added.
-        planner_context.setdefault("task_id", request.task_id)
-        planner_context.setdefault("run_id", request.run_id)
-        planner_context.setdefault("workflow_run_id", request.run_id)
-        planner_context.setdefault("caller_agent", request.agent_name)
+        # channel; no public RAG schema fields are added. These identity fields
+        # are canonical and must never be overridden by caller metadata.
+        planner_context["task_id"] = request.task_id
+        planner_context["run_id"] = request.run_id
+        planner_context["workflow_run_id"] = request.run_id
+        planner_context["caller_agent"] = request.agent_name
         planner_context.setdefault(
             "retrieval_trace_id",
             request.extra.get("retrieval_trace_id"),

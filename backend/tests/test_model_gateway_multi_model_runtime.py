@@ -10,7 +10,19 @@ from pydantic import ValidationError
 
 from context_manager.manager import ContextBudgetExceededError, LLMContextManager
 from contracts.base_client import BaseLLMClient
-from model_gateway.call_boundary import ModelCallBoundary
+from apps.enterprise_document.quality.budget import (
+    WorkflowBudget,
+    activate_workflow_budget,
+)
+from apps.enterprise_document.quality.model_adapter import (
+    reserve_current_workflow_budget,
+)
+from core.runtime.execution_control import (
+    WorkflowExecutionCancelled,
+    WorkflowExecutionControl,
+    activate_execution_control,
+)
+from model_gateway.call_boundary import ModelCallBoundary, infer_model_role
 from model_gateway.model_contract import (
     ModelProfile,
     ModelRole,
@@ -169,6 +181,22 @@ def test_role_resolves_to_primary_profile() -> None:
     assert plan[0].model_name == "m2"
 
 
+@pytest.mark.parametrize(
+    ("purpose", "expected_role"),
+    [
+        ("agent_section_self_rag_check", ModelRole.RETRIEVAL_JUDGE),
+        ("agent_section_local_rewrite", ModelRole.REPAIR),
+        ("scheme_section_validation_rewrite", ModelRole.REPAIR),
+        ("scheme_section_compression", ModelRole.REPAIR),
+    ],
+)
+def test_quality_call_purpose_maps_to_the_intended_model_role(
+    purpose: str,
+    expected_role: ModelRole,
+) -> None:
+    assert infer_model_role(purpose) is expected_role
+
+
 def test_disabled_profile_is_rejected_and_never_built() -> None:
     disabled = _profile(
         "disabled-7b",
@@ -276,6 +304,19 @@ def test_primary_success_does_not_fallback() -> None:
     assert response.metadata["availability_fallback_used"] is False
 
 
+def test_reused_call_id_still_counts_each_logical_invocation() -> None:
+    gateway = _gateway([_profile("p1", "m1")], ["p1"])
+    gateway.register_client(_StubClient("m1", _success("m1")))
+
+    gateway.generate(_request())
+    gateway.generate(_request())
+
+    usage = gateway.usage_snapshot()
+    assert usage["logical_calls"] == 2
+    assert usage["unique_logical_call_ids"] == 1
+    assert usage["provider_attempts"] == 2
+
+
 def test_primary_unavailable_falls_back_and_usage_is_aggregated() -> None:
     profiles = [
         _profile("p1", "m1"),
@@ -304,6 +345,9 @@ def test_primary_unavailable_falls_back_and_usage_is_aggregated() -> None:
     assert response.metadata["availability_fallback_from"] == ["p1"]
     assert len(first.calls) == len(second.calls) == 1
     assert usage["calls_by_model"] == {"m1": 1, "m2": 1}
+    assert usage["logical_calls"] == 1
+    assert usage["provider_attempts"] == 2
+    assert usage["budget_semantics"] == "logical_model_call_v1"
     assert usage["availability_fallback_count"] == 1
     assert usage["failures"] == 1
     assert usage["prompt_tokens"] == 100
@@ -311,6 +355,78 @@ def test_primary_unavailable_falls_back_and_usage_is_aggregated() -> None:
     assert usage["total_tokens"] == 120
     assert usage["latency_ms"] == 10
     assert usage["cost_if_available"] == pytest.approx(0.00014)
+
+
+def test_cancellation_after_provider_return_records_attempt_without_fallback() -> None:
+    profiles = [_profile("p1", "m1"), _profile("p2", "m2")]
+    gateway = _gateway(profiles, ["p1", "p2"])
+    control = WorkflowExecutionControl.with_timeout(
+        execution_id="execution-1",
+        timeout_seconds=10,
+    )
+
+    def cancel_then_return(request: ModelRequestSchema) -> ModelResponseSchema:
+        control.cancel("deadline_exceeded")
+        return _success(
+            "m1",
+            prompt_tokens=11,
+            completion_tokens=7,
+        )(request)
+
+    first = _StubClient("m1", cancel_then_return)
+    second = _StubClient("m2", _success("m2"))
+    gateway.register_client(first)
+    gateway.register_client(second)
+
+    with activate_execution_control(control):
+        with pytest.raises(WorkflowExecutionCancelled):
+            gateway.generate(_request())
+
+    usage = gateway.usage_snapshot()
+    assert len(first.calls) == 1
+    assert len(second.calls) == 0
+    assert usage["logical_calls"] == 1
+    assert usage["provider_attempts"] == 1
+    assert usage["calls_by_model"] == {"m1": 1}
+    assert usage["prompt_tokens"] == 11
+    assert usage["completion_tokens"] == 7
+    assert usage["total_tokens"] == 18
+    assert usage["cancelled_attempts"] == 1
+    assert usage["incomplete_usage_attempts"] == 0
+    assert usage["failures"] == 1
+    assert usage["availability_fallback_count"] == 0
+
+
+def test_workflow_budget_counts_one_logical_call_across_provider_fallback() -> None:
+    profiles = [_profile("p1", "m1"), _profile("p2", "m2")]
+    gateway = _gateway(profiles, ["p1", "p2"])
+    gateway.register_client(_StubClient("m1", _unavailable("m1")))
+    gateway.register_client(_StubClient("m2", _success("m2")))
+    budget = WorkflowBudget(
+        max_retrieval_rounds=1,
+        max_rewrite_rounds=1,
+        max_total_llm_calls=1,
+        max_total_tokens=1024,
+    )
+    boundary = ModelCallBoundary(
+        model_gateway=gateway,
+        model_role=ModelRole.SECTION_GENERATION,
+        runtime_context={"task_id": "task-1", "workflow_run_id": "run-1"},
+        budget_hook=reserve_current_workflow_budget,
+    )
+
+    with activate_workflow_budget(budget):
+        response = boundary.generate_response(
+            "hello",
+            model_call_id="logical-call-1",
+            max_new_tokens=128,
+        )
+
+    assert response.success is True
+    assert budget.llm_calls == 1
+    assert budget.snapshot()["logical_model_calls"] == 1
+    assert gateway.usage_snapshot()["logical_calls"] == 1
+    assert gateway.usage_snapshot()["provider_attempts"] == 2
 
 
 def test_successful_low_quality_response_never_gateway_fallbacks() -> None:
@@ -417,6 +533,21 @@ def test_rag_query_rewrite_preserves_runtime_lineage_through_call_boundary() -> 
     assert request.extra["rag_run_id"] == "rag-run-1"
     assert request.extra["retrieval_trace_id"] == "trace-rag-1"
     assert request.extra["retrieval_scope"] == "section"
+
+
+def test_rag_deterministic_fallback_never_swallows_cancellation() -> None:
+    class _CancelledGenerator:
+        def generate(self, *_args, **_kwargs) -> str:
+            raise WorkflowExecutionCancelled("cancel query rewrite")
+
+    expander = QueryExpander(
+        llm_generator=_CancelledGenerator(),
+        use_llm=True,
+        fallback_to_deterministic=True,
+    )
+
+    with pytest.raises(WorkflowExecutionCancelled):
+        expander.rewrite_queries(query="政务云建设方案", num_rewrites=1)
 
 
 def test_quality_escalation_is_accounted_separately_from_availability_fallback() -> None:

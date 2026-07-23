@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from threading import Condition, RLock
 from typing import Any, Dict, Optional
 
 from contracts.base_client import BaseLLMClient
 from contracts.observability import TraceSink
+from core.runtime.execution_control import (
+    WorkflowExecutionCancelled,
+    current_execution_control,
+)
 from model_gateway.failure_policy import AvailabilityFailurePolicy
 from model_gateway.model_contract import ModelSelection, ResidencyPolicy
 from model_gateway.model_invoker import ModelInvoker
@@ -40,6 +45,9 @@ class ModelGateway:
         self.observer = observer or ModelCallObserver(run_trace_recorder)
         self.failure_policy = failure_policy or AvailabilityFailurePolicy()
         self.usage_ledger = usage_ledger or ModelUsageLedger()
+        self._lifecycle = Condition(RLock())
+        self._lifecycle_state = "open"
+        self._active_calls = 0
         # Compatibility alias for existing introspection/tests.
         self._clients = self.registry._clients
 
@@ -51,6 +59,38 @@ class ModelGateway:
 
     def usage_snapshot(self) -> dict[str, Any]:
         return self.usage_ledger.snapshot()
+
+    def _begin_call(self) -> None:
+        with self._lifecycle:
+            if self._lifecycle_state != "open":
+                raise RuntimeError("ModelGateway is closed")
+            self._active_calls += 1
+
+    def _end_call(self) -> None:
+        with self._lifecycle:
+            self._active_calls -= 1
+            if self._active_calls == 0:
+                self._lifecycle.notify_all()
+
+    def close(self) -> None:
+        """Idempotently wait for active calls and release all model providers."""
+        with self._lifecycle:
+            if self._lifecycle_state == "closed":
+                return
+            if self._lifecycle_state == "closing":
+                while self._lifecycle_state != "closed":
+                    self._lifecycle.wait()
+                return
+            self._lifecycle_state = "closing"
+            while self._active_calls:
+                self._lifecycle.wait()
+
+        try:
+            self.registry.close()
+        finally:
+            with self._lifecycle:
+                self._lifecycle_state = "closed"
+                self._lifecycle.notify_all()
 
     def routing_capabilities(
         self,
@@ -171,13 +211,26 @@ class ModelGateway:
             pass
 
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
-        """Route and execute one model call with bounded availability fallback."""
+        """Route one logical call through bounded concrete-provider attempts."""
 
+        self._begin_call()
+        try:
+            return self._generate(request)
+        finally:
+            self._end_call()
+
+    def _generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
+        """Execute one active logical call and its provider fallback attempts."""
+
+        self.usage_ledger.record_logical_call(request.model_call_id)
         selections = self.router.plan(request)
         fallback_chain: list[str] = []
         last_response: ModelResponseSchema | None = None
 
         for attempt_index, selection in enumerate(selections):
+            execution_control = current_execution_control()
+            if execution_control is not None:
+                execution_control.checkpoint()
             attempt_request = self._attempt_request(
                 request,
                 selection,
@@ -194,8 +247,78 @@ class ModelGateway:
                         attempt_request,
                         selection.model_name,
                     )
+            except WorkflowExecutionCancelled as exc:
+                # Entering the concrete client is a real provider attempt even
+                # when cooperative cancellation is observed before a canonical
+                # response can escape. Close its trace span and account for it,
+                # but always preserve cancellation as control flow so no
+                # availability fallback can start.
+                response = ModelResponseSchema(
+                    model_call_id=attempt_request.model_call_id,
+                    task_id=attempt_request.task_id,
+                    run_id=attempt_request.run_id,
+                    model_name=selection.model_name,
+                    success=False,
+                    content="",
+                    error_message=str(exc),
+                    latency_ms=span_handle.latency_ms(),
+                    created_at=attempt_request.created_at,
+                    finish_reason="cancelled",
+                    metadata={
+                        "execution_cancelled": True,
+                        "usage_complete": False,
+                        "cancel_reason": (
+                            execution_control.cancel_reason
+                            if execution_control is not None
+                            else None
+                        ),
+                    },
+                )
+                self._annotate_response(
+                    response,
+                    selection,
+                    attempt_index=attempt_index,
+                    candidate_count=len(selections),
+                    fallback_chain=fallback_chain,
+                )
+                try:
+                    self.observer.finish(
+                        attempt_request,
+                        response,
+                        model_name=selection.model_name,
+                        handle=span_handle,
+                    )
+                except Exception:
+                    # A trace sink failure must not turn cancellation into a
+                    # provider error or permit the fallback loop to continue.
+                    pass
+                self.usage_ledger.record_attempt(
+                    selection=selection,
+                    response=response,
+                )
+                raise
             finally:
                 self._release_if_on_demand(selection)
+
+            if execution_control is not None and execution_control.should_stop:
+                if not execution_control.is_cancelled:
+                    execution_control.cancel("deadline_exceeded")
+                provider_response_success = bool(response.success)
+                response = response.model_copy(deep=True)
+                response.success = False
+                response.error = None
+                response.error_message = (
+                    f"workflow execution cancelled: "
+                    f"{execution_control.cancel_reason or 'cancelled'}"
+                )
+                response.finish_reason = "cancelled"
+                response.metadata = {
+                    **dict(response.metadata or {}),
+                    "execution_cancelled": True,
+                    "usage_complete": True,
+                    "cancel_reason": execution_control.cancel_reason,
+                    "provider_response_success": provider_response_success,
+                }
 
             self._annotate_response(
                 response,
@@ -215,6 +338,11 @@ class ModelGateway:
                 response=response,
             )
             last_response = response
+            # A native/CUDA provider cannot be interrupted safely mid-call.
+            # Once it returns, usage is recorded and cancellation stops here
+            # before a success commit or availability fallback.
+            if execution_control is not None:
+                execution_control.checkpoint()
             if response.success:
                 return response
 

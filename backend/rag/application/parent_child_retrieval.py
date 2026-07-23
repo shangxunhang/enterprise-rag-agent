@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import inspect
 from typing import Any
 
+from core.runtime.execution_control import checkpoint_current_execution
 from rag.planning.retrieval_planner import RetrievalPlannerPort
 from rag.ports.pipeline import RerankerPort
 from rag.ports.quality import (
@@ -90,6 +91,7 @@ class ParentChildRetrievalPipeline:
         keyword_scope: dict[str, Any] | None,
         stage: str,
     ) -> tuple[CandidateSet, dict[str, Any]]:
+        checkpoint_current_execution()
         scope = dict(keyword_scope or {})
         request = RetrievalRequest(
             query=retrieval_query,
@@ -100,9 +102,15 @@ class ParentChildRetrievalPipeline:
             doc_ids=list(scope.get("doc_ids") or keyword_doc_ids or []),
             metadata={"query_index": query_index, "retrieval_stage": stage},
         )
-        source_sets = [retriever.retrieve(request) for retriever in self.retrievers]
+        source_sets: list[CandidateSet] = []
+        for retriever in self.retrievers:
+            checkpoint_current_execution()
+            source_sets.append(retriever.retrieve(request))
+            checkpoint_current_execution()
         fused_children = self.source_fusion.fuse(source_sets)
+        checkpoint_current_execution()
         enriched = self.candidate_enricher.enrich(fused_children)
+        checkpoint_current_execution()
         candidate_set = enriched.copy_with(source_name=query_label)
         return candidate_set, {
             "query_label": query_label,
@@ -135,7 +143,8 @@ class ParentChildRetrievalPipeline:
         correction_round: int,
         request_context: dict[str, Any] | None,
     ) -> EvidenceAssessment:
-        return self.evidence_assessor.assess(
+        checkpoint_current_execution()
+        assessment = self.evidence_assessor.assess(
             query=query,
             results=results,
             runtime_context={
@@ -143,6 +152,8 @@ class ParentChildRetrievalPipeline:
                 "request_context": dict(request_context or {}),
             },
         )
+        checkpoint_current_execution()
+        return assessment
 
     def _gate(
         self,
@@ -152,12 +163,15 @@ class ParentChildRetrievalPipeline:
         completed_rounds: int,
         request_context: dict[str, Any] | None,
     ) -> CorrectionGateDecision:
-        return self.corrective_retrieval_gate.decide(
+        checkpoint_current_execution()
+        decision = self.corrective_retrieval_gate.decide(
             assessment=assessment,
             correction_budget=correction_budget,
             completed_rounds=completed_rounds,
             runtime_context={"request_context": dict(request_context or {})},
         )
+        checkpoint_current_execution()
+        return decision
 
     def _run_correction(
         self,
@@ -181,6 +195,7 @@ class ParentChildRetrievalPipeline:
         }
 
         while True:
+            checkpoint_current_execution()
             decision = self._gate(
                 assessment=assessment,
                 correction_budget=correction_budget,
@@ -206,6 +221,7 @@ class ParentChildRetrievalPipeline:
             round_sets: list[CandidateSet] = []
             query_execution: list[dict[str, Any]] = []
             for query_index, corrective_query in enumerate(queries, start=1):
+                checkpoint_current_execution()
                 candidate_set, execution = self._retrieve_one_query(
                     retrieval_query=corrective_query,
                     query_label=f"correction_r{round_index}_q{query_index}",
@@ -230,7 +246,9 @@ class ParentChildRetrievalPipeline:
                     ),
                 )
             merged, fusion_metadata = self._fuse_query_sets(merge_sets)
+            checkpoint_current_execution()
             current_reranked = self.reranker.rerank(query=query, results=merged)
+            checkpoint_current_execution()
             completed_rounds = round_index
             assessment = self._assess(
                 query=query,
@@ -264,10 +282,12 @@ class ParentChildRetrievalPipeline:
         keyword_scope: dict[str, Any] | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> RetrievalStageResult:
+        checkpoint_current_execution()
         plan = self.retrieval_planner.plan(
             query=query,
             request_context=extra_metadata,
         )
+        checkpoint_current_execution()
         retrieval_plan = plan.to_dict()
         transform = self.query_transform_selector.transform
         transform_params = inspect.signature(transform).parameters
@@ -281,11 +301,13 @@ class ParentChildRetrievalPipeline:
             # Compatibility for narrow test/legacy selector ports. Production
             # QueryTransformSelector exposes runtime_context explicitly.
             expansion = transform(query, mode=plan.query_transform_mode)
+        checkpoint_current_execution()
         expansion.metadata["retrieval_plan"] = retrieval_plan
 
         query_candidate_sets: list[CandidateSet] = []
         query_execution: list[dict[str, Any]] = []
         for index, retrieval_query in enumerate(expansion.retrieval_queries, start=1):
+            checkpoint_current_execution()
             candidate_set, execution = self._retrieve_one_query(
                 retrieval_query=retrieval_query,
                 query_label=f"q{index}",
@@ -301,6 +323,7 @@ class ParentChildRetrievalPipeline:
         fused_results, query_fusion_metadata = self._fuse_query_sets(
             query_candidate_sets
         )
+        checkpoint_current_execution()
         expansion.metadata["configured_retrieval_stack"] = {
             "retrievers": [self._metadata(item) for item in self.retrievers],
             "source_fusion": self._metadata(self.source_fusion),
@@ -312,6 +335,7 @@ class ParentChildRetrievalPipeline:
         }
 
         reranked = self.reranker.rerank(query=query, results=fused_results)
+        checkpoint_current_execution()
         expansion.metadata["configured_reranker"] = {
             **self._metadata(self.reranker),
             **dict(self.reranker.execution_metadata() or {}),
@@ -335,6 +359,7 @@ class ParentChildRetrievalPipeline:
             keyword_scope=keyword_scope,
             request_context=extra_metadata,
         )
+        checkpoint_current_execution()
         expansion.metadata["configured_evidence_assessor"] = {
             **self._metadata(self.evidence_assessor),
             **dict(self.evidence_assessor.execution_metadata() or {}),

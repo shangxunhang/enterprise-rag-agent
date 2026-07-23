@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from core.runtime.execution_control import checkpoint_current_execution
 from core.runtime.clock import Clock, SystemClock
 from core.runtime.ids import IdGenerator, TimestampedUuidIdGenerator
 from rag.application.parent_child_retrieval import ParentChildRetrievalPipeline
@@ -151,14 +152,58 @@ class ParentChildRAGEngine:
         keyword_scope: Optional[Dict[str, Any]] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        checkpoint_current_execution()
         if not query or not str(query).strip():
             raise ValueError("query cannot be empty")
 
         run_id = self.run_id_generator.new_id("rag_run")
         started_at = self.clock.now_iso()
-        runtime_metadata = {
+        public_runtime_metadata = {
             **dict(extra_metadata or {}),
             "rag_run_id": run_id,
+        }
+        external_response_hook = public_runtime_metadata.pop("response_hook", None)
+        model_calls: list[dict[str, Any]] = []
+
+        def capture_model_call(request: Any, response: Any) -> None:
+            response_metadata = dict(getattr(response, "metadata", None) or {})
+            request_extra = dict(getattr(request, "extra", None) or {})
+            selected_model = str(
+                response_metadata.get("selected_model")
+                or getattr(response, "model_name", "")
+                or ""
+            ).strip()
+            model_calls.append(
+                {
+                    "model_call_id": getattr(request, "model_call_id", None),
+                    "call_purpose": request_extra.get("call_purpose"),
+                    "model_role": getattr(request, "model_role", None),
+                    "selected_profile": response_metadata.get("selected_profile"),
+                    "selected_model": selected_model or None,
+                    "provider": response_metadata.get("provider"),
+                    "provider_attempts": int(
+                        response_metadata.get("model_candidate_index", 0) or 0
+                    )
+                    + 1,
+                    "availability_fallback_used": bool(
+                        response_metadata.get("availability_fallback_used")
+                    ),
+                    "availability_fallback_from": list(
+                        response_metadata.get("availability_fallback_from") or []
+                    ),
+                    "success": bool(getattr(response, "success", False)),
+                    "latency_ms": getattr(response, "latency_ms", None),
+                    "token_usage": getattr(response, "token_usage").model_dump(),
+                }
+            )
+            if callable(external_response_hook):
+                external_response_hook(request, response)
+
+        runtime_metadata = {
+            **public_runtime_metadata,
+            # Internal callback is carried through QueryExpansionResult's
+            # non-serialized runtime_context and removed from run metadata.
+            "response_hook": capture_model_call,
         }
         retrieval = self.retrieval_pipeline.run(
             query=query,
@@ -167,6 +212,7 @@ class ParentChildRAGEngine:
             keyword_scope=keyword_scope,
             extra_metadata=runtime_metadata,
         )
+        checkpoint_current_execution()
         request_context = dict(runtime_metadata)
         context_requirements = ContextRequirements.from_mapping(
             request_context.get("context_requirements"),
@@ -176,6 +222,7 @@ class ParentChildRAGEngine:
             retrieval.results,
             requirements=context_requirements,
         )
+        checkpoint_current_execution()
         eval_result = self.retrieval_evaluator(
             retrieval.results,
             top_k=eval_top_k,
@@ -184,6 +231,7 @@ class ParentChildRAGEngine:
             expected_child_chunk_ids=expected_child_chunk_ids or [],
             expected_keywords=expected_keywords or [],
         )
+        checkpoint_current_execution()
         finished_at = self.clock.now_iso()
         metadata = self.record_builder.build_metadata(
             pipeline_name=self.pipeline_name,
@@ -203,8 +251,9 @@ class ParentChildRAGEngine:
             retrieval=retrieval,
             enable_query_expansion_llm=self.enable_query_expansion_llm,
             query_llm_generator=self.query_llm_generator,
+            model_calls=model_calls,
             query_expansion_generation_params=self.query_expansion_generation_params,
-            extra_metadata=runtime_metadata,
+            extra_metadata=public_runtime_metadata,
         )
         run_record = self.record_builder.build_record(
             run_id=run_id,
@@ -216,11 +265,13 @@ class ParentChildRAGEngine:
             eval_result=eval_result,
             metadata=metadata,
         )
+        checkpoint_current_execution()
         capture_result = (
             self.run_capture.capture(run_record)
             if self.run_capture is not None
             else None
         )
+        checkpoint_current_execution()
         return {
             "run_id": run_id,
             "query": query,
@@ -239,6 +290,7 @@ class ParentChildRAGEngine:
             "packed_context": context_pack.context,
             "citations": context_pack.citations,
             "eval_result": eval_result,
+            "model_calls": [dict(item) for item in model_calls],
             "run_record": run_record,
             "capture_result": capture_result,
         }

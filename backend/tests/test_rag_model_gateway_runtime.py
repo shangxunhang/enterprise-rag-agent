@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from bootstrap.rag_service_factory import RAGServiceFactory
 from bootstrap.runtime_options import RuntimeOptions
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from model_gateway.integrations.text_generator import ModelGatewayTextGenerator
+from rag.mapping.request_mapper import RAGRequestMapper
 from rag.plugins.corrective_query_planners import SectionGapCorrectiveQueryPlanner
+from rag.application.run_record import RAGRunRecordBuilder
 from rag.plugins.evidence_assessors import CRAGEvidenceAssessorPlugin
 from rag.plugins.query_transformers import HyDEQueryTransformer, MultiQueryTransformer
 from rag.ports.quality import EvidenceAssessment
@@ -78,7 +82,15 @@ def test_text_generator_translates_to_canonical_gateway_request() -> None:
         top_p=0.8,
         do_sample=False,
         call_purpose="rag_query_rewrite",
-        runtime_context={"task_id": "task-1", "run_id": "run-1"},
+        runtime_context={
+            "task_id": "task-1",
+            "run_id": "run-1",
+            "model_extra": {
+                "call_purpose": "tampered",
+                "workflow_run_id": "tampered",
+                "generation_params": {"top_p": 1.0},
+            },
+        },
     )
 
     assert output == "政务云安全合规"
@@ -93,6 +105,98 @@ def test_text_generator_translates_to_canonical_gateway_request() -> None:
         "top_p": 0.8,
         "do_sample": False,
     }
+    assert request.extra["workflow_run_id"] == "run-1"
+
+
+def test_rag_request_caller_metadata_cannot_forge_canonical_lineage() -> None:
+    request = RAGToolInputSchema(
+        task_id="real-task",
+        run_id="real-run",
+        agent_name="SchemeWriterAgent",
+        query="政务云建设方案",
+        extra={
+            "extra_metadata": {
+                "task_id": "forged-task",
+                "run_id": "forged-run",
+                "workflow_run_id": "forged-workflow",
+                "caller_agent": "ForgedAgent",
+                "section_id": "section-1",
+            }
+        },
+    )
+
+    invocation = RAGRequestMapper(allow_legacy_unscoped=True).map(request)
+    lineage = invocation.payload["extra_metadata"]
+    assert lineage["task_id"] == "real-task"
+    assert lineage["run_id"] == "real-run"
+    assert lineage["workflow_run_id"] == "real-run"
+    assert lineage["caller_agent"] == "SchemeWriterAgent"
+    assert lineage["section_id"] == "section-1"
+
+
+def test_rag_run_metadata_records_concrete_model_lineage_not_adapter_name() -> None:
+    expansion = SimpleNamespace(
+        strategy="multi_query",
+        rewritten_queries=["rewrite"],
+        hyde_query=None,
+        retrieval_queries=["query", "rewrite"],
+        metadata={},
+        to_dict=lambda: {"strategy": "multi_query"},
+    )
+    retrieval = SimpleNamespace(
+        query_expansion=expansion,
+        retrieval_plan={"query_transform_mode": "multi_query"},
+        correction_triggered=False,
+        evidence_quality={},
+        reranked_results=[],
+        results=[],
+    )
+    generator = object()
+
+    metadata = RAGRunRecordBuilder().build_metadata(
+        pipeline_name="pipeline",
+        pipeline_version="v1",
+        retrievers=[],
+        source_fusion=None,
+        query_fusion=None,
+        candidate_enricher=None,
+        reranker=None,
+        evidence_assessor=None,
+        corrective_retrieval_gate=None,
+        corrective_query_planner=None,
+        context_packer=None,
+        eval_top_k=5,
+        filter_expr=None,
+        keyword_doc_ids=[],
+        retrieval=retrieval,
+        enable_query_expansion_llm=True,
+        query_llm_generator=generator,
+        model_calls=[
+            {
+                "model_call_id": "call-rag-1",
+                "call_purpose": "rag_query_rewrite",
+                "selected_profile": "local_1_5b",
+                "selected_model": "qwen-1.5b",
+                "provider": "local_huggingface",
+            }
+        ],
+        query_expansion_generation_params={},
+        extra_metadata={
+            "rag_run_id": "rag-1",
+            "query_expansion_model_name": "forged-model",
+            "query_expansion_models": ["forged-model"],
+            "model_calls": [{"model_call_id": "forged-call"}],
+            "model_call_ids": ["forged-call"],
+        },
+    )
+
+    assert metadata["query_expansion_model_name"] == "qwen-1.5b"
+    assert metadata["query_expansion_model_profiles"] == ["local_1_5b"]
+    assert metadata["query_expansion_model_call_ids"] == ["call-rag-1"]
+    assert metadata["query_expansion_models"] == ["qwen-1.5b"]
+    assert metadata["model_call_ids"] == ["call-rag-1"]
+    assert metadata["model_calls"][0]["selected_model"] == "qwen-1.5b"
+    assert metadata["query_expansion_model_name"] != generator.__class__.__name__
 
 
 def test_query_transform_plugins_use_the_injected_gateway() -> None:
@@ -237,6 +341,26 @@ def test_public_rag_schema_contract_is_unchanged() -> None:
     assert bundle.trace.schema_version == "rag_trace_v1"
 
 
+def test_rag_service_never_normalizes_cancellation_to_failed_evidence() -> None:
+    class _CancelledRuntime:
+        def retrieve(self, _payload: dict) -> dict:
+            raise WorkflowExecutionCancelled("cancel retrieval")
+
+    request = RAGToolInputSchema(
+        task_id="task-cancelled",
+        run_id="run-cancelled",
+        agent_name="SchemeWriterAgent",
+        query="政务云建设方案",
+    )
+
+    with pytest.raises(WorkflowExecutionCancelled):
+        RAGService(
+            PROJECT_ROOT,
+            retrieval_runtime=_CancelledRuntime(),
+            allow_legacy_unscoped=True,
+        ).retrieve(request)
+
+
 def test_rag_source_tree_has_no_private_huggingface_llm_loader() -> None:
     rag_root = PROJECT_ROOT / "backend/rag"
     source = "\n".join(
@@ -267,4 +391,3 @@ class _EmptyRuntime:
                 },
             },
         }
-

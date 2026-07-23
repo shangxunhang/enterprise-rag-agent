@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from threading import RLock
+from typing import Any, Dict, Iterator
+
+from core.runtime.execution_control import current_execution_control
 
 
 # 阅读注释（类）：封装 本地 hugging face 运行时，负责驱动实际运行流程并维护执行状态。
@@ -40,28 +44,42 @@ class LocalHuggingFaceRuntime:
         )
         self.tokenizer = None
         self.model = None
+        # One runtime maps to one mutable model/tokenizer pair.  Loading,
+        # generation and unloading must never overlap for that pair.
+        self._lifecycle_lock = RLock()
 
     @property
     def is_loaded(self) -> bool:
+        with self._lifecycle_lock:
+            return self._is_loaded_unlocked()
+
+    def _is_loaded_unlocked(self) -> bool:
         return self.tokenizer is not None and self.model is not None
+
+    @staticmethod
+    def _checkpoint_execution() -> None:
+        control = current_execution_control()
+        if control is not None:
+            control.checkpoint()
 
     def unload(self) -> None:
         """Release an on-demand local model and return CUDA cache to the pool."""
-        if not self.is_loaded:
-            return
-        self.model = None
-        self.tokenizer = None
-        import gc
+        with self._lifecycle_lock:
+            if self.model is None and self.tokenizer is None:
+                return
+            self.model = None
+            self.tokenizer = None
+            import gc
 
-        gc.collect()
-        try:
-            import torch
+            gc.collect()
+            try:
+                import torch
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            # Lifecycle cleanup must not hide the original model-call result.
-            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                # Lifecycle cleanup must not hide the original model-call result.
+                pass
 
     # 阅读注释（函数）：确保 loaded 满足运行约束。
     def ensure_loaded(self) -> None:
@@ -73,7 +91,13 @@ class LocalHuggingFaceRuntime:
         阅读提示:
             主要直接调用：self.model_path.exists, FileNotFoundError, AutoTokenizer.from_pretrained, str, torch.cuda.is_available, AutoModelForCausalLM.from_pretrained, self.model.to, self.model.eval。
         """
-        if self.is_loaded:
+        self._checkpoint_execution()
+        with self._lifecycle_lock:
+            self._ensure_loaded_unlocked()
+
+    def _ensure_loaded_unlocked(self) -> None:
+        self._checkpoint_execution()
+        if self._is_loaded_unlocked():
             return
         if not self.model_path.exists():
             raise FileNotFoundError(f"Local Qwen model path not found: {self.model_path}")
@@ -92,25 +116,38 @@ class LocalHuggingFaceRuntime:
             f"device_map={load_device_map}",
             flush=True,
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        # Build into locals first so a failed model load cannot publish a
+        # half-loaded tokenizer/model pair to another thread.
+        tokenizer = AutoTokenizer.from_pretrained(
             str(self.model_path), trust_remote_code=True
         )
         dtype = torch.float16 if actual_device == "cuda" else torch.float32
-        self.model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             str(self.model_path),
             torch_dtype=dtype,
             device_map=load_device_map,
             trust_remote_code=True,
         )
         if actual_device == "cpu":
-            self.model.to("cpu")
-        self.model.eval()
+            model.to("cpu")
+        model.eval()
+        self.tokenizer = tokenizer
+        self.model = model
         self.device = actual_device
         print(
             f"[ModelRuntime] hf_device_map="
-            f"{getattr(self.model, 'hf_device_map', None)}",
+            f"{getattr(model, 'hf_device_map', None)}",
             flush=True,
         )
+
+    @contextmanager
+    def call_session(self) -> Iterator[None]:
+        """Keep the runtime loaded and exclusively owned for one full client call."""
+        self._checkpoint_execution()
+        with self._lifecycle_lock:
+            self._ensure_loaded_unlocked()
+            self._checkpoint_execution()
+            yield
 
     # 阅读注释（函数）：生成 LocalHuggingFaceRuntime。
     def generate(self, prompt_text: str, generation_kwargs: Dict[str, Any]):
@@ -126,12 +163,17 @@ class LocalHuggingFaceRuntime:
         阅读提示:
             主要直接调用：self.ensure_loaded, self.tokenizer, next, self.model.parameters, value.to, inputs.items, torch.no_grad, self.model.generate。
         """
-        self.ensure_loaded()
-        import torch
+        with self.call_session():
+            import torch
 
-        inputs = self.tokenizer(prompt_text, return_tensors="pt")
-        model_device = next(self.model.parameters()).device
-        moved = {key: value.to(model_device) for key, value in inputs.items()}
-        with torch.no_grad():
-            output_ids = self.model.generate(**moved, **generation_kwargs)
-        return moved, output_ids, model_device
+            self._checkpoint_execution()
+            inputs = self.tokenizer(prompt_text, return_tensors="pt")
+            model_device = next(self.model.parameters()).device
+            moved = {key: value.to(model_device) for key, value in inputs.items()}
+            self._checkpoint_execution()
+            with torch.no_grad():
+                output_ids = self.model.generate(**moved, **generation_kwargs)
+            # The canonical client decodes this output into a ModelResponse so
+            # Gateway can persist actual token usage before its post-provider
+            # cancellation checkpoint discards the response.
+            return moved, output_ids, model_device

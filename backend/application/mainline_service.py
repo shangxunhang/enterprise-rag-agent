@@ -156,6 +156,38 @@ class MainlineApplicationService:
         # 阶段 7：正式进入 Agent/Workflow 主链；无论成功、失败还是异常，都统一释放本次运行持有的资源。
         try:
             result = supervisor.run(task)
+            usage_snapshot = getattr(supervisor, "model_usage_snapshot", None)
+            model_usage = (
+                dict(usage_snapshot())
+                if callable(usage_snapshot)
+                else dict(result.result.get("model_usage") or {})
+            )
+
+            def persist_model_usage(*, finalized: bool) -> None:
+                current_usage = (
+                    dict(usage_snapshot())
+                    if callable(usage_snapshot)
+                    else dict(model_usage)
+                )
+                workspace.write_model_usage(
+                    {
+                        "schema_version": "model_usage_v1",
+                        "task_id": task_id,
+                        "run_id": run_id,
+                        "created_at": self.clock.now_iso(),
+                        "finalized": finalized,
+                        "usage": current_usage,
+                    }
+                )
+
+            defer_until_idle = getattr(supervisor, "defer_until_idle", None)
+            if callable(defer_until_idle):
+                # Preserve a point-in-time snapshot immediately, then replace
+                # it after a timed-out native/CUDA worker physically exits.
+                persist_model_usage(finalized=False)
+                defer_until_idle(lambda: persist_model_usage(finalized=True))
+            else:
+                persist_model_usage(finalized=True)
         finally:
             supervisor.close()
 
@@ -184,6 +216,7 @@ class MainlineApplicationService:
             "paths": workspace.paths(),
             "scheme_draft": scheme_draft,
             "scheme_writer_output": scheme_writer_output,
+            "model_usage": model_usage,
             "task_state": task_manager.get_task(task_id).model_dump(),
             "settings": {
                 **settings.as_dict(),

@@ -10,13 +10,15 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agent.runtime.shared_state_schema import SharedStateSchema
-from apps.enterprise_document.quality.budget import current_workflow_budget
+from apps.enterprise_document.quality.model_adapter import (
+    reserve_current_workflow_budget,
+)
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationSchema
-from schemas.model import ModelRequestSchema, ModelResponseSchema
+from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
 from context_manager import LLMContextManager
-from model_gateway.call_boundary import infer_model_role
+from model_gateway.call_boundary import ModelCallBoundary, infer_model_role
 from model_gateway.model_gateway import ModelGateway
 from .prompt_service import SectionPromptService
 from .runtime_support import SchemeWriterRuntimeSupport
@@ -130,21 +132,32 @@ class SectionModelService:
                 },
             )
             context_package = passthrough.model_dump()
-        request = ModelRequestSchema(
-            model_call_id=f"model_call_{shared_state.run_id}_{section_id}{suffix}",
-            task_id=shared_state.task_id,
-            run_id=shared_state.run_id,
+        call_id = f"model_call_{shared_state.run_id}_{section_id}{suffix}"
+        boundary = ModelCallBoundary(
+            model_gateway=self.model_gateway,
             model_role=resolved_role.value,
-            model_name=None,
-            caller_agent=self.agent_name,
-            prompt=prompt,
-            temperature=0.2,
-            max_tokens=requested_max_tokens,
-            created_at=self.runtime_support.now_iso(),
-            extra={
-                "call_purpose": purpose,
+            runtime_context={
+                "task_id": shared_state.task_id,
+                "workflow_run_id": shared_state.run_id,
                 "section_id": section_id,
                 "section_title": section_title,
+                "caller_agent": self.agent_name,
+            },
+            default_purpose=purpose,
+            call_suffix=(suffix or section_id),
+            budget_hook=reserve_current_workflow_budget,
+        )
+        print(
+            f"[Model] START purpose={purpose} section={section_title} max_tokens={requested_max_tokens}",
+            flush=True,
+        )
+        response = boundary.generate_response(
+            prompt,
+            temperature=0.2,
+            max_new_tokens=requested_max_tokens,
+            created_at=self.runtime_support.now_iso(),
+            model_call_id=call_id,
+            model_extra={
                 "document_title": project_input.output_schema.document_title,
                 "available_citation_ids": available_citation_ids,
                 "prompt_id": prompt_id,
@@ -153,21 +166,13 @@ class SectionModelService:
                 "model_capability_plan": capability_plan,
             },
         )
-        budget = current_workflow_budget()
-        if budget is not None:
-            budget.reserve_llm_call(max_tokens=request.max_tokens)
-        print(
-            f"[Model] START purpose={purpose} section={section_title} max_tokens={request.max_tokens}",
-            flush=True,
-        )
-        response = self.model_gateway.generate(request)
         print(
             f"[Model] END   purpose={purpose} section={section_title} "
             f"success={response.success} finish_reason={response.finish_reason} "
             f"latency_ms={response.latency_ms}",
             flush=True,
         )
-        shared_state.generated_outputs[request.model_call_id] = response.model_dump()
+        shared_state.generated_outputs[call_id] = response.model_dump()
         return response
 
     # 阅读注释（函数）：处理 上下文 package summary 相关逻辑。

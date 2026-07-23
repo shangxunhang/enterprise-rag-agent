@@ -18,15 +18,19 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-from apps.enterprise_document.quality.budget import current_workflow_budget
+from apps.enterprise_document.quality.model_adapter import (
+    reserve_current_workflow_budget,
+)
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SemanticGateIssueSchema,
     SemanticGateResultSchema,
 )
+from model_gateway.call_boundary import ModelCallBoundary
+from model_gateway.model_contract import ModelRole
 from model_gateway.model_gateway import ModelGateway
 from schemas.citation import CitationSchema
-from schemas.model import ModelRequestSchema, ModelResponseSchema
+from schemas.model import ModelResponseSchema
 
 
 _HARD_SEMANTIC_ISSUE_TYPES = {
@@ -457,32 +461,33 @@ class SemanticSectionJudge:
             deterministic_candidates=deterministic_candidates,
             overlong=overlong,
         )
-        request = ModelRequestSchema(
-            model_call_id=f"model_call_{run_id}_{section_id}_semantic_gate{call_suffix}",
-            task_id=task_id,
-            run_id=run_id,
-            model_role="semantic_gate",
-            model_name=None,
-            caller_agent="SemanticSectionJudge",
+        call_id = f"model_call_{run_id}_{section_id}_semantic_gate{call_suffix}"
+        boundary = ModelCallBoundary(
+            model_gateway=self.model_gateway,
+            model_role=ModelRole.SEMANTIC_GATE,
+            runtime_context={
+                "task_id": task_id,
+                "workflow_run_id": run_id,
+                "section_id": section_id,
+                "section_title": section_title,
+                "caller_agent": "SemanticSectionJudge",
+            },
+            default_purpose="semantic_section_gate",
+            call_suffix=f"semantic_gate{call_suffix}",
+            budget_hook=reserve_current_workflow_budget,
+        )
+        response = boundary.generate_response(
+            prompt,
             system_prompt=system_prompt,
-            prompt=prompt,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=384,
+            max_new_tokens=384,
             created_at=created_at,
-            extra={
-                "call_purpose": "semantic_section_gate",
-                "section_id": section_id,
-                "section_title": section_title,
-            },
+            model_call_id=call_id,
         )
-        budget = current_workflow_budget()
-        if budget is not None:
-            budget.reserve_llm_call(max_tokens=request.max_tokens)
-        response = self.model_gateway.generate(request)
         if not response.success:
             return (
                 self._fallback_result(

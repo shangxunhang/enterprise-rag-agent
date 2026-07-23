@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from core.runtime.execution_control import WorkflowExecutionCancelled
+from model_gateway.call_boundary import ModelCallBudgetExceeded
 from apps.enterprise_document.quality.model_adapter import (
     resolve_quality_generator,
 )
@@ -228,6 +230,8 @@ class LocalRewriteRepairStrategyPlugin:
                 )
                 or ""
             ).strip()
+        except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
+            raise
         except Exception as exc:
             if not self.fallback_to_original:
                 raise

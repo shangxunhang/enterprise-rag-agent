@@ -7,7 +7,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 
 # 阅读注释（类）：封装 run workspace，集中封装相关状态、依赖和行为。
@@ -68,6 +72,28 @@ class RunWorkspace:
         """
         return self.runs_dir / f"{self.run_id}_trace.jsonl"
 
+    @property
+    def model_usage_path(self) -> Path:
+        """Canonical aggregate model-usage artifact for this run."""
+
+        return self.runs_dir / f"{self.run_id}_model_usage.json"
+
+    def write_model_usage(self, payload: dict[str, Any]) -> None:
+        """Atomically publish the completed run's model-usage snapshot."""
+
+        target = self.model_usage_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
     # 阅读注释（函数）：处理 raw capture 路径 相关逻辑。
     @property
     def raw_capture_path(self) -> Path:
@@ -122,6 +148,7 @@ class RunWorkspace:
         """
         for path in (
             self.trace_path,
+            self.model_usage_path,
             self.raw_capture_path,
             self.sft_capture_path,
             self.eval_capture_path,
@@ -142,6 +169,7 @@ class RunWorkspace:
         """
         return {
             "trace": str(self.trace_path),
+            "model_usage": str(self.model_usage_path),
             "task_state": str(self.task_state_path),
             "raw_interactions": str(self.raw_capture_path),
             "sft_candidates": str(self.sft_capture_path),

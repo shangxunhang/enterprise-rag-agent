@@ -120,6 +120,10 @@ class LocalQwenLLMClient(BaseLLMClient):
         """Release model residency for on-demand profiles."""
         self.runtime.unload()
 
+    def close(self) -> None:
+        """Release local model resources during gateway shutdown."""
+        self.runtime.unload()
+
     # 阅读注释（函数）：构建 消息集合。
     def _build_messages(self, request: ModelRequestSchema) -> list[dict[str, str]]:
         """构建 消息集合。
@@ -148,8 +152,9 @@ class LocalQwenLLMClient(BaseLLMClient):
         阅读提示:
             主要直接调用：self._ensure_loaded, self.formatter.prompt_text。
         """
-        self._ensure_loaded()
-        return self.formatter.prompt_text(self.runtime.tokenizer, request)
+        with self.runtime.call_session():
+            self.device = self.runtime.device
+            return self.formatter.prompt_text(self.runtime.tokenizer, request)
 
     # 阅读注释（函数）：生成 LocalQwenLLMClient。
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
@@ -164,7 +169,17 @@ class LocalQwenLLMClient(BaseLLMClient):
         阅读提示:
             主要直接调用：self._ensure_loaded, time.time, self.formatter.prompt_text, min, max, self.runtime.generate, int, strip。
         """
-        self._ensure_loaded()
+        # Keep prompt formatting, generation and decoding in one exclusive
+        # runtime session so an on-demand release cannot unload between them.
+        with self.runtime.call_session():
+            self.device = self.runtime.device
+            return self._generate_in_session(request)
+
+    def _generate_in_session(
+        self,
+        request: ModelRequestSchema,
+    ) -> ModelResponseSchema:
+        """Generate while ``runtime.call_session`` owns the runtime lock."""
         started = time.time()
         prompt_text = self.formatter.prompt_text(self.runtime.tokenizer, request)
         max_new_tokens = min(

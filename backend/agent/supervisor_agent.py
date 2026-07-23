@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import traceback
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from agent.agent_registry import AgentRegistry
 from agent.runtime.graph_state import GraphStateSchema
@@ -43,6 +44,7 @@ class SupervisorAgent:
         owned_resources: Iterable[Any] | None = None,
     ) -> None:
         self.catalog = WorkflowCatalog(workflows)
+        self.model_gateway = model_gateway
         self.router = WorkflowRouter(
             self.catalog,
             model_gateway=model_gateway,
@@ -59,9 +61,59 @@ class SupervisorAgent:
         self.trace = WorkflowTraceService(run_trace_recorder)
         self.error_factory = ErrorFactory()
         self._owned_resources = tuple(owned_resources or ())
+        self._resource_close_lock = threading.Lock()
+        self._resource_close_requested = False
+        self._resources_closed = False
+
+    def model_usage_snapshot(self) -> Dict[str, Any]:
+        """Return provider-attempt and logical-call usage for this run."""
+
+        if self.model_gateway is None:
+            return {}
+        snapshot = getattr(self.model_gateway, "usage_snapshot", None)
+        return dict(snapshot()) if callable(snapshot) else {}
+
+    def defer_until_idle(self, callback: Callable[[], None]) -> bool:
+        """Run a finalization callback after any timed-out worker exits."""
+
+        defer = getattr(self.workflow_engine, "defer_until_idle", None)
+        if callable(defer):
+            return bool(defer(callback))
+        callback()
+        return False
 
     def close(self) -> None:
-        """Release runtime resources owned by this supervisor instance."""
+        """Release resources only after timed-out node workers physically exit.
+
+        A workflow timeout can return while a native model/RAG call is still
+        unwinding.  Closing those dependencies immediately creates a shutdown
+        race.  Runtimes that expose ``defer_until_idle`` own that boundary;
+        other WorkflowEnginePort implementations retain synchronous shutdown.
+        """
+
+        with self._resource_close_lock:
+            if self._resource_close_requested:
+                return
+            self._resource_close_requested = True
+
+        cancel_active = getattr(self.workflow_engine, "cancel_active_workers", None)
+        if callable(cancel_active):
+            cancel_active("supervisor_close")
+
+        defer_until_idle = getattr(self.workflow_engine, "defer_until_idle", None)
+        if callable(defer_until_idle):
+            defer_until_idle(self._close_owned_resources)
+            return
+        self._close_owned_resources()
+
+    def _close_owned_resources(self) -> None:
+        """Idempotently close resources after the workflow engine is idle."""
+
+        with self._resource_close_lock:
+            if self._resources_closed:
+                return
+            self._resources_closed = True
+
         seen: set[int] = set()
         for resource in reversed(self._owned_resources):
             if resource is None or id(resource) in seen:
@@ -159,6 +211,7 @@ class SupervisorAgent:
 
                 state.status = final_status
                 state.context_bundle.runtime.status = final_status
+                model_usage = self.model_usage_snapshot()
                 result = AgentResultSchema(
                     result_id=f"result_{task.run_id}_supervisor",
                     task_id=task.task_id,
@@ -178,6 +231,7 @@ class SupervisorAgent:
                         "shared_state": state.model_dump(),
                         "workflow_execution": execution.model_dump(),
                         "final_output": state.final_result,
+                        "model_usage": model_usage,
                     },
                     error=final_error,
                     error_message=final_error.message if final_error else None,
@@ -193,6 +247,7 @@ class SupervisorAgent:
                         "workflow_engine": execution.engine_name,
                         "graph_state_schema": state.schema_version,
                         "graph_revision": state.graph_revision,
+                        "model_usage": model_usage,
                     },
                 )
                 self.lifecycle.mark_terminal(task, result)
@@ -210,6 +265,7 @@ class SupervisorAgent:
                 )
                 return result
             except Exception as exc:
+                model_usage = self.model_usage_snapshot()
                 error = self.error_factory.create(
                     error_code="SUPERVISOR_EXECUTION_FAILED",
                     error_type=exc.__class__.__name__,
@@ -230,10 +286,11 @@ class SupervisorAgent:
                     agent_type=self.agent_type,
                     status=ExecutionStatus.FAILED,
                     result_type="workflow_result",
-                    result={},
+                    result={"model_usage": model_usage},
                     error=error,
                     error_message=error.message,
                     need_human_review=True,
+                    metadata={"model_usage": model_usage},
                 )
                 self.lifecycle.mark_terminal(task, result)
                 if workflow is not None and workflow_span is not None:

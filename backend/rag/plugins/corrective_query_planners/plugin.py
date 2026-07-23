@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from model_gateway.call_boundary import ModelCallBudgetExceeded
 from rag.ports.quality import CorrectiveQueryPlan, EvidenceAssessment
 
@@ -157,7 +158,7 @@ class SectionGapCorrectiveQueryPlanner:
                 )
                 queries = _dedup(_extract_queries(raw_output), original_query=query)
                 method = "llm_with_deterministic_completion"
-            except ModelCallBudgetExceeded:
+            except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
                 raise
             except Exception:
                 if not self.fallback_to_deterministic:

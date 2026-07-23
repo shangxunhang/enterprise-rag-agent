@@ -5,6 +5,10 @@ from __future__ import annotations
 import traceback
 
 from agent.agent_registry import AgentRegistry
+from core.runtime.execution_control import (
+    WorkflowExecutionCancelled,
+    WorkflowExecutionControl,
+)
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateDiffer, StateWriteContractViolation
 from agent.runtime.workflow_schema import WorkflowStepSchema
@@ -43,6 +47,7 @@ class AgentNodeAdapter:
         step: WorkflowStepSchema,
         node_input: GraphNodeInputSchema,
         state: GraphStateSchema,
+        execution_control: WorkflowExecutionControl | None = None,
     ) -> GraphNodeOutputSchema:
         """Execute one workflow step and return its validated state delta."""
         started_at = self.clock.now_iso()
@@ -52,13 +57,52 @@ class AgentNodeAdapter:
         contract_violation: StateWriteContractViolation | None = None
 
         try:
+            if execution_control is not None:
+                execution_control.checkpoint()
             if step.step_type != "agent":
                 raise ValueError(
                     f"unsupported workflow step_type={step.step_type!r}; "
                     "the fixed workflow accepts agent steps only"
                 )
             result = self.agent_registry.get(step.target_name).run(working_state)
+            if execution_control is not None:
+                execution_control.checkpoint()
+        except WorkflowExecutionCancelled as exc:
+            # An Agent may have changed its isolated copy before observing the
+            # cancellation.  Reset it so even a near-deadline race can only
+            # produce an empty delta.
+            working_state = state.model_copy(deep=True)
+            error = self.error_factory.create(
+                error_code="WORKFLOW_NODE_CANCELLED",
+                error_type=exc.__class__.__name__,
+                message=str(exc),
+                user_visible_message=f"workflow node {step.step_name} was cancelled.",
+                recoverable=False,
+                retryable=False,
+                failed_node=step.step_id,
+                component="AgentNodeAdapter",
+                agent_name=step.target_name,
+                step_name=step.step_name,
+            )
+            result = AgentResultSchema(
+                result_id=f"result_{state.run_id}_{step.step_id}_cancelled",
+                task_id=state.task_id,
+                run_id=state.run_id,
+                agent_name=step.target_name,
+                agent_type="sub_agent",
+                status=ExecutionStatus.CANCELLED,
+                result_type="workflow_node_cancelled",
+                result={},
+                error=error,
+                error_message=error.message,
+                need_human_review=True,
+            )
         except Exception as exc:
+            # Cancellation is control flow. If a lower layer converted it into
+            # an ordinary error, restore the terminal non-retryable signal
+            # before generic adapter normalization can enable a retry.
+            if execution_control is not None and execution_control.should_stop:
+                execution_control.checkpoint()
             error = self.error_factory.create(
                 error_code="WORKFLOW_NODE_ADAPTER_EXCEPTION",
                 error_type=exc.__class__.__name__,
@@ -169,6 +213,11 @@ class AgentNodeAdapter:
                     list(contract_violation.changed_paths)
                     if contract_violation is not None
                     else []
+                ),
+                "execution_control": (
+                    execution_control.metadata()
+                    if execution_control is not None
+                    else {"cooperative_cancellation": False}
                 ),
             },
         )

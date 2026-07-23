@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from threading import RLock
 from typing import Dict
 
 from contracts.base_client import BaseLLMClient
@@ -22,6 +23,8 @@ class ModelRegistry:
             None
         """
         self._clients: Dict[str, BaseLLMClient] = {}
+        self._lifecycle_lock = RLock()
+        self._closed = False
 
     # 阅读注释（函数）：注册 ModelRegistry。
     def register(self, client: BaseLLMClient) -> None:
@@ -36,9 +39,12 @@ class ModelRegistry:
         阅读提示:
             主要直接调用：ValueError。
         """
-        if client.model_name in self._clients:
-            raise ValueError(f"Model client already registered: {client.model_name}")
-        self._clients[client.model_name] = client
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("ModelRegistry is closed")
+            if client.model_name in self._clients:
+                raise ValueError(f"Model client already registered: {client.model_name}")
+            self._clients[client.model_name] = client
 
     # 阅读注释（函数）：获取 ModelRegistry。
     def get(self, model_name: str) -> BaseLLMClient:
@@ -53,9 +59,12 @@ class ModelRegistry:
         阅读提示:
             主要直接调用：KeyError。
         """
-        if model_name not in self._clients:
-            raise KeyError(f"Model client not found: {model_name}")
-        return self._clients[model_name]
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("ModelRegistry is closed")
+            if model_name not in self._clients:
+                raise KeyError(f"Model client not found: {model_name}")
+            return self._clients[model_name]
 
     # 阅读注释（函数）：处理 contains 相关逻辑。
     def contains(self, model_name: str) -> bool:
@@ -67,14 +76,55 @@ class ModelRegistry:
         返回:
             bool
         """
-        return model_name in self._clients
+        with self._lifecycle_lock:
+            return not self._closed and model_name in self._clients
 
     def release(self, model_name: str) -> None:
         """Release an on-demand client when it exposes a lifecycle hook."""
-        client = self.get(model_name)
+        with self._lifecycle_lock:
+            client = self.get(model_name)
         release = getattr(client, "release", None)
         if callable(release):
             release()
+
+    @staticmethod
+    def _close_client(client: BaseLLMClient) -> None:
+        """Invoke one client lifecycle hook without coupling the base port to it."""
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+            return
+        release = getattr(client, "release", None)
+        if callable(release):
+            release()
+
+    def release_all(self) -> None:
+        """Release every registered provider while keeping the registry reusable."""
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            clients = tuple(self._clients.values())
+        for client in reversed(clients):
+            try:
+                self._close_client(client)
+            except Exception:
+                # Try every provider even when one cleanup hook fails.
+                pass
+
+    def close(self) -> None:
+        """Idempotently release all providers and permanently close the registry."""
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            clients = tuple(self._clients.values())
+            self._clients.clear()
+        for client in reversed(clients):
+            try:
+                self._close_client(client)
+            except Exception:
+                # Shutdown remains best-effort, but all clients get a chance.
+                pass
 
     # 阅读注释（函数）：处理 names 相关逻辑。
     def names(self) -> list[str]:
@@ -86,4 +136,5 @@ class ModelRegistry:
         阅读提示:
             主要直接调用：list。
         """
-        return list(self._clients)
+        with self._lifecycle_lock:
+            return list(self._clients)

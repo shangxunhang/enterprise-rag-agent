@@ -7,12 +7,16 @@ from queue import Empty, Queue
 import threading
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from typing_extensions import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from agent.agent_registry import AgentRegistry
+from core.runtime.execution_control import (
+    WorkflowExecutionControl,
+    activate_execution_control,
+)
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
 from agent.runtime.node_adapter import AgentNodeAdapter
@@ -89,6 +93,104 @@ class LangGraphWorkflowEngine:
         self.differ = self.node_adapter.differ
         self.clock = clock or SystemClock()
         self.error_factory = error_factory or ErrorFactory(self.clock)
+        self._worker_condition = threading.Condition()
+        self._active_worker_controls: dict[str, WorkflowExecutionControl] = {}
+        self._idle_callbacks: list[Callable[[], None]] = []
+        self._idle_finalizer_active = False
+
+    @property
+    def active_worker_count(self) -> int:
+        """Return node workers that have not physically exited yet."""
+
+        with self._worker_condition:
+            return len(self._active_worker_controls)
+
+    def cancel_active_workers(self, reason: str = "workflow_shutdown") -> int:
+        """Cooperatively cancel all active workers and return their count."""
+
+        with self._worker_condition:
+            controls = tuple(self._active_worker_controls.values())
+        for control in controls:
+            control.cancel(reason)
+        return len(controls)
+
+    def wait_for_idle(self, timeout_seconds: float | None = None) -> bool:
+        """Wait until all workers exit; primarily useful for bounded shutdown/tests."""
+
+        timeout = None if timeout_seconds is None else max(0.0, timeout_seconds)
+        with self._worker_condition:
+            return self._worker_condition.wait_for(
+                lambda: (
+                    not self._active_worker_controls
+                    and not self._idle_finalizer_active
+                    and not self._idle_callbacks
+                ),
+                timeout=timeout,
+            )
+
+    def defer_until_idle(self, callback: Callable[[], None]) -> bool:
+        """Run ``callback`` now when idle, otherwise once the last worker exits.
+
+        The boolean return value is ``True`` when execution was deferred.  The
+        callback is best-effort because shutdown failures must not replace the
+        already-produced workflow result.
+        """
+
+        with self._worker_condition:
+            if self._active_worker_controls or self._idle_finalizer_active:
+                self._idle_callbacks.append(callback)
+                return True
+            self._idle_callbacks.append(callback)
+            self._idle_finalizer_active = True
+        self._finalize_idle_callbacks()
+        return False
+
+    def _register_worker(
+        self,
+        worker_id: str,
+        control: WorkflowExecutionControl,
+    ) -> None:
+        with self._worker_condition:
+            while self._idle_finalizer_active:
+                self._worker_condition.wait()
+            self._active_worker_controls[worker_id] = control
+
+    def _worker_finished(self, worker_id: str) -> None:
+        should_finalize = False
+        with self._worker_condition:
+            self._active_worker_controls.pop(worker_id, None)
+            if not self._active_worker_controls and not self._idle_finalizer_active:
+                self._idle_finalizer_active = True
+                should_finalize = True
+        if should_finalize:
+            self._finalize_idle_callbacks()
+
+    def _finalize_idle_callbacks(self) -> None:
+        """Drain finalizers before publishing the observable idle state."""
+
+        while True:
+            with self._worker_condition:
+                if self._active_worker_controls:
+                    self._idle_finalizer_active = False
+                    self._worker_condition.notify_all()
+                    return
+                callbacks = self._idle_callbacks
+                self._idle_callbacks = []
+                if not callbacks:
+                    self._idle_finalizer_active = False
+                    self._worker_condition.notify_all()
+                    return
+            for callback in callbacks:
+                self._run_idle_callback(callback)
+
+    @staticmethod
+    def _run_idle_callback(callback: Callable[[], None]) -> None:
+        try:
+            callback()
+        except BaseException:
+            # Finalizers are best-effort and must never leave the engine's idle
+            # state permanently latched, including on cancellation control flow.
+            pass
 
     def execute(
         self,
@@ -184,7 +286,9 @@ class LangGraphWorkflowEngine:
                 ),
                 "write_contract_enforced": True,
                 "failure_commit_policy_enforced": True,
-                "timeout_guard": "isolated_daemon_thread_v1",
+                "timeout_guard": "cooperative_cancel_tracked_worker_v2",
+                "active_background_workers": self.active_worker_count,
+                "cooperative_cancellation": True,
             },
         )
 
@@ -501,59 +605,69 @@ class LangGraphWorkflowEngine:
         attempt: int,
         max_attempts: int,
     ) -> GraphNodeOutputSchema:
-        """Execute isolated node under the existing hard timeout boundary."""
+        """Execute an isolated node with a tracked cooperative timeout boundary."""
 
-        result_queue: Queue[tuple[str, Any]] = Queue(maxsize=1)
+        result_queue: Queue[tuple[str, Any, float]] = Queue(maxsize=1)
         context = copy_context()
         started_at = self.clock.now_iso()
         started = time.monotonic()
+        worker_id = (
+            f"{graph_state.run_id}:{step.step_id}:{attempt}:{time.monotonic_ns()}"
+        )
+        execution_control = WorkflowExecutionControl.with_timeout(
+            execution_id=worker_id,
+            timeout_seconds=float(step.timeout_seconds),
+        )
 
         def invoke() -> None:
             try:
-                output = context.run(
-                    self.node_adapter.execute,
-                    step=step,
-                    node_input=node_input,
-                    state=graph_state,
-                )
-                result_queue.put(("ok", output))
+                def execute_node() -> GraphNodeOutputSchema:
+                    with activate_execution_control(execution_control):
+                        return self.node_adapter.execute(
+                            step=step,
+                            node_input=node_input,
+                            state=graph_state,
+                            execution_control=execution_control,
+                        )
+
+                output = context.run(execute_node)
+                result_queue.put(("ok", output, time.monotonic()))
             except BaseException as exc:
-                result_queue.put(("error", (exc, traceback.format_exc())))
+                result_queue.put(
+                    ("error", (exc, traceback.format_exc()), time.monotonic())
+                )
+            finally:
+                self._worker_finished(worker_id)
 
         worker = threading.Thread(
             target=invoke,
             name=f"workflow-{step.step_id}-attempt-{attempt}",
             daemon=True,
         )
-        worker.start()
+        self._register_worker(worker_id, execution_control)
+        try:
+            worker.start()
+        except BaseException:
+            self._worker_finished(worker_id)
+            raise
         worker.join(timeout=float(step.timeout_seconds))
         latency_ms = int(round((time.monotonic() - started) * 1000))
 
-        if worker.is_alive():
-            return self._build_failure_output(
-                step=step,
-                node_input=node_input,
-                state=graph_state,
-                error_code="WORKFLOW_NODE_TIMEOUT",
-                error_type="TimeoutError",
-                message=(
-                    f"workflow node {step.step_id} exceeded "
-                    f"timeout_seconds={step.timeout_seconds}"
-                ),
-                user_message=f"工作流节点 {step.step_name} 执行超时。",
-                retryable=attempt < max_attempts,
-                started_at=started_at,
-                latency_ms=latency_ms,
-                metadata={
-                    "timeout_seconds": step.timeout_seconds,
-                    "late_result_discarded": True,
-                    "timeout_guard": "isolated_daemon_thread_v1",
-                },
-            )
-
+        worker_still_active = worker.is_alive()
         try:
-            kind, payload = result_queue.get_nowait()
+            kind, payload, completed_monotonic = result_queue.get_nowait()
         except Empty:
+            if worker_still_active:
+                execution_control.cancel("deadline_exceeded")
+                return self._build_timeout_output(
+                    step=step,
+                    node_input=node_input,
+                    state=graph_state,
+                    started_at=started_at,
+                    latency_ms=latency_ms,
+                    execution_control=execution_control,
+                    worker_still_active=True,
+                )
             return self._build_failure_output(
                 step=step,
                 node_input=node_input,
@@ -567,12 +681,49 @@ class LangGraphWorkflowEngine:
                 latency_ms=latency_ms,
             )
 
+        if (
+            completed_monotonic >= execution_control.deadline_monotonic
+            and not execution_control.is_cancelled
+        ):
+            execution_control.cancel("deadline_exceeded")
+        if execution_control.cancel_reason == "deadline_exceeded":
+            return self._build_timeout_output(
+                step=step,
+                node_input=node_input,
+                state=graph_state,
+                started_at=started_at,
+                latency_ms=latency_ms,
+                execution_control=execution_control,
+                worker_still_active=False,
+            )
+        if execution_control.is_cancelled:
+            return self._build_failure_output(
+                step=step,
+                node_input=node_input,
+                state=graph_state,
+                error_code="WORKFLOW_NODE_CANCELLED",
+                error_type="WorkflowExecutionCancelled",
+                message=(
+                    f"workflow node {step.step_id} cancelled: "
+                    f"{execution_control.cancel_reason or 'cancelled'}"
+                ),
+                user_message=f"workflow node {step.step_name} was cancelled.",
+                retryable=False,
+                started_at=started_at,
+                latency_ms=latency_ms,
+                metadata={
+                    "execution_control": execution_control.metadata(),
+                    "retry_suppressed_after_cancellation": True,
+                },
+            )
+
         if kind == "ok":
             output: GraphNodeOutputSchema = payload
             output.metadata.update(
                 {
                     "timeout_seconds": step.timeout_seconds,
-                    "timeout_guard": "isolated_daemon_thread_v1",
+                    "timeout_guard": "cooperative_cancel_tracked_worker_v2",
+                    "execution_control": execution_control.metadata(),
                 }
             )
             return output
@@ -590,6 +741,48 @@ class LangGraphWorkflowEngine:
             started_at=started_at,
             latency_ms=latency_ms,
             stack_trace=stack_trace,
+        )
+
+    def _build_timeout_output(
+        self,
+        *,
+        step: WorkflowStepSchema,
+        node_input: GraphNodeInputSchema,
+        state: GraphStateSchema,
+        started_at: str,
+        latency_ms: int,
+        execution_control: WorkflowExecutionControl,
+        worker_still_active: bool,
+    ) -> GraphNodeOutputSchema:
+        """Build one deterministic, non-retryable timeout result."""
+
+        return self._build_failure_output(
+            step=step,
+            node_input=node_input,
+            state=state,
+            error_code="WORKFLOW_NODE_TIMEOUT",
+            error_type="TimeoutError",
+            message=(
+                f"workflow node {step.step_id} exceeded "
+                f"timeout_seconds={step.timeout_seconds}"
+            ),
+            user_message=f"工作流节点 {step.step_name} 执行超时。",
+            # Retrying may overlap the original native/RAG call. The current
+            # process cannot safely prove that its side effects have ended.
+            retryable=False,
+            started_at=started_at,
+            latency_ms=latency_ms,
+            metadata={
+                "timeout_seconds": step.timeout_seconds,
+                "late_result_discarded": True,
+                "timeout_guard": "cooperative_cancel_tracked_worker_v2",
+                "cooperative_cancel_requested": True,
+                "timeout_completed_cooperatively": not worker_still_active,
+                "retry_suppressed_after_timeout": True,
+                "worker_still_active_at_timeout": worker_still_active,
+                "active_background_workers": self.active_worker_count,
+                "execution_control": execution_control.metadata(),
+            },
         )
 
     def _build_failure_output(

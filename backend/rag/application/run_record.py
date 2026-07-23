@@ -32,10 +32,34 @@ class RAGRunRecordBuilder:
         retrieval: Any,
         enable_query_expansion_llm: bool,
         query_llm_generator: Any,
+        model_calls: list[Dict[str, Any]],
         query_expansion_generation_params: Dict[str, Any],
         extra_metadata: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        query_expansion_calls = [
+            dict(item)
+            for item in model_calls
+            if str(item.get("call_purpose") or "")
+            in {"rag_query_rewrite", "rag_hyde"}
+        ]
+        selected_query_models = list(
+            dict.fromkeys(
+                str(item.get("selected_model") or "").strip()
+                for item in query_expansion_calls
+                if str(item.get("selected_model") or "").strip()
+            )
+        )
+        selected_query_profiles = list(
+            dict.fromkeys(
+                str(item.get("selected_profile") or "").strip()
+                for item in query_expansion_calls
+                if str(item.get("selected_profile") or "").strip()
+            )
+        )
         metadata: Dict[str, Any] = {
+            # Caller metadata is additive. Canonical execution and model
+            # lineage below is written last so it cannot be forged or replaced.
+            **dict(extra_metadata or {}),
             "pipeline_stage": "retrieval_evidence",
             "pipeline_name": pipeline_name,
             "pipeline_version": pipeline_version,
@@ -80,13 +104,21 @@ class RAGRunRecordBuilder:
             "query_expansion_llm_enabled": bool(
                 enable_query_expansion_llm and query_llm_generator is not None
             ),
-            "query_expansion_model_name": _component_name(query_llm_generator),
+            # Concrete provider lineage, never the adapter class name.
+            "query_expansion_model_name": (
+                selected_query_models[-1] if selected_query_models else None
+            ),
+            "query_expansion_models": selected_query_models,
+            "query_expansion_model_profiles": selected_query_profiles,
+            "query_expansion_model_call_ids": [
+                item.get("model_call_id") for item in query_expansion_calls
+            ],
+            "model_calls": [dict(item) for item in model_calls],
+            "model_call_ids": [item.get("model_call_id") for item in model_calls],
             "query_expansion_generation_params": dict(
                 query_expansion_generation_params
             ),
         }
-        if extra_metadata:
-            metadata.update(extra_metadata)
         return metadata
 
     def build_record(
@@ -121,5 +153,6 @@ class RAGRunRecordBuilder:
             "packed_context": context_pack.context,
             "citations": context_pack.citations,
             "eval_result": eval_result,
+            "model_calls": list(metadata.get("model_calls") or []),
             "metadata": metadata,
         }

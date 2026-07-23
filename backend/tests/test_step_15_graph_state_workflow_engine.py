@@ -6,11 +6,13 @@ from __future__ import annotations
 
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
+from core.runtime.execution_control import current_execution_control
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
 from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
 from agent.runtime.node_adapter import AgentNodeAdapter
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
+from agent.supervisor_agent import SupervisorAgent
 from contracts.workflow_engine import WorkflowEnginePort
 from schemas.agent import AgentResultSchema
 from schemas.common import ErrorSchema
@@ -580,7 +582,8 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     )
     state = _state()
 
-    execution = LangGraphWorkflowEngine(registry).execute(workflow, state)
+    engine = LangGraphWorkflowEngine(registry)
+    execution = engine.execute(workflow, state)
 
     assert execution.status == ExecutionStatus.FAILED
     assert state.final_result is None
@@ -588,6 +591,152 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     assert error is not None
     assert error.error_code == "WORKFLOW_NODE_TIMEOUT"
     assert execution.node_outputs[0].metadata["commit_decision"] == "failure_discarded"
+    assert engine.wait_for_idle(timeout_seconds=0.5)
+    assert state.final_result is None
+
+
+def test_timeout_requests_cooperative_cancel_and_never_retries_live_worker() -> None:
+    """A timed-out worker is terminal, even when the step declares retries."""
+
+    import threading
+    import time
+
+    cancelled = threading.Event()
+
+    class _CooperativeAgent(BaseAgent):
+        agent_name = "CooperativeAgent"
+        agent_type = "sub_agent"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, shared_state) -> AgentResultSchema:
+            self.calls += 1
+            control = current_execution_control()
+            assert control is not None
+            # Wait for the engine's explicit timeout signal.  Providers may
+            # also use ``should_stop`` to enforce the deadline themselves.
+            while not control.is_cancelled:
+                time.sleep(0.001)
+            cancelled.set()
+            return AgentResultSchema(
+                result_id="cooperative_late_result",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="cooperative",
+                result={},
+            )
+
+    agent = _CooperativeAgent()
+    registry = AgentRegistry()
+    registry.register(agent)
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_cooperative_timeout",
+        workflow_name="cooperative timeout",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="cooperative",
+                step_name="cooperative",
+                step_type="agent",
+                target_name=agent.agent_name,
+                output_keys=["final_result"],
+                timeout_seconds=0.02,
+                max_retries=2,
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+    engine = LangGraphWorkflowEngine(registry)
+
+    execution = engine.execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.FAILED
+    assert execution.metadata["retry_count"] == 0
+    assert agent.calls == 1
+    output = execution.node_outputs[0]
+    assert output.metadata["retry_suppressed_after_timeout"] is True
+    assert output.metadata["cooperative_cancel_requested"] is True
+    assert output.result.error is not None
+    assert output.result.error.retryable is False
+    assert cancelled.wait(timeout=0.5)
+    assert engine.wait_for_idle(timeout_seconds=0.5)
+
+
+def test_resource_close_can_be_deferred_until_timed_out_worker_exits() -> None:
+    """Shutdown callbacks cannot race a non-cooperative in-flight dependency call."""
+
+    import threading
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    resource_closed = threading.Event()
+
+    class _Resource:
+        def close(self) -> None:
+            resource_closed.set()
+
+    class _BlockingAgent(BaseAgent):
+        agent_name = "BlockingAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            worker_started.set()
+            release_worker.wait(timeout=1.0)
+            return AgentResultSchema(
+                result_id="blocking_late_result",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="blocking",
+                result={},
+            )
+
+    registry = AgentRegistry()
+    registry.register(_BlockingAgent())
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_deferred_close",
+        workflow_name="deferred close",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="blocking",
+                step_name="blocking",
+                step_type="agent",
+                target_name="BlockingAgent",
+                timeout_seconds=0.02,
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+    engine = LangGraphWorkflowEngine(registry)
+    supervisor = SupervisorAgent(
+        agent_registry=registry,
+        workflows={"test": workflow},
+        workflow_engine=engine,
+        owned_resources=(_Resource(),),
+    )
+
+    execution = engine.execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.FAILED
+    assert worker_started.is_set()
+    assert engine.active_worker_count == 1
+    supervisor.close()
+    assert not resource_closed.is_set()
+
+    release_worker.set()
+    assert engine.wait_for_idle(timeout_seconds=0.5)
+    assert resource_closed.is_set()
 
 
 # 阅读注释（函数）：处理 测试 business failure can commit only declared partial outputs 相关逻辑。

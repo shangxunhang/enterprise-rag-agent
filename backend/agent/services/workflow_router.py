@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema
+from model_gateway.call_boundary import ModelCallBoundary
+from model_gateway.model_contract import ModelRole
 from model_gateway.model_gateway import ModelGateway
-from schemas.model import ModelRequestSchema, ModelResponseSchema
+from schemas.model import ModelResponseSchema
 from schemas.task import TaskSchema
 
 
@@ -192,7 +194,8 @@ class WorkflowRouter:
             return RoutingDecision(fallback, None, metadata)
 
         print(
-            f"[Supervisor] 开始 LLM 路由: task_id={task.task_id}, model={self.model_name}",
+            f"[Supervisor] 开始 LLM 路由: task_id={task.task_id}, "
+            f"model_role={ModelRole.SUPERVISOR_ROUTING.value}",
             flush=True,
         )
         system_prompt = (
@@ -205,28 +208,33 @@ class WorkflowRouter:
             f"用户输入：{task.user_input}\n"
             '输出：{"task_type":"scheme_generation","reason":"..."}'
         )
-        request = ModelRequestSchema(
-            model_call_id=f"model_call_{task.run_id}_supervisor_router",
-            task_id=task.task_id,
-            run_id=task.run_id,
-            model_role="supervisor_routing",
-            model_name=None,
-            caller_agent=self.caller_agent,
+        call_id = f"model_call_{task.run_id}_supervisor_router"
+        boundary = ModelCallBoundary(
+            model_gateway=self.model_gateway,
+            model_role=ModelRole.SUPERVISOR_ROUTING,
+            runtime_context={
+                "task_id": task.task_id,
+                "workflow_run_id": task.run_id,
+                "caller_agent": self.caller_agent,
+            },
+            default_purpose="workflow_routing",
+            call_suffix="supervisor_router",
+        )
+        response = boundary.generate_response(
+            prompt,
             system_prompt=system_prompt,
-            prompt=prompt,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=256,
+            max_new_tokens=256,
             created_at=task.created_at,
-            extra={
-                "call_purpose": "workflow_routing",
+            model_call_id=call_id,
+            model_extra={
                 "allowed_task_types": self.catalog.task_types,
             },
         )
-        response = self.model_gateway.generate(request)
         print(
             f"[Supervisor] LLM 路由结束: success={response.success}, latency_ms={response.latency_ms}",
             flush=True,
@@ -235,7 +243,7 @@ class WorkflowRouter:
             metadata.update(
                 routing_mode="llm_failed_fallback",
                 reason=response.error_message or "llm_call_failed",
-                model_call_id=request.model_call_id,
+                model_call_id=call_id,
             )
             return RoutingDecision(fallback, response, metadata)
 
@@ -247,19 +255,19 @@ class WorkflowRouter:
                     routing_mode="llm_json",
                     selected_task_type=candidate,
                     reason=parsed.get("reason") or "llm_selected",
-                    model_call_id=request.model_call_id,
+                    model_call_id=call_id,
                 )
                 return RoutingDecision(candidate, response, metadata)
             metadata.update(
                 routing_mode="llm_invalid_fallback",
                 reason=f"unsupported_task_type_from_llm: {candidate}",
-                model_call_id=request.model_call_id,
+                model_call_id=call_id,
             )
         except Exception as exc:
             metadata.update(
                 routing_mode="llm_unparseable_fallback",
                 reason=str(exc),
-                model_call_id=request.model_call_id,
+                model_call_id=call_id,
                 raw_model_output=response.content[:1000],
             )
         return RoutingDecision(fallback, response, metadata)

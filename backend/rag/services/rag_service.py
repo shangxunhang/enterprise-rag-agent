@@ -10,6 +10,7 @@ from contracts.model_gateway import ModelGatewayPort
 from contracts.observability import TraceSink
 from contracts.rag import RAGServicePort
 from core.error_factory import ErrorFactory
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
 from model_gateway.call_boundary import ModelCallBudgetExceeded
 from observability.trace_context import activate_span, current_span, new_span
@@ -168,7 +169,7 @@ class RAGService(RAGServicePort):
                 rag_project_root=str(self.rag_project_root),
                 service_name=self.service_name,
             )
-        except ModelCallBudgetExceeded:
+        except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
             raise
         except Exception as exc:
             trace = RAGTraceSchema(

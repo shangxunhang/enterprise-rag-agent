@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from model_gateway.call_boundary import ModelCallBudgetExceeded
 from rag.ports.generation import TextGenerator
 
@@ -450,7 +451,7 @@ class CRAGJudge:
                     rank=rank,
                     runtime_context=runtime_context,
                 )
-            except ModelCallBudgetExceeded:
+            except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
                 raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:
@@ -810,6 +811,8 @@ class SelfRAGJudge:
                 result = self._llm_check(query=query, answer=answer or "", context=context, citations=citations or [])
                 result.latency_ms = elapsed_ms(self.timer, t0)
                 return result
+            except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
+                raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:
                     raise

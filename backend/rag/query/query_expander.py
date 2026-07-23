@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from model_gateway.call_boundary import ModelCallBudgetExceeded
 from rag.ports.generation import TextGenerator
 
@@ -355,7 +356,7 @@ class QueryExpander:
                     meta["parsed_count"] = len(rewrites)
                     return rewrites, meta
                 raise ValueError("LLM rewrite output produced no valid query")
-            except ModelCallBudgetExceeded:
+            except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
                 raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:
@@ -424,7 +425,7 @@ class QueryExpander:
                     meta["char_count"] = len(hyde)
                     return hyde, meta
                 raise ValueError("LLM HyDE output is empty")
-            except ModelCallBudgetExceeded:
+            except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
                 raise
             except Exception as exc:
                 if not self.fallback_to_deterministic:

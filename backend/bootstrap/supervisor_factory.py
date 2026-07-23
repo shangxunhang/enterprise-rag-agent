@@ -102,5 +102,7 @@ class SupervisorFactory:
             model_gateway=model_gateway,
             supervisor_model_name=settings.supervisor_model_name,
             enable_llm_routing=settings.enable_llm_routing,
-            owned_resources=(rag_service,),
+            # Resources are listed in creation/dependency order. Supervisor
+            # closes them in reverse: RAG first, then its ModelGateway.
+            owned_resources=(model_gateway, rag_service),
         )

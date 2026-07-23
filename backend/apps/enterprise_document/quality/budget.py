@@ -19,7 +19,12 @@ class WorkflowBudgetExceeded(ModelCallBudgetExceeded):
 
 @dataclass
 class WorkflowBudget:
-    """Mutable, auditable hard fuse for one section quality loop."""
+    """Mutable safety fuse for logical calls in one section quality loop.
+
+    ``llm_calls`` is kept as a compatibility field name.  It counts one
+    business ``ModelCallBoundary`` invocation, not each availability-fallback
+    provider attempt.  Actual attempts/tokens/cost belong to ModelUsageLedger.
+    """
 
     max_retrieval_rounds: int
     max_rewrite_rounds: int
@@ -65,8 +70,10 @@ class WorkflowBudget:
             raise WorkflowBudgetExceeded("rewrite_rounds", self.max_rewrite_rounds)
         self.rewrite_rounds += 1
 
-    def snapshot(self) -> dict[str, int | bool]:
+    def snapshot(self) -> dict[str, int | bool | str]:
         return {
+            "budget_semantics": "logical_model_call_v1",
+            "token_budget_semantics": "reserved_output_allowance_v1",
             "max_retrieval_rounds": self.max_retrieval_rounds,
             "max_rewrite_rounds": self.max_rewrite_rounds,
             "max_total_llm_calls": self.max_total_llm_calls,
@@ -74,6 +81,7 @@ class WorkflowBudget:
             "retrieval_rounds": self.retrieval_rounds,
             "rewrite_rounds": self.rewrite_rounds,
             "llm_calls": self.llm_calls,
+            "logical_model_calls": self.llm_calls,
             "reserved_tokens": self.reserved_tokens,
             "human_review_on_exhaustion": self.human_review_on_exhaustion,
         }
