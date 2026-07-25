@@ -318,6 +318,7 @@ class GraphStateDiffer:
         after: GraphStateSchema,
         declared_write_keys: Iterable[str],
         declared_write_paths: Iterable[str] = (),
+        discard_legacy_engine_owned_mutations: bool = True,
     ) -> GraphStateDeltaSchema:
         """处理 diff 相关逻辑。
 
@@ -336,7 +337,8 @@ class GraphStateDiffer:
         """
         before_data = before.model_dump(mode="python")
         after_data = after.model_dump(mode="python")
-        self._discard_legacy_engine_owned_mutations(before_data, after_data)
+        if discard_legacy_engine_owned_mutations:
+            self._discard_legacy_engine_owned_mutations(before_data, after_data)
 
         set_values: Dict[str, Any] = {}
         changed_paths: List[str] = []
@@ -347,7 +349,7 @@ class GraphStateDiffer:
             right = after_data.get(key)
             if left != right:
                 set_values[key] = deepcopy(right)
-                changed_paths.extend(self._changed_paths(left, right, key))
+                changed_paths.extend(self.changed_paths(left, right, key))
 
         changed_paths = sorted(set(changed_paths))
         allowed_paths = self.write_contract.resolve_allowed_paths(
@@ -485,6 +487,23 @@ class GraphStateDiffer:
             target_cursor.pop(leaf, None)
 
     # 阅读注释（函数）：处理 changed paths 相关逻辑。
+    def changed_paths(self, before: Any, after: Any, prefix: str = "") -> List[str]:
+        """Return deterministic leaf paths changed between JSON-like values."""
+
+        root = prefix.strip(".")
+        if not root and isinstance(before, dict) and isinstance(after, dict):
+            paths: List[str] = []
+            for key in sorted(set(before) | set(after), key=str):
+                child = str(key)
+                if key not in before or key not in after:
+                    paths.append(child)
+                else:
+                    paths.extend(
+                        self.changed_paths(before[key], after[key], child)
+                    )
+            return paths
+        return self._changed_paths(before, after, root)
+
     def _changed_paths(self, before: Any, after: Any, prefix: str) -> List[str]:
         """处理 changed paths 相关逻辑。
 
@@ -508,7 +527,7 @@ class GraphStateDiffer:
                 if key not in before or key not in after:
                     paths.append(child)
                 else:
-                    paths.extend(self._changed_paths(before[key], after[key], child))
+                    paths.extend(self.changed_paths(before[key], after[key], child))
             return paths or [prefix]
         if isinstance(before, list) and isinstance(after, list):
             return [prefix]

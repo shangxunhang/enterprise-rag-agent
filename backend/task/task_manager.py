@@ -34,8 +34,15 @@ class JsonlTaskManager:
             ExecutionStatus.CANCELLED,
         },
         ExecutionStatus.RUNNING: {
+            ExecutionStatus.PAUSED,
             ExecutionStatus.SUCCESS,
             ExecutionStatus.PARTIAL_SUCCESS,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.RETRYABLE_FAILED,
+            ExecutionStatus.CANCELLED,
+        },
+        ExecutionStatus.PAUSED: {
+            ExecutionStatus.RUNNING,
             ExecutionStatus.FAILED,
             ExecutionStatus.RETRYABLE_FAILED,
             ExecutionStatus.CANCELLED,
@@ -291,6 +298,7 @@ class JsonlTaskManager:
                 ExecutionStatus.QUEUED,
                 ExecutionStatus.PENDING,
                 ExecutionStatus.RUNNING,
+                ExecutionStatus.PAUSED,
             }:
                 updates["finished_at"] = now
             if result is not None:
@@ -317,6 +325,24 @@ class JsonlTaskManager:
             status=ExecutionStatus.RUNNING,
             event_type="task_started",
             current_step=current_step,
+            expected_revision=expected_revision,
+        )
+
+    def mark_paused(
+        self,
+        task: TaskSchema,
+        result: AgentResultSchema,
+        current_step: str = "workflow_paused",
+        *,
+        expected_revision: int | None = None,
+    ) -> TaskStateRecordSchema:
+        return self._mark(
+            task,
+            status=ExecutionStatus.PAUSED,
+            event_type="task_paused",
+            current_step=current_step,
+            result=result,
+            error=result.error,
             expected_revision=expected_revision,
         )
 

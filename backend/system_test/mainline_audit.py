@@ -58,6 +58,15 @@ def audit_mainline(project_root: str | Path) -> Dict[str, Any]:
         root
         / "backend/apps/enterprise_document/services/scheme_writer/use_case.py"
     )
+    stage_service_path = (
+        root
+        / "backend/apps/enterprise_document/services/scheme_writer/stage_service.py"
+    )
+    section_coordinator_path = (
+        root
+        / "backend/apps/enterprise_document/services/scheme_writer/"
+        "section_execution_coordinator.py"
+    )
     section_service_path = (
         root
         / "backend/apps/enterprise_document/services/scheme_writer/section_generation_service.py"
@@ -79,6 +88,16 @@ def audit_mainline(project_root: str | Path) -> Dict[str, Any]:
         generation_policy = loaded if isinstance(loaded, dict) else {}
 
     use_case_text = use_case_path.read_text(encoding="utf-8") if use_case_path.is_file() else ""
+    stage_service_text = (
+        stage_service_path.read_text(encoding="utf-8")
+        if stage_service_path.is_file()
+        else ""
+    )
+    section_coordinator_text = (
+        section_coordinator_path.read_text(encoding="utf-8")
+        if section_coordinator_path.is_file()
+        else ""
+    )
     section_text = (
         section_service_path.read_text(encoding="utf-8")
         if section_service_path.is_file()
@@ -140,9 +159,16 @@ def audit_mainline(project_root: str | Path) -> Dict[str, Any]:
         {
             "id": "section_aware_retrieval_present",
             "severity": "info",
-            "present": "enable_section_aware_retrieval" in use_case_text,
+            "present": (
+                "enable_section_aware_retrieval" in stage_service_text
+                and "SectionExecutionCoordinator" in stage_service_text
+            ),
             "evidence": {
-                "corrective_branch_present": "CorrectiveSectionRAG" in use_case_text,
+                "stage_service_path": str(stage_service_path),
+                "section_coordinator_path": str(section_coordinator_path),
+                "corrective_branch_present": (
+                    "CorrectiveSectionRAG" in section_coordinator_text
+                ),
             },
             "meaning": "章节级检索及补充检索分支已进入主链。",
         },

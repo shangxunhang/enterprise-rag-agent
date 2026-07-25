@@ -166,6 +166,7 @@ class SchemeWriterAgent(BaseAgent):
             rag_service_name=rag_service_name,
             enable_semantic_gate=enable_semantic_gate,
         )
+        self.stage_service = self.use_case.stage_service
 
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:
         return self.use_case.run(shared_state)

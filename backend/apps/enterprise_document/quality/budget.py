@@ -49,6 +49,21 @@ class WorkflowBudget:
             ),
         )
 
+    @classmethod
+    def from_snapshot(cls, snapshot: dict | None) -> "WorkflowBudget":
+        """Restore a checkpointed budget without resetting consumed counters."""
+
+        raw = dict(snapshot or {})
+        budget = cls.from_policy_metadata(raw)
+        budget.retrieval_rounds = max(0, int(raw.get("retrieval_rounds", 0)))
+        budget.rewrite_rounds = max(0, int(raw.get("rewrite_rounds", 0)))
+        budget.llm_calls = max(
+            0,
+            int(raw.get("llm_calls", raw.get("logical_model_calls", 0))),
+        )
+        budget.reserved_tokens = max(0, int(raw.get("reserved_tokens", 0)))
+        return budget
+
     def reserve_llm_call(self, *, max_tokens: int) -> None:
         requested_tokens = max(1, int(max_tokens))
         if self.llm_calls >= self.max_total_llm_calls:

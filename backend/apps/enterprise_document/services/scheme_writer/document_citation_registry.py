@@ -101,8 +101,31 @@ class DocumentCitationRegistry:
             remapped.append(existing)
         return remapped, id_map
 
+    def restore(self, citations: Iterable[CitationSchema]) -> None:
+        """Restore canonical citation ids from checkpoint-safe serialized state."""
+
+        self._by_key.clear()
+        self._ordered.clear()
+        seen_ids: set[str] = set()
+        for citation in citations:
+            if citation.citation_id in seen_ids:
+                continue
+            key = self._identity(citation)
+            self._by_key[key] = citation.model_copy(deep=True)
+            self._ordered.append(citation.model_copy(deep=True))
+            seen_ids.add(citation.citation_id)
+
+    @classmethod
+    def from_citations(
+        cls,
+        citations: Iterable[CitationSchema],
+    ) -> "DocumentCitationRegistry":
+        registry = cls()
+        registry.restore(citations)
+        return registry
+
     def all(self) -> List[CitationSchema]:
-        return list(self._ordered)
+        return [item.model_copy(deep=True) for item in self._ordered]
 
     @staticmethod
     def _replace_markers(text: str, id_map: Dict[str, str]) -> str:

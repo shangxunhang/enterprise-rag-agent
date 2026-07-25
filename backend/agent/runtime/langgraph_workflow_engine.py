@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from contextvars import copy_context
-from queue import Empty, Queue
 import re
-import threading
 import time
 import traceback
 from typing import Any, Callable, Optional
@@ -14,10 +11,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from agent.agent_registry import AgentRegistry
-from core.runtime.execution_control import (
-    WorkflowExecutionCancelled,
-    WorkflowExecutionControl,
-    activate_execution_control,
+from agent.runtime.business_node_execution_runner import (
+    WorkflowNodeExecutionRunner,
 )
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
@@ -84,6 +79,7 @@ class LangGraphWorkflowEngine:
         side_effect_commit_store: SideEffectCommitStore | None = None,
         checkpointer: BaseCheckpointSaver | None = None,
         runtime_state_codec: LangGraphRuntimeStateCodec | None = None,
+        node_execution_runner: WorkflowNodeExecutionRunner | None = None,
     ) -> None:
         self.agent_registry = agent_registry
         self.state_controller = state_controller or WorkflowStateController()
@@ -111,40 +107,29 @@ class LangGraphWorkflowEngine:
             else checkpointer
         )
         self.runtime_state_codec = runtime_state_codec or LangGraphRuntimeStateCodec()
-        self._worker_condition = threading.Condition()
-        self._active_worker_controls: dict[str, WorkflowExecutionControl] = {}
-        self._idle_callbacks: list[Callable[[], None]] = []
-        self._idle_finalizer_active = False
+        self.node_execution_runner = (
+            node_execution_runner
+            or WorkflowNodeExecutionRunner(
+                side_effect_commit_store=self.side_effect_commit_store,
+                now_iso=self.clock.now_iso,
+            )
+        )
 
     @property
     def active_worker_count(self) -> int:
         """Return node workers that have not physically exited yet."""
 
-        with self._worker_condition:
-            return len(self._active_worker_controls)
+        return self.node_execution_runner.active_worker_count
 
     def cancel_active_workers(self, reason: str = "workflow_shutdown") -> int:
         """Cooperatively cancel all active workers and return their count."""
 
-        with self._worker_condition:
-            controls = tuple(self._active_worker_controls.values())
-        for control in controls:
-            control.cancel(reason)
-        return len(controls)
+        return self.node_execution_runner.cancel_active_workers(reason)
 
     def wait_for_idle(self, timeout_seconds: float | None = None) -> bool:
         """Wait until all workers exit; primarily useful for bounded shutdown/tests."""
 
-        timeout = None if timeout_seconds is None else max(0.0, timeout_seconds)
-        with self._worker_condition:
-            return self._worker_condition.wait_for(
-                lambda: (
-                    not self._active_worker_controls
-                    and not self._idle_finalizer_active
-                    and not self._idle_callbacks
-                ),
-                timeout=timeout,
-            )
+        return self.node_execution_runner.wait_for_idle(timeout_seconds)
 
     def defer_until_idle(self, callback: Callable[[], None]) -> bool:
         """Run ``callback`` now when idle, otherwise once the last worker exits.
@@ -154,61 +139,7 @@ class LangGraphWorkflowEngine:
         already-produced workflow result.
         """
 
-        with self._worker_condition:
-            if self._active_worker_controls or self._idle_finalizer_active:
-                self._idle_callbacks.append(callback)
-                return True
-            self._idle_callbacks.append(callback)
-            self._idle_finalizer_active = True
-        self._finalize_idle_callbacks()
-        return False
-
-    def _register_worker(
-        self,
-        worker_id: str,
-        control: WorkflowExecutionControl,
-    ) -> None:
-        with self._worker_condition:
-            while self._idle_finalizer_active:
-                self._worker_condition.wait()
-            self._active_worker_controls[worker_id] = control
-
-    def _worker_finished(self, worker_id: str) -> None:
-        should_finalize = False
-        with self._worker_condition:
-            self._active_worker_controls.pop(worker_id, None)
-            if not self._active_worker_controls and not self._idle_finalizer_active:
-                self._idle_finalizer_active = True
-                should_finalize = True
-        if should_finalize:
-            self._finalize_idle_callbacks()
-
-    def _finalize_idle_callbacks(self) -> None:
-        """Drain finalizers before publishing the observable idle state."""
-
-        while True:
-            with self._worker_condition:
-                if self._active_worker_controls:
-                    self._idle_finalizer_active = False
-                    self._worker_condition.notify_all()
-                    return
-                callbacks = self._idle_callbacks
-                self._idle_callbacks = []
-                if not callbacks:
-                    self._idle_finalizer_active = False
-                    self._worker_condition.notify_all()
-                    return
-            for callback in callbacks:
-                self._run_idle_callback(callback)
-
-    @staticmethod
-    def _run_idle_callback(callback: Callable[[], None]) -> None:
-        try:
-            callback()
-        except BaseException:
-            # Finalizers are best-effort and must never leave the engine's idle
-            # state permanently latched, including on cancellation control flow.
-            pass
+        return self.node_execution_runner.defer_until_idle(callback)
 
     def execute(
         self,
@@ -709,73 +640,37 @@ class LangGraphWorkflowEngine:
         attempt: int,
         max_attempts: int,
     ) -> GraphNodeOutputSchema:
-        """Execute an isolated node with a tracked cooperative timeout boundary."""
+        """Execute through the shared framework-neutral worker boundary."""
 
-        result_queue: Queue[tuple[str, Any, float]] = Queue(maxsize=1)
-        context = copy_context()
-        started_at = self.clock.now_iso()
-        started = time.monotonic()
         worker_id = (
             f"{graph_state.run_id}:{step.step_id}:{attempt}:{time.monotonic_ns()}"
         )
-        execution_control = WorkflowExecutionControl.with_timeout(
+        outcome = self.node_execution_runner.execute(
+            lambda execution_control: self.node_adapter.execute(
+                step=step,
+                node_input=node_input,
+                state=graph_state,
+                execution_control=execution_control,
+            ),
             execution_id=worker_id,
-            timeout_seconds=float(step.timeout_seconds),
             commit_scope_id=(
                 f"{graph_state.run_id}:{step.step_id}:{node_input.input_sha256}"
             ),
-            side_effect_store=self.side_effect_commit_store,
+            timeout_seconds=float(step.timeout_seconds),
+            thread_name=f"workflow-{step.step_id}-attempt-{attempt}",
+            attempt_succeeded=lambda output: not is_failure(output.status),
         )
-
-        def invoke() -> None:
-            try:
-                def execute_node() -> GraphNodeOutputSchema:
-                    with activate_execution_control(execution_control):
-                        return self.node_adapter.execute(
-                            step=step,
-                            node_input=node_input,
-                            state=graph_state,
-                            execution_control=execution_control,
-                        )
-
-                output = context.run(execute_node)
-                result_queue.put(("ok", output, time.monotonic()))
-            except BaseException as exc:
-                result_queue.put(
-                    ("error", (exc, traceback.format_exc()), time.monotonic())
-                )
-            finally:
-                self._worker_finished(worker_id)
-
-        worker = threading.Thread(
-            target=invoke,
-            name=f"workflow-{step.step_id}-attempt-{attempt}",
-            daemon=True,
-        )
-        self._register_worker(worker_id, execution_control)
-        try:
-            worker.start()
-        except BaseException:
-            self._worker_finished(worker_id)
-            raise
-        worker.join(timeout=float(step.timeout_seconds))
-        latency_ms = int(round((time.monotonic() - started) * 1000))
-
-        worker_still_active = worker.is_alive()
-        try:
-            kind, payload, completed_monotonic = result_queue.get_nowait()
-        except Empty:
-            if worker_still_active:
-                execution_control.cancel("deadline_exceeded")
-                return self._build_timeout_output(
-                    step=step,
-                    node_input=node_input,
-                    state=graph_state,
-                    started_at=started_at,
-                    latency_ms=latency_ms,
-                    execution_control=execution_control,
-                    worker_still_active=True,
-                )
+        if outcome.kind == "timeout":
+            return self._build_timeout_output(
+                step=step,
+                node_input=node_input,
+                state=graph_state,
+                started_at=outcome.started_at,
+                latency_ms=outcome.latency_ms,
+                execution_control=outcome.execution_control,
+                worker_still_active=outcome.worker_still_active,
+            )
+        if outcome.kind == "no_result":
             return self._build_failure_output(
                 step=step,
                 node_input=node_input,
@@ -783,29 +678,17 @@ class LangGraphWorkflowEngine:
                 error_code="WORKFLOW_NODE_NO_RESULT",
                 error_type="WorkflowRuntimeError",
                 message="workflow node worker exited without a result",
-                user_message=f"工作流节点 {step.step_name} 未返回结果。",
-                retryable=self.retry_policy.should_retry(FailureCategory.TRANSIENT),
+                user_message=(
+                    f"Workflow node {step.step_name} returned no result."
+                ),
+                retryable=self.retry_policy.should_retry(
+                    FailureCategory.TRANSIENT
+                ),
                 failure_category=FailureCategory.TRANSIENT,
-                started_at=started_at,
-                latency_ms=latency_ms,
+                started_at=outcome.started_at,
+                latency_ms=outcome.latency_ms,
             )
-
-        if (
-            completed_monotonic >= execution_control.deadline_monotonic
-            and not execution_control.is_cancelled
-        ):
-            execution_control.cancel("deadline_exceeded")
-        if execution_control.cancel_reason == "deadline_exceeded":
-            return self._build_timeout_output(
-                step=step,
-                node_input=node_input,
-                state=graph_state,
-                started_at=started_at,
-                latency_ms=latency_ms,
-                execution_control=execution_control,
-                worker_still_active=False,
-            )
-        if execution_control.is_cancelled:
+        if outcome.kind == "cancelled":
             return self._build_failure_output(
                 step=step,
                 node_input=node_input,
@@ -814,43 +697,24 @@ class LangGraphWorkflowEngine:
                 error_type="WorkflowExecutionCancelled",
                 message=(
                     f"workflow node {step.step_id} cancelled: "
-                    f"{execution_control.cancel_reason or 'cancelled'}"
+                    f"{outcome.execution_control.cancel_reason or 'cancelled'}"
                 ),
-                user_message=f"workflow node {step.step_name} was cancelled.",
+                user_message=f"Workflow node {step.step_name} was cancelled.",
                 retryable=False,
                 failure_category=FailureCategory.CANCELLED,
-                started_at=started_at,
-                latency_ms=latency_ms,
+                started_at=outcome.started_at,
+                latency_ms=outcome.latency_ms,
+                stack_trace=outcome.stack_trace,
                 metadata={
-                    "execution_control": execution_control.metadata(),
+                    "execution_control": (
+                        outcome.execution_control.metadata()
+                    ),
                     "retry_suppressed_after_cancellation": True,
                 },
             )
-
-        attempt_succeeded = bool(kind == "ok" and not is_failure(payload.status))
-        try:
-            external_commit_summary = execution_control.finalize_external_commits(
-                attempt_succeeded=attempt_succeeded
-            )
-        except WorkflowExecutionCancelled:
-            return self._build_failure_output(
-                step=step,
-                node_input=node_input,
-                state=graph_state,
-                error_code="WORKFLOW_NODE_CANCELLED",
-                error_type="WorkflowExecutionCancelled",
-                message=(
-                    f"workflow node {step.step_id} lost external commit authority: "
-                    f"{execution_control.cancel_reason or 'cancelled'}"
-                ),
-                user_message=f"workflow node {step.step_name} was cancelled.",
-                retryable=False,
-                failure_category=FailureCategory.CANCELLED,
-                started_at=started_at,
-                latency_ms=latency_ms,
-                metadata={"execution_control": execution_control.metadata()},
-            )
-        except Exception as exc:
+        if outcome.kind == "external_commit_error":
+            exc = outcome.exception
+            assert isinstance(exc, Exception)
             failure_category = classify_failure(exc)
             return self._build_failure_output(
                 step=step,
@@ -859,28 +723,39 @@ class LangGraphWorkflowEngine:
                 error_code="WORKFLOW_EXTERNAL_COMMIT_FAILED",
                 error_type=exc.__class__.__name__,
                 message=str(exc),
-                user_message=f"工作流节点 {step.step_name} 的外部提交失败。",
+                user_message=(
+                    f"Workflow node {step.step_name} external commit failed."
+                ),
                 retryable=self.retry_policy.should_retry(failure_category),
                 failure_category=failure_category,
-                started_at=started_at,
-                latency_ms=latency_ms,
-                stack_trace=traceback.format_exc(),
-                metadata={"execution_control": execution_control.metadata()},
+                started_at=outcome.started_at,
+                latency_ms=outcome.latency_ms,
+                stack_trace=outcome.stack_trace,
+                metadata={
+                    "execution_control": (
+                        outcome.execution_control.metadata()
+                    )
+                },
             )
-
-        if kind == "ok":
-            output: GraphNodeOutputSchema = payload
+        if outcome.kind == "ok":
+            output: GraphNodeOutputSchema = outcome.value
             output.metadata.update(
                 {
                     "timeout_seconds": step.timeout_seconds,
                     "timeout_guard": "cooperative_cancel_tracked_worker_v2",
-                    "execution_control": execution_control.metadata(),
-                    "external_commit_summary": external_commit_summary,
+                    "execution_control": (
+                        outcome.execution_control.metadata()
+                    ),
+                    "external_commit_summary": (
+                        outcome.external_commit_summary
+                    ),
                 }
             )
             return output
 
-        exc, stack_trace = payload
+        exc = outcome.exception or RuntimeError(
+            "workflow node worker failed without an exception"
+        )
         failure_category = classify_failure(exc)
         return self._build_failure_output(
             step=step,
@@ -889,13 +764,15 @@ class LangGraphWorkflowEngine:
             error_code="WORKFLOW_NODE_RUNTIME_EXCEPTION",
             error_type=exc.__class__.__name__,
             message=str(exc),
-            user_message=f"工作流节点 {step.step_name} 执行失败。",
+            user_message=f"Workflow node {step.step_name} execution failed.",
             retryable=self.retry_policy.should_retry(failure_category),
             failure_category=failure_category,
-            started_at=started_at,
-            latency_ms=latency_ms,
-            stack_trace=stack_trace,
-            metadata={"external_commit_summary": external_commit_summary},
+            started_at=outcome.started_at,
+            latency_ms=outcome.latency_ms,
+            stack_trace=outcome.stack_trace,
+            metadata={
+                "external_commit_summary": outcome.external_commit_summary
+            },
         )
 
     def _build_timeout_output(

@@ -16,6 +16,7 @@ class ExecutionStatus(str, Enum):
     QUEUED = "queued"
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCESS = "success"
     PARTIAL_SUCCESS = "partial_success"
     FAILED = "failed"

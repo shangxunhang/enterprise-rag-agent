@@ -76,6 +76,11 @@ class TaskLifecycleService:
             self.task_manager.mark_success(task, result)
         elif result.status == ExecutionStatus.PARTIAL_SUCCESS:
             self.task_manager.mark_partial_success(task, result)
+        elif result.status == ExecutionStatus.PAUSED:
+            mark_paused = getattr(self.task_manager, "mark_paused", None)
+            if not callable(mark_paused):
+                raise RuntimeError("task manager does not support paused workflows")
+            mark_paused(task, result)
         else:
             error = result.error or self.error_factory.create(
                 error_code="WORKFLOW_FAILED",

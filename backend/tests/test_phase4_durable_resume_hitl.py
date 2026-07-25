@@ -1,0 +1,276 @@
+"""Durable SQLite checkpoint, interrupt/resume and task reconciliation tests."""
+
+from __future__ import annotations
+
+from contextlib import ExitStack
+from dataclasses import replace
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+from application.mainline_service import MainlineApplicationService
+from agent.runtime.graph_state import GraphStateSchema
+from agent.runtime.langgraph_state import WorkflowNamespaceCheckpointSaver
+from agent.runtime.sqlite_checkpoint_saver import SQLiteCheckpointSaver
+from apps.enterprise_document.services.scheme_writer.stage_service import (
+    SchemeGenerationStageService,
+)
+from apps.enterprise_document.workflows.top_level_business_graph import (
+    EnterpriseDocumentWorkflowEngine,
+)
+from bootstrap.supervisor_factory import SupervisorFactory
+from core.config import get_settings
+from schemas.agent import AgentResultSchema
+from schemas.status import ExecutionStatus
+from schemas.task import TaskSchema
+from task.task_manager import JsonlTaskManager
+
+
+class _InspectingFactory(SupervisorFactory):
+    def __init__(self) -> None:
+        super().__init__()
+        self.engines: list[EnterpriseDocumentWorkflowEngine] = []
+        self.workflows: list[object] = []
+
+    def build(self, **kwargs):
+        supervisor = super().build(**kwargs)
+        engine = supervisor.workflow_engine
+        assert isinstance(engine, EnterpriseDocumentWorkflowEngine)
+        self.engines.append(engine)
+        self.workflows.append(kwargs["workflow"])
+        return supervisor
+
+
+def _require_human_review(self, graph_state, payload):
+    result = _ORIGINAL_PREPARE(self, graph_state, payload)
+    project_input = result.project_input
+    assert project_input is not None
+    requirements = project_input.generation_requirements.model_copy(
+        update={
+            "extra": {
+                **dict(project_input.generation_requirements.extra),
+                "require_human_approval": True,
+            }
+        },
+        deep=True,
+    )
+    return result.model_copy(
+        update={
+            "project_input": project_input.model_copy(
+                update={"generation_requirements": requirements},
+                deep=True,
+            )
+        },
+        deep=True,
+    )
+
+
+_ORIGINAL_PREPARE = SchemeGenerationStageService.prepare_document_plan
+
+
+def _run_paused(output_root: Path, *, run_id: str):
+    settings = replace(
+        get_settings(),
+        data_root=output_root,
+        default_model_name="fake_llm",
+        supervisor_model_name="fake_llm",
+        enable_llm_routing=False,
+        trace_enabled=True,
+        data_capture_enabled=True,
+    )
+    environment = {
+        "USE_REAL_RAG_TOOL": "false",
+        "FAKE_RAG_SCENARIO": "default",
+        "FAKE_LLM_SCENARIO": "default",
+        "ENABLE_AGENT_SELF_RAG": "false",
+        "ENABLE_SEMANTIC_GATE": "false",
+    }
+    factory = _InspectingFactory()
+    with ExitStack() as stack:
+        stack.enter_context(patch.dict(os.environ, environment))
+        stack.enter_context(
+            patch.object(
+                SchemeGenerationStageService,
+                "prepare_document_plan",
+                _require_human_review,
+            )
+        )
+        summary = MainlineApplicationService(
+            supervisor_factory=factory
+        ).run(
+            project_root=Path(__file__).resolve().parents[2],
+            user_input="生成需要人工审核的企业级 RAG-Agent 建设方案",
+            run_id=run_id,
+            output_root=output_root,
+            clean_existing=True,
+            settings=settings,
+            allow_demo_defaults=True,
+            enable_agent_self_rag=False,
+        )
+    return summary, factory
+
+
+def test_sqlite_saver_survives_new_instance(tmp_path) -> None:
+    from langgraph.graph import END, START, StateGraph
+    from typing import TypedDict
+
+    class State(TypedDict):
+        value: int
+
+    database = tmp_path / "checkpoints.sqlite3"
+    builder = StateGraph(State)
+    builder.add_node("increment", lambda state: {"value": state["value"] + 1})
+    builder.add_edge(START, "increment")
+    builder.add_edge("increment", END)
+    config = {
+        "configurable": {
+            "thread_id": "durable-thread",
+            "checkpoint_ns": "workflow:v1",
+            "workflow_namespace": "workflow:v1",
+        }
+    }
+    first = builder.compile(
+        checkpointer=WorkflowNamespaceCheckpointSaver(
+            SQLiteCheckpointSaver(database)
+        )
+    )
+    assert first.invoke({"value": 1}, config) == {"value": 2}
+
+    second_saver = SQLiteCheckpointSaver(database)
+    restored = second_saver.get_tuple(config)
+    assert restored is not None
+    assert restored.checkpoint["channel_values"]["value"] == 2
+
+
+def test_human_review_interrupt_is_paused_and_task_is_not_terminal_failure(
+    tmp_path,
+) -> None:
+    summary, factory = _run_paused(
+        tmp_path,
+        run_id="phase4_human_review_pause",
+    )
+    execution = summary["supervisor_result"]["result"]["workflow_execution"]
+    assert summary["status"] == "paused"
+    assert summary["task_state"]["status"] == "paused"
+    assert execution["metadata"]["workflow_complete"] is False
+    assert execution["metadata"]["workflow_paused"] is True
+    assert execution["metadata"]["interrupts"]
+    assert execution["metadata"]["business_node_sequence"] == [
+        "normalize_project_input",
+        "plan_document",
+        "retrieve_document_evidence",
+        "initialize_generation",
+        "execute_sections",
+        "assemble_document",
+        "evaluate_document_gate",
+    ]
+    inspection = factory.engines[0].inspect(
+        factory.workflows[0],
+        run_id=summary["run_id"],
+    )
+    assert inspection["interrupts"]
+    assert "human_review_interrupt" in inspection["next_nodes"]
+
+
+def test_new_engine_resumes_without_replaying_completed_nodes(tmp_path) -> None:
+    summary, factory = _run_paused(
+        tmp_path,
+        run_id="phase4_cross_instance_resume",
+    )
+    old_engine = factory.engines[0]
+    workflow = factory.workflows[0]
+    model_facade = old_engine.stage_service.evidence_service.model_gateway
+    rag_facade = old_engine.stage_service.evidence_service.rag_service
+    model_calls_before = model_facade.runnable_invocation_count
+    rag_calls_before = rag_facade.runnable_invocation_count
+
+    new_engine = EnterpriseDocumentWorkflowEngine(
+        stage_service=old_engine.stage_service,
+        checkpointer=SQLiteCheckpointSaver(old_engine.checkpointer.path),
+        side_effect_commit_store=old_engine.side_effect_commit_store,
+    )
+    shared_state = GraphStateSchema.model_validate(
+        summary["supervisor_result"]["result"]["shared_state"]
+    )
+    result = new_engine.resume(
+        workflow,
+        shared_state,
+        {
+            "decision": "approved",
+            "feedback": "approved in durable-resume acceptance test",
+        },
+    )
+    assert result.status in {
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.PARTIAL_SUCCESS,
+    }
+    assert result.metadata["workflow_complete"] is True
+    assert result.metadata["resumed"] is True
+    assert result.metadata["resume_count"] == 1
+    sequence = result.metadata["business_node_sequence"]
+    assert sequence[:7] == [
+        "normalize_project_input",
+        "plan_document",
+        "retrieve_document_evidence",
+        "initialize_generation",
+        "execute_sections",
+        "assemble_document",
+        "evaluate_document_gate",
+    ]
+    assert sequence[7:] == [
+        "apply_human_review",
+        "persist_deliverable",
+        "finalize_workflow_result",
+    ]
+    assert len(sequence) == len(set(sequence))
+    assert model_facade.runnable_invocation_count == model_calls_before
+    assert rag_facade.runnable_invocation_count == rag_calls_before
+    assert shared_state.deliverable_final_result is not None
+    assert shared_state.rejected_artifact is None
+
+
+def test_task_manager_supports_paused_resume_terminal_transition(tmp_path) -> None:
+    manager = JsonlTaskManager(tmp_path / "tasks")
+    task = TaskSchema(
+        task_id="task-paused",
+        run_id="run-paused",
+        task_type="scheme_generation",
+        task_name="paused task",
+        user_input="pause",
+        project_input={"user_query": "pause"},
+        created_at="2026-07-25T00:00:00+00:00",
+    )
+    manager.create_task(task)
+    manager.mark_running(task)
+    paused_result = AgentResultSchema(
+        result_id="result-paused",
+        task_id=task.task_id,
+        run_id=task.run_id,
+        agent_name="SupervisorAgent",
+        agent_type="supervisor",
+        status=ExecutionStatus.PAUSED,
+        result_type="workflow_result",
+        result={"interrupts": [{"reason": "review"}]},
+        started_at=task.created_at,
+        finished_at=task.created_at,
+    )
+    manager.mark_paused(task, paused_result)
+    assert manager.get_task(task.task_id).status == ExecutionStatus.PAUSED
+    manager.mark_running(task, current_step="workflow_resumed")
+    final_result = paused_result.model_copy(
+        update={
+            "result_id": "result-complete",
+            "status": ExecutionStatus.SUCCESS,
+        },
+        deep=True,
+    )
+    manager.mark_success(task, final_result)
+    restored = JsonlTaskManager(tmp_path / "tasks").get_task(task.task_id)
+    assert restored.status == ExecutionStatus.SUCCESS
+    assert [event.current_status for event in restored.events] == [
+        ExecutionStatus.PENDING,
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.PAUSED,
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.SUCCESS,
+    ]
