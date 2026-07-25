@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from contextvars import copy_context
 from queue import Empty, Queue
+import re
 import threading
 import time
 import traceback
 from typing import Any, Callable, Optional
 
-from typing_extensions import TypedDict
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from agent.agent_registry import AgentRegistry
@@ -20,6 +21,11 @@ from core.runtime.execution_control import (
 )
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
+from agent.runtime.langgraph_state import (
+    LangGraphRuntimeState,
+    LangGraphRuntimeStateCodec,
+    WorkflowNamespaceCheckpointSaver,
+)
 from agent.runtime.node_adapter import AgentNodeAdapter
 from agent.runtime.workflow_observer import WorkflowObserver
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
@@ -43,22 +49,6 @@ from schemas.graph import (
     stable_graph_hash,
 )
 from schemas.status import ExecutionStatus, is_failure
-
-
-class _LangGraphRuntimeState(TypedDict, total=False):
-    """Internal orchestration envelope; business state remains GraphStateSchema."""
-
-    graph_state: GraphStateSchema
-    node_inputs: list[GraphNodeInputSchema]
-    node_outputs: list[GraphNodeOutputSchema]
-    node_results: list[AgentResultSchema]
-    transition_count: int
-    retry_count: int
-    recovered_failure_count: int
-    workflow_complete: bool
-    terminal_reason: str
-    terminal_failure_status: ExecutionStatus | None
-    next_node: str
 
 
 class LangGraphWorkflowEngine:
@@ -92,6 +82,8 @@ class LangGraphWorkflowEngine:
         error_factory: ErrorFactory | None = None,
         retry_policy: RetryDecisionPolicy | None = None,
         side_effect_commit_store: SideEffectCommitStore | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
+        runtime_state_codec: LangGraphRuntimeStateCodec | None = None,
     ) -> None:
         self.agent_registry = agent_registry
         self.state_controller = state_controller or WorkflowStateController()
@@ -111,6 +103,14 @@ class LangGraphWorkflowEngine:
         self.side_effect_commit_store = (
             side_effect_commit_store or InMemorySideEffectCommitStore()
         )
+        self.checkpointer = checkpointer
+        self._langgraph_checkpointer = (
+            WorkflowNamespaceCheckpointSaver(checkpointer)
+            if checkpointer is not None
+            and not isinstance(checkpointer, WorkflowNamespaceCheckpointSaver)
+            else checkpointer
+        )
+        self.runtime_state_codec = runtime_state_codec or LangGraphRuntimeStateCodec()
         self._worker_condition = threading.Condition()
         self._active_worker_controls: dict[str, WorkflowExecutionControl] = {}
         self._idle_callbacks: list[Callable[[], None]] = []
@@ -215,7 +215,7 @@ class LangGraphWorkflowEngine:
         workflow: WorkflowDefinitionSchema,
         graph_state: GraphStateSchema,
     ) -> WorkflowEngineResultSchema:
-        """Compile the declared workflow to a StateGraph and execute it."""
+        """Compile and execute using checkpoint-safe LangGraph-owned state."""
 
         initial_revision = graph_state.graph_revision
         graph_state.workflow_engine_name = self.engine_name
@@ -224,45 +224,57 @@ class LangGraphWorkflowEngine:
 
         ordered_steps = sorted(workflow.steps, key=lambda item: item.order)
         max_transitions = max(16, len(ordered_steps) * 8)
-        runtime: _LangGraphRuntimeState = {
-            "graph_state": graph_state,
-            "node_inputs": [],
-            "node_outputs": [],
-            "node_results": [],
-            "transition_count": 0,
-            "retry_count": 0,
-            "recovered_failure_count": 0,
-            "workflow_complete": False,
-            "terminal_reason": "not_started",
-            "terminal_failure_status": None,
-            "next_node": self._END_ROUTE,
-        }
+        runtime = self.runtime_state_codec.build_initial_state(
+            workflow,
+            graph_state,
+            end_route=self._END_ROUTE,
+        )
 
         if not ordered_steps:
+            self.state_controller.finish_workflow(graph_state, ExecutionStatus.SUCCESS)
+            runtime["graph_state_payload"] = self.runtime_state_codec.dump_graph_state(
+                graph_state
+            )
             runtime["workflow_complete"] = True
             runtime["terminal_reason"] = "empty_workflow"
         else:
             compiled = self._compile(workflow, ordered_steps, max_transitions)
             runtime = compiled.invoke(
                 runtime,
-                config={"recursion_limit": max_transitions + 4},
+                config=self._invoke_config(
+                    workflow,
+                    run_id=graph_state.run_id,
+                    recursion_limit=max_transitions + 4,
+                ),
             )
 
-        node_results = list(runtime.get("node_results", []))
-        terminal_failure_status = runtime.get("terminal_failure_status")
-        if terminal_failure_status is not None:
-            self.state_controller.finish_workflow(graph_state, terminal_failure_status)
-        else:
+        final_graph_state = self.runtime_state_codec.restore_graph_state(
+            runtime,
+            workflow=workflow,
+        )
+        node_results = self.runtime_state_codec.restore_node_results(runtime)
+        terminal_failure_value = runtime.get("terminal_failure_status")
+        terminal_failure_status = (
+            ExecutionStatus(terminal_failure_value)
+            if terminal_failure_value is not None
+            else None
+        )
+        if final_graph_state.status == ExecutionStatus.RUNNING:
             final_status = (
-                ExecutionStatus.PARTIAL_SUCCESS
-                if int(runtime.get("recovered_failure_count", 0)) > 0
-                or any(
-                    result.status == ExecutionStatus.PARTIAL_SUCCESS
-                    for result in node_results
+                terminal_failure_status
+                if terminal_failure_status is not None
+                else (
+                    ExecutionStatus.PARTIAL_SUCCESS
+                    if int(runtime.get("recovered_failure_count", 0)) > 0
+                    or any(
+                        result.status == ExecutionStatus.PARTIAL_SUCCESS
+                        for result in node_results
+                    )
+                    else ExecutionStatus.SUCCESS
                 )
-                else ExecutionStatus.SUCCESS
             )
-            self.state_controller.finish_workflow(graph_state, final_status)
+            self.state_controller.finish_workflow(final_graph_state, final_status)
+        self.runtime_state_codec.project_onto(graph_state, final_graph_state)
 
         error = None
         if is_failure(graph_state.status):
@@ -273,8 +285,9 @@ class LangGraphWorkflowEngine:
             if error is None and graph_state.errors:
                 error = graph_state.errors[-1]
 
-        node_inputs = list(runtime.get("node_inputs", []))
-        node_outputs = list(runtime.get("node_outputs", []))
+        node_inputs = self.runtime_state_codec.restore_node_inputs(runtime)
+        node_outputs = self.runtime_state_codec.restore_node_outputs(runtime)
+        checkpoint_namespace = self.runtime_state_codec.workflow_namespace(workflow)
         return WorkflowEngineResultSchema(
             engine_name=self.engine_name,
             engine_version=self.engine_version,
@@ -307,8 +320,34 @@ class LangGraphWorkflowEngine:
                 "timeout_guard": "cooperative_cancel_tracked_worker_v2",
                 "active_background_workers": self.active_worker_count,
                 "cooperative_cancellation": True,
+                "langgraph_state_contract": "serializable_partial_update_v1",
+                "checkpoint_enabled": self.checkpointer is not None,
+                "checkpoint_thread_id": graph_state.run_id,
+                "checkpoint_namespace": checkpoint_namespace,
             },
         )
+
+    def _invoke_config(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        *,
+        run_id: str,
+        recursion_limit: int,
+    ) -> dict[str, Any]:
+        """Build stable checkpoint identity without storing services in state."""
+
+        config = self.runtime_state_codec.checkpoint_config(
+            workflow,
+            run_id=run_id,
+        )
+        namespace = self.runtime_state_codec.workflow_namespace(workflow)
+        config["recursion_limit"] = recursion_limit
+        config["metadata"] = {
+            "workflow_id": workflow.workflow_id,
+            "workflow_version": workflow.workflow_version,
+            "checkpoint_namespace": namespace,
+        }
+        return config
 
     def _compile(
         self,
@@ -318,7 +357,7 @@ class LangGraphWorkflowEngine:
     ):
         """Compile framework-neutral workflow declarations into LangGraph."""
 
-        builder = StateGraph(_LangGraphRuntimeState)
+        builder = StateGraph(LangGraphRuntimeState)
         step_ids = [step.step_id for step in ordered_steps]
         all_routes = {step_id: step_id for step_id in step_ids}
         all_routes[self._END_ROUTE] = END
@@ -345,7 +384,15 @@ class LangGraphWorkflowEngine:
             )
 
         builder.add_edge(START, ordered_steps[0].step_id)
-        return builder.compile()
+        graph_name = re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "_",
+            f"{workflow.workflow_id}__{workflow.workflow_version}",
+        ).strip("_")
+        return builder.compile(
+            checkpointer=self._langgraph_checkpointer,
+            name=graph_name or "enterprise_workflow",
+        )
 
     def _build_step_node(
         self,
@@ -355,8 +402,13 @@ class LangGraphWorkflowEngine:
         next_step_id: str | None,
         max_transitions: int,
     ):
-        def execute_step(workflow_state: _LangGraphRuntimeState) -> dict[str, Any]:
-            graph_state = workflow_state["graph_state"]
+        def execute_step(workflow_state: LangGraphRuntimeState) -> dict[str, Any]:
+            # This model is a per-node compatibility projection. LangGraph owns
+            # only the detached payload and no Agent can retain canonical state.
+            graph_state = self.runtime_state_codec.restore_graph_state(
+                workflow_state,
+                workflow=workflow,
+            )
             transition_count = int(workflow_state.get("transition_count", 0)) + 1
             if transition_count > max_transitions:
                 error = self.error_factory.create(
@@ -375,10 +427,16 @@ class LangGraphWorkflowEngine:
                     step_name=graph_state.current_step,
                 )
                 self.state_controller.writer.add_error(graph_state, error)
+                self.state_controller.finish_workflow(
+                    graph_state,
+                    ExecutionStatus.FAILED,
+                )
                 return {
-                    "graph_state": graph_state,
+                    "graph_state_payload": self.runtime_state_codec.dump_graph_state(
+                        graph_state
+                    ),
                     "transition_count": transition_count,
-                    "terminal_failure_status": ExecutionStatus.FAILED,
+                    "terminal_failure_status": ExecutionStatus.FAILED.value,
                     "terminal_reason": "routing_cycle_guard",
                     "next_node": self._END_ROUTE,
                 }
@@ -397,7 +455,7 @@ class LangGraphWorkflowEngine:
             terminal_failure_status = workflow_state.get("terminal_failure_status")
 
             if route == "fail_task":
-                terminal_failure_status = result.status
+                terminal_failure_status = result.status.value
                 terminal_reason = "node_failure"
                 destination = self._END_ROUTE
             elif route in {"end", "complete", "stop"}:
@@ -415,14 +473,42 @@ class LangGraphWorkflowEngine:
                 destination = route
                 terminal_reason = f"route_{route}"
 
+            node_inputs = [
+                *workflow_state.get("node_inputs", []),
+                self.runtime_state_codec.dump_node_input(execution["node_input"]),
+            ]
+            node_outputs = [
+                *workflow_state.get("node_outputs", []),
+                self.runtime_state_codec.dump_node_output(execution["node_output"]),
+            ]
+            node_results = [
+                *workflow_state.get("node_results", []),
+                self.runtime_state_codec.dump_agent_result(result),
+            ]
+            if destination == self._END_ROUTE:
+                final_status = (
+                    ExecutionStatus(terminal_failure_status)
+                    if terminal_failure_status is not None
+                    else (
+                        ExecutionStatus.PARTIAL_SUCCESS
+                        if recovered_failure_count > 0
+                        or any(
+                            AgentResultSchema.model_validate(item).status
+                            == ExecutionStatus.PARTIAL_SUCCESS
+                            for item in node_results
+                        )
+                        else ExecutionStatus.SUCCESS
+                    )
+                )
+                self.state_controller.finish_workflow(graph_state, final_status)
+
             return {
-                "graph_state": graph_state,
-                "node_inputs": [*workflow_state.get("node_inputs", []), execution["node_input"]],
-                "node_outputs": [
-                    *workflow_state.get("node_outputs", []),
-                    execution["node_output"],
-                ],
-                "node_results": [*workflow_state.get("node_results", []), result],
+                "graph_state_payload": self.runtime_state_codec.dump_graph_state(
+                    graph_state
+                ),
+                "node_inputs": node_inputs,
+                "node_outputs": node_outputs,
+                "node_results": node_results,
                 "transition_count": transition_count,
                 "retry_count": int(workflow_state.get("retry_count", 0))
                 + int(execution["retry_count"]),
@@ -611,7 +697,7 @@ class LangGraphWorkflowEngine:
         }
 
     @staticmethod
-    def _next_node(workflow_state: _LangGraphRuntimeState) -> str:
+    def _next_node(workflow_state: LangGraphRuntimeState) -> str:
         return str(workflow_state.get("next_node", LangGraphWorkflowEngine._END_ROUTE))
 
     def _execute_with_timeout(
