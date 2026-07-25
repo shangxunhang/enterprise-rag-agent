@@ -12,6 +12,7 @@ from .runner import StrategyEvalRunner
 from .schemas import (
     ExperimentConfig,
     ExperimentMatrixConfig,
+    GoldenDatasetManifest,
     ExperimentReport,
     MatrixReport,
     RAGEvalSample,
@@ -23,6 +24,7 @@ __all__ = [
     "ExperimentConfig",
     "ExperimentMatrixConfig",
     "ExperimentReport",
+    "GoldenDatasetManifest",
     "MatrixReport",
     "MetricRegistry",
     "RAGEvalSample",

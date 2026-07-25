@@ -39,7 +39,7 @@ class TaskFactory:
         created_at: str,
         project_input: Optional[Dict[str, Any]] = None,
         *,
-        allow_demo_defaults: bool = True,
+        allow_demo_defaults: bool = False,
     ) -> TaskSchema:
         """构建 TaskFactory。
 

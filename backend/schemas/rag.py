@@ -13,7 +13,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
@@ -27,6 +27,8 @@ class RetrievalAccessScopeSchema(SchemaBase):
     scope produced by the application/security boundary.  Agents may narrow
     this scope, but must never broaden it.
     """
+
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     schema_version: str = "retrieval_access_scope_v1"
     tenant_id: str
@@ -53,9 +55,36 @@ class RetrievalAccessScopeSchema(SchemaBase):
         return self
 
 
+class RetrievalNarrowingSchema(SchemaBase):
+    """Caller-controlled structured filters that may only reduce scope."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        arbitrary_types_allowed=True,
+    )
+
+    tenant_id: Optional[str] = None
+    file_ids: List[str] = Field(default_factory=list)
+    doc_ids: List[str] = Field(default_factory=list)
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in {"tenant_id", "file_ids", "doc_ids"}:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
 # 阅读注释（类）：封装 ragtool 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class RAGToolInputSchema(SchemaBase):
     """封装 ragtool 输入 Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     schema_version: str = "rag_tool_input_v1"
 
     task_id: str
@@ -70,7 +99,9 @@ class RAGToolInputSchema(SchemaBase):
 
     # Legacy caller-provided narrowing filters.  Security-sensitive mandatory
     # tenant/KB boundaries live in access_scope and cannot be overridden here.
-    filters: Dict[str, Any] = Field(default_factory=dict)
+    filters: RetrievalNarrowingSchema = Field(
+        default_factory=RetrievalNarrowingSchema
+    )
 
     need_citation: bool = True
 

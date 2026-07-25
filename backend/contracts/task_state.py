@@ -33,5 +33,12 @@ class TaskStateManager(Protocol):
         retryable: bool = False,
         result: AgentResultSchema | None = None,
     ) -> TaskStateRecordSchema: ...
+    def mark_cancelled(
+        self,
+        task: TaskSchema,
+        error: ErrorSchema,
+        current_step: str = "workflow_cancelled",
+        result: AgentResultSchema | None = None,
+    ) -> TaskStateRecordSchema: ...
     # 阅读注释（函数）：获取 任务。
     def get_task(self, task_id: str) -> TaskStateRecordSchema: ...

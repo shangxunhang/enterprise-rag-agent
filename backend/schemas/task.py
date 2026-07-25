@@ -11,17 +11,47 @@ an API/CLI adapter before the workflow starts.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from .common import SchemaBase
 from .status import ExecutionStatus
 
 
+_TASK_REQUEST_IDENTITY_FIELDS = (
+    "task_id",
+    "run_id",
+    "tenant_id",
+    "task_type",
+    "task_name",
+    "project_name",
+    "user_id",
+    "session_id",
+    "user_input",
+    "project_input",
+    "source_materials",
+    "generation_requirements",
+    "output_schema",
+    "metadata",
+    "file_ids",
+    "doc_ids",
+    "kb_ids",
+    "table_refs",
+    "template_id",
+    "priority",
+    "options",
+    "extra",
+)
+
+
 # 阅读注释（类）：封装 任务 options Schema，定义跨模块传递的数据结构与字段约束。
 class TaskOptionsSchema(SchemaBase):
     """封装 任务 options Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     need_table_analysis: bool = True
     need_rag: bool = True
     need_citation: bool = True
@@ -36,6 +66,8 @@ class TaskOptionsSchema(SchemaBase):
 class TaskSchema(SchemaBase):
     """封装 任务 Schema，定义跨模块传递的数据结构与字段约束。"""
     # schema自身的版本
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     schema_version: str = "task_v2"
     #########################任务身份字段##################################
     # 当前任务实例ID
@@ -95,3 +127,22 @@ class TaskSchema(SchemaBase):
     #####################扩展字段############################################
     # 用来放暂时不值得正式进入 Schema 的信息。  实验标签、调试标记、临时兼容字段
     extra: Dict[str, Any] = Field(default_factory=dict)
+
+    def canonical_request_projection(self) -> Dict[str, Any]:
+        """Return only immutable fields that determine task execution semantics."""
+
+        return self.model_dump(
+            mode="json",
+            include=set(_TASK_REQUEST_IDENTITY_FIELDS),
+        )
+
+    def canonical_request_sha256(self) -> str:
+        """Return a key-order-insensitive identity for the immutable request."""
+
+        serialized = json.dumps(
+            self.canonical_request_projection(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

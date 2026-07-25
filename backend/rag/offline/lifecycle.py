@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterator, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.persistence.crash_safe_jsonl import CrashSafeJsonlEventLog
 from rag.offline.manifest import (
     ActiveIndexPointer,
     IndexManifest,
@@ -571,12 +572,8 @@ class IndexLifecycleManager:
         阅读提示:
             主要直接调用：self.history_path.parent.mkdir, json.dumps, event.model_dump, self.history_path.open, handle.write, handle.flush, os.fsync, handle.fileno。
         """
-        self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n"
-        with self.history_path.open("a", encoding="utf-8", newline="") as handle:
-            handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
+        line = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+        CrashSafeJsonlEventLog(self.history_path).append_serialized(line)
 
     # 阅读注释（函数）：处理 history 相关逻辑。
     def history(self) -> list[IndexLifecycleEvent]:
@@ -591,7 +588,9 @@ class IndexLifecycleManager:
         if not self.history_path.is_file():
             return []
         events: list[IndexLifecycleEvent] = []
-        for line in self.history_path.read_text(encoding="utf-8").splitlines():
+        for line in CrashSafeJsonlEventLog(
+            self.history_path
+        ).read_complete_lines():
             if line.strip():
                 events.append(IndexLifecycleEvent.model_validate_json(line))
         return events

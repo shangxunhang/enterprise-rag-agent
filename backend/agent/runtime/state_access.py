@@ -375,3 +375,16 @@ class SharedStateWriter:
         """
         state.final_result = result
 
+    def set_scheme_artifacts(
+        self,
+        state: SharedStateSchema,
+        *,
+        generated_draft: Dict[str, Any],
+        rejected_artifact: Dict[str, Any] | None,
+        deliverable_final_result: Dict[str, Any] | None,
+    ) -> None:
+        """Publish scheme artifacts without conflating draft and deliverable."""
+
+        state.generated_draft = generated_draft
+        state.rejected_artifact = rejected_artifact
+        state.deliverable_final_result = deliverable_final_result

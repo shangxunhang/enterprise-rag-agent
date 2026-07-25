@@ -163,6 +163,16 @@ class RAGResultMapper:
             score = None
         metadata = evidence_quality.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
+        final_report = final_assessment.get("report")
+        final_report = final_report if isinstance(final_report, dict) else {}
+        verification_mode = (
+            evidence_quality.get("verification_mode")
+            or final_report.get("verification_mode")
+        )
+        quality_mode_degraded = bool(
+            evidence_quality.get("quality_mode_degraded")
+            or final_report.get("quality_mode_degraded")
+        )
         return RAGEvidenceAssessmentSchema(
             status=status,
             judge_name=str(metadata.get("judge") or "") or None,
@@ -171,6 +181,8 @@ class RAGResultMapper:
             reason_codes=reason_codes,
             details={
                 "final_assessment": final_assessment,
+                "verification_mode": verification_mode,
+                "quality_mode_degraded": quality_mode_degraded,
                 "corrective_retrieval_triggered": bool(
                     corrective.get("triggered")
                 ),

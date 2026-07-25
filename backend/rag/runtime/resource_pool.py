@@ -31,9 +31,25 @@ class ParentChildResourcePool:
         self.runtime_config = runtime_config
         self.project_root = Path(project_root)
         self._dense_retriever: Any | None = None
+        self._embedding_backend: Any | None = None
         self._keyword_retriever: Any | None = None
         self._parent_store: Any | None = None
         self._parent_rerankers: dict[tuple[Any, ...], Any] = {}
+
+    def get_embedding_backend(self) -> Any | None:
+        """Load and own the real embedding model once per retrieval runtime."""
+        cfg = self.runtime_config
+        if bool(cfg.hash_embedding):
+            return None
+        if self._embedding_backend is None:
+            from rag.embed.embedder import TextEmbedder
+
+            self._embedding_backend = TextEmbedder(
+                model_name=str(cfg.embedding_model),
+                device=str(cfg.embedding_device),
+                batch_size=1,
+            )
+        return self._embedding_backend
 
     # 阅读注释（函数）：获取 dense retriever。
     def get_dense_retriever(self) -> Any:
@@ -56,6 +72,7 @@ class ParentChildResourcePool:
                 embedding_model=cfg.embedding_model,
                 embedding_device=cfg.embedding_device,
                 embedding_batch_size=1,
+                embedding_backend=self.get_embedding_backend(),
                 hash_embedding=cfg.hash_embedding,
                 hash_dim=cfg.hash_dim,
             )
@@ -128,6 +145,30 @@ class ParentChildResourcePool:
                 local_files_only=resolved_local_files_only,
             )
         return self._parent_rerankers[key]
+
+    def close(self) -> None:
+        """Release every heavyweight resource owned by this runtime pool."""
+        resources = [
+            self._dense_retriever,
+            self._embedding_backend,
+            *self._parent_rerankers.values(),
+        ]
+        seen: set[int] = set()
+        for resource in resources:
+            if resource is None or id(resource) in seen:
+                continue
+            seen.add(id(resource))
+            close = getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        self._dense_retriever = None
+        self._embedding_backend = None
+        self._keyword_retriever = None
+        self._parent_store = None
+        self._parent_rerankers.clear()
 
     # 阅读注释（函数）：获取 父块 store。
     def get_parent_store(self) -> Any:

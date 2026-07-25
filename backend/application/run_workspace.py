@@ -152,7 +152,6 @@ class RunWorkspace:
             self.raw_capture_path,
             self.sft_capture_path,
             self.eval_capture_path,
-            self.task_state_path,
         ):
             if path.exists():
                 path.unlink()

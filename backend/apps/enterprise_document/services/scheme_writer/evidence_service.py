@@ -39,10 +39,15 @@ class SchemeEvidenceService:
         rag_service: RAGServicePort | None,
         agent_name: str,
         model_gateway: Any | None = None,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
     ) -> None:
         self.rag_service = rag_service
         self.agent_name = agent_name
         self.model_gateway = model_gateway
+        # The composition root injects this object from an authenticated
+        # application/security boundary. Business input is never promoted into
+        # this authorization truth.
+        self.retrieval_access_scope = retrieval_access_scope
 
     def retrieve(
         self,
@@ -94,17 +99,15 @@ class SchemeEvidenceService:
             )
         )
         task_kb_ids = (shared_state.task or {}).get("kb_ids") or []
-        effective_kb_ids = list(dict.fromkeys([*task_kb_ids, *source_kb_ids]))
-        access_scope = (
-            RetrievalAccessScopeSchema(
-                tenant_id=project_input.tenant_id,
-                authorized_kb_ids=effective_kb_ids,
-                allowed_file_ids=source_file_ids,
-                allowed_doc_ids=source_doc_ids,
+        requested_kb_ids = list(dict.fromkeys([*task_kb_ids, *source_kb_ids]))
+        access_scope = self.retrieval_access_scope
+        if (
+            access_scope is not None
+            and project_input.tenant_id != access_scope.tenant_id
+        ):
+            raise ValueError(
+                "ProjectInput tenant_id conflicts with authenticated retrieval tenant"
             )
-            if effective_kb_ids
-            else None
-        )
         raw_suffix = call_suffix or scope
         safe_suffix = (
             re.sub(r"[^0-9A-Za-z_\-]+", "_", raw_suffix).strip("_")
@@ -175,7 +178,7 @@ class SchemeEvidenceService:
             run_id=shared_state.run_id,
             agent_name=self.agent_name,
             query=resolved_query,
-            kb_ids=effective_kb_ids,
+            kb_ids=requested_kb_ids,
             access_scope=access_scope,
             filters={
                 "tenant_id": project_input.tenant_id,

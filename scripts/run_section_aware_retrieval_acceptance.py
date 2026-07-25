@@ -149,7 +149,7 @@ def main() -> int:
         get_settings(reload=True)
 
     output = summary.get("scheme_writer_output") or {}
-    draft = summary.get("scheme_draft") or {}
+    draft = summary.get("generated_draft") or {}
     sections = list(draft.get("sections") or [])
     bundles = list(output.get("section_evidence") or [])
     required = set(

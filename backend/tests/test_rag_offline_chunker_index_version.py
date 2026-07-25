@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from rag.config.static_retrieval import ComponentConfig
 from rag.offline.builder import OfflineIndexBuilder
@@ -128,6 +129,16 @@ def _config(tmp_path: Path, *, chunker_name: str = "fixed_parent_child", parent_
 
 
 # 阅读注释（函数）：处理 测试 注册表 contains four chunkers 相关逻辑。
+def test_builder_validates_source_before_scope_enrichment(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    malformed = [dict(item) for item in SAMPLE_RECORDS]
+    malformed[0]["file_id"] = 123  # previously coerced to str before canonical validation
+    _write_jsonl(Path(config.source.path), malformed)
+
+    with pytest.raises(ValidationError):
+        OfflineIndexBuilder(project_root=tmp_path).build(config)
+
+
 def test_registry_contains_four_chunkers() -> None:
     """处理 测试 注册表 contains four chunkers 相关逻辑。
 

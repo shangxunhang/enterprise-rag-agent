@@ -238,7 +238,7 @@ def test_missing_required_section_assessment_falls_back_to_document_status() -> 
     assert result.semantic_evidence_sufficient is False
 
 
-def test_not_assessed_legacy_evidence_falls_back_to_evidence_availability() -> None:
+def test_not_assessed_evidence_does_not_fall_back_to_availability() -> None:
     result = DocumentAssembler().assemble(
         DocumentAssemblyRequestSchema(
             task_id="task_1",
@@ -259,7 +259,8 @@ def test_not_assessed_legacy_evidence_falls_back_to_evidence_availability() -> N
     )
 
     assert result.evidence_available is True
-    assert result.semantic_evidence_sufficient is True
+    assert result.semantic_evidence_sufficient is False
+    assert result.evidence_requirements_satisfied is False
 
 
 def test_document_assembly_contracts_are_available_from_compatibility_exports() -> None:

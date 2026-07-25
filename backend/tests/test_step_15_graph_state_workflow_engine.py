@@ -4,9 +4,12 @@
 # =============================================================================
 from __future__ import annotations
 
+import json
+
 from agent.agent_registry import AgentRegistry
 from agent.base_agent import BaseAgent
 from core.runtime.execution_control import current_execution_control
+from data_capture.data_capture_recorder import JsonlDataCaptureRecorder
 from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateApplier, GraphStateProjector
 from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
@@ -169,6 +172,60 @@ def _registry() -> AgentRegistry:
 
 
 # 阅读注释（函数）：处理 测试 legacy Agent executes on copy and only delta commit mutates 状态 相关逻辑。
+def test_routing_cycle_production_path_has_canonical_non_unknown_failure_category() -> None:
+    class _LoopAgent(BaseAgent):
+        agent_name = "LoopAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            return AgentResultSchema(
+                result_id="loop",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="loop",
+                result={},
+            )
+
+    registry = AgentRegistry()
+    registry.register(_LoopAgent())
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_cycle",
+        workflow_name="cycle",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="loop_a",
+                step_name="loop_a",
+                step_type="agent",
+                target_name="LoopAgent",
+                on_success="loop_b",
+                order=1,
+            ),
+            WorkflowStepSchema(
+                step_id="loop_b",
+                step_name="loop_b",
+                step_type="agent",
+                target_name="LoopAgent",
+                on_success="loop_a",
+                order=2,
+            ),
+        ],
+        created_at=NOW,
+    )
+
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.FAILED
+    assert execution.error is not None
+    assert execution.error.error_code == "WORKFLOW_ROUTING_CYCLE"
+    assert execution.error.failure_category.value == "configuration"
+    assert execution.error.retryable is False
+
+
 def test_legacy_agent_executes_on_copy_and_only_delta_commit_mutates_state() -> None:
     """处理 测试 legacy Agent executes on copy and only delta commit mutates 状态 相关逻辑。
 
@@ -516,6 +573,181 @@ def test_retryable_node_retries_without_committing_failed_attempt() -> None:
     assert execution.node_outputs[0].metadata["commit_decision"] == "success_commit"
 
 
+def test_candidate_external_commit_requires_success_and_preserves_attempt_provenance(
+    tmp_path,
+) -> None:
+    recorder = JsonlDataCaptureRecorder(output_dir=tmp_path / "captures")
+
+    class _CaptureSuccessAgent(BaseAgent):
+        agent_name = "CaptureSuccessAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            recorder.record(
+                capture_type="eval_samples",
+                capture_stage="candidate",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                user_input="success-candidate",
+            )
+            return AgentResultSchema(
+                result_id="capture_success",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="capture",
+                result={},
+            )
+
+    registry = AgentRegistry()
+    registry.register(_CaptureSuccessAgent())
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_capture_success",
+        workflow_name="capture success",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="capture_success",
+                step_name="capture_success",
+                step_type="agent",
+                target_name="CaptureSuccessAgent",
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.SUCCESS
+    path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    attempt = rows[0]["metadata"]["execution_attempt"]
+    assert attempt["external_commit_policy"] == "attempt_scoped_deferred_v1"
+    assert attempt["requires_attempt_success"] is True
+    assert attempt["execution_id"] == execution.node_outputs[0].metadata["execution_control"]["execution_id"]
+
+
+def test_failed_attempt_discards_candidate_even_before_timeout(tmp_path) -> None:
+    recorder = JsonlDataCaptureRecorder(output_dir=tmp_path / "captures")
+
+    class _CaptureFailedAgent(BaseAgent):
+        agent_name = "CaptureFailedAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            recorder.record(
+                capture_type="eval_samples",
+                capture_stage="candidate",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                user_input="must-discard",
+            )
+            return AgentResultSchema(
+                result_id="capture_failed",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.FAILED,
+                result_type="capture",
+                result={},
+            )
+
+    registry = AgentRegistry()
+    registry.register(_CaptureFailedAgent())
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_capture_failed",
+        workflow_name="capture failed",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="capture_failed",
+                step_name="capture_failed",
+                step_type="agent",
+                target_name="CaptureFailedAgent",
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.FAILED
+    path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
+    assert not path.exists()
+
+
+def test_retry_discards_previous_attempt_candidate_and_commits_only_success(tmp_path) -> None:
+    recorder = JsonlDataCaptureRecorder(output_dir=tmp_path / "captures")
+
+    class _CaptureRetryAgent(BaseAgent):
+        agent_name = "CaptureRetryAgent"
+        agent_type = "sub_agent"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, shared_state) -> AgentResultSchema:
+            self.calls += 1
+            recorder.record(
+                capture_type="eval_samples",
+                capture_stage="candidate",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                user_input=f"attempt-{self.calls}",
+            )
+            return AgentResultSchema(
+                result_id=f"capture_retry_{self.calls}",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=(
+                    ExecutionStatus.RETRYABLE_FAILED
+                    if self.calls == 1
+                    else ExecutionStatus.SUCCESS
+                ),
+                result_type="capture",
+                result={},
+            )
+
+    agent = _CaptureRetryAgent()
+    registry = AgentRegistry()
+    registry.register(agent)
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_capture_retry",
+        workflow_name="capture retry",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="capture_retry",
+                step_name="capture_retry",
+                step_type="agent",
+                target_name="CaptureRetryAgent",
+                max_retries=1,
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+
+    execution = LangGraphWorkflowEngine(registry).execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.SUCCESS
+    assert agent.calls == 2
+    path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [row["user_input"] for row in rows] == ["attempt-2"]
+
+
 # 阅读注释（函数）：处理 测试 timeout returns structured failure and late 状态 is not committed 相关逻辑。
 def test_timeout_returns_structured_failure_and_late_state_is_not_committed() -> None:
     """处理 测试 timeout returns structured failure and late 状态 is not committed 相关逻辑。
@@ -593,6 +825,195 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     assert execution.node_outputs[0].metadata["commit_decision"] == "failure_discarded"
     assert engine.wait_for_idle(timeout_seconds=0.5)
     assert state.final_result is None
+    assert error.failure_category.value == "timeout"
+    assert error.retryable is False
+    assert execution.metadata["retry_count"] == 0
+    assert execution.node_outputs[0].metadata["timeout_retry_policy"] == "workflow_node_deadline_terminal_v1"
+
+
+def test_near_deadline_outcome_never_changes_timeout_failure_semantics() -> None:
+    """Scheduling may decide success-vs-timeout, but never timeout taxonomy/retry semantics."""
+
+    import time
+
+    class _BoundaryAgent(BaseAgent):
+        agent_name = "BoundaryAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            time.sleep(0.005)
+            return AgentResultSchema(
+                result_id="boundary",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="boundary",
+                result={},
+            )
+
+    observed_timeout = False
+    for _ in range(30):
+        registry = AgentRegistry()
+        registry.register(_BoundaryAgent())
+        workflow = WorkflowDefinitionSchema(
+            workflow_id="wf_deadline_boundary",
+            workflow_name="deadline boundary",
+            task_type="test",
+            workflow_version="v1",
+            steps=[
+                WorkflowStepSchema(
+                    step_id="boundary",
+                    step_name="boundary",
+                    step_type="agent",
+                    target_name="BoundaryAgent",
+                    timeout_seconds=0.005,
+                    max_retries=2,
+                    order=1,
+                )
+            ],
+            created_at=NOW,
+        )
+        engine = LangGraphWorkflowEngine(registry)
+        execution = engine.execute(workflow, _state())
+        assert execution.status in {ExecutionStatus.SUCCESS, ExecutionStatus.FAILED}
+        assert execution.status != ExecutionStatus.RETRYABLE_FAILED
+        assert execution.metadata["retry_count"] == 0
+        if execution.status == ExecutionStatus.FAILED:
+            observed_timeout = True
+            error = execution.node_results[0].error
+            assert error is not None
+            assert error.error_code == "WORKFLOW_NODE_TIMEOUT"
+            assert error.failure_category.value == "timeout"
+            assert error.retryable is False
+            assert execution.node_outputs[0].metadata["timeout_retry_policy"] == "workflow_node_deadline_terminal_v1"
+        assert engine.wait_for_idle(timeout_seconds=0.5)
+    assert observed_timeout is True
+
+
+def test_timeout_aborts_candidate_registered_before_attempt_completion(tmp_path) -> None:
+    """A candidate created by a later-timed-out attempt never reaches durable storage."""
+
+    import threading
+    import time
+
+    recorder = JsonlDataCaptureRecorder(output_dir=tmp_path / "captures")
+    candidate_registered = threading.Event()
+
+    class _CaptureThenHangAgent(BaseAgent):
+        agent_name = "CaptureThenHangAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            recorder.record(
+                capture_type="eval_samples",
+                capture_stage="candidate",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                user_input="candidate-before-timeout",
+            )
+            candidate_registered.set()
+            time.sleep(0.08)
+            return AgentResultSchema(
+                result_id="late_capture_result",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="capture",
+                result={},
+            )
+
+    registry = AgentRegistry()
+    registry.register(_CaptureThenHangAgent())
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_capture_timeout",
+        workflow_name="capture timeout",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="capture_timeout",
+                step_name="capture_timeout",
+                step_type="agent",
+                target_name="CaptureThenHangAgent",
+                timeout_seconds=0.02,
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+    engine = LangGraphWorkflowEngine(registry)
+
+    execution = engine.execute(workflow, _state())
+
+    assert candidate_registered.is_set()
+    assert execution.status == ExecutionStatus.FAILED
+    assert engine.wait_for_idle(timeout_seconds=0.5)
+    candidate_path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
+    assert not candidate_path.exists()
+
+
+def test_timeout_blocks_candidate_written_after_deadline(tmp_path) -> None:
+    """A non-cooperative late worker loses commit authority before it can append."""
+
+    import time
+
+    recorder = JsonlDataCaptureRecorder(output_dir=tmp_path / "captures")
+
+    class _LateCaptureAgent(BaseAgent):
+        agent_name = "LateCaptureAgent"
+        agent_type = "sub_agent"
+
+        def run(self, shared_state) -> AgentResultSchema:
+            time.sleep(0.06)
+            recorder.record(
+                capture_type="eval_samples",
+                capture_stage="candidate",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                user_input="candidate-after-timeout",
+            )
+            return AgentResultSchema(
+                result_id="late_capture_result",
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                status=ExecutionStatus.SUCCESS,
+                result_type="capture",
+                result={},
+            )
+
+    registry = AgentRegistry()
+    registry.register(_LateCaptureAgent())
+    workflow = WorkflowDefinitionSchema(
+        workflow_id="wf_late_capture_timeout",
+        workflow_name="late capture timeout",
+        task_type="test",
+        workflow_version="v1",
+        steps=[
+            WorkflowStepSchema(
+                step_id="late_capture",
+                step_name="late_capture",
+                step_type="agent",
+                target_name="LateCaptureAgent",
+                timeout_seconds=0.01,
+                order=1,
+            )
+        ],
+        created_at=NOW,
+    )
+    engine = LangGraphWorkflowEngine(registry)
+
+    execution = engine.execute(workflow, _state())
+
+    assert execution.status == ExecutionStatus.FAILED
+    assert engine.wait_for_idle(timeout_seconds=0.5)
+    candidate_path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
+    assert not candidate_path.exists()
 
 
 def test_timeout_requests_cooperative_cancel_and_never_retries_live_worker() -> None:

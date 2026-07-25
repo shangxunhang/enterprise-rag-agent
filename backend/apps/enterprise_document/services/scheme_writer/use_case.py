@@ -10,7 +10,9 @@ from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.state_access import SharedStateWriter
 from apps.enterprise_document.quality.budget import WorkflowBudget, activate_workflow_budget
 from apps.enterprise_document.schemas.scheme_writer_schema import (
+    DeliverableFinalResultSchema,
     DocumentAssemblyRequestSchema,
+    RejectedDraftArtifactSchema,
     SchemeGenerationOptionsSchema,
     SchemeSectionSchema,
     SchemeWriterInputSchema,
@@ -21,7 +23,9 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
 from apps.enterprise_document.services.document_gate import evaluate_scheme_draft
 from schemas.agent import AgentResultSchema
 from schemas.common import ErrorSourceSchema, WarningSchema
+from schemas.failure import FailureCategory
 from schemas.status import ExecutionStatus
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.timing import MonotonicTimer, elapsed_ms
 from .capture_service import SchemeCaptureService
 from .document_assembler import DocumentAssembler
@@ -36,6 +40,28 @@ from .section_execution_coordinator import SectionExecutionCoordinator
 # 阅读注释（类）：封装 scheme 生成 use case，集中封装相关状态、依赖和行为。
 class SchemeGenerationUseCase:
     """封装 scheme 生成 use case，集中封装相关状态、依赖和行为。"""
+
+    @staticmethod
+    def _hard_gate_failure_policy(
+        hard_gate,
+        *,
+        evidence_requirements_satisfied: bool,
+    ) -> tuple[FailureCategory, bool]:
+        """Preserve the root failure category instead of flattening all gate failures."""
+
+        citation_contract_failed = any(
+            not bool(hard_gate.checks.get(check_name, True))
+            for check_name in (
+                "citation_marker_binding_consistent",
+                "citation_targets_valid",
+                "citation_grounding_verified",
+            )
+        )
+        if not evidence_requirements_satisfied:
+            return FailureCategory.EVIDENCE_INSUFFICIENT, False
+        if citation_contract_failed:
+            return FailureCategory.VALIDATION, False
+        return FailureCategory.BUSINESS_QUALITY, True
 
     def __init__(
         self,
@@ -117,6 +143,10 @@ class SchemeGenerationUseCase:
                 max_section_retries=project_input.generation_requirements.max_section_retries,
                 max_tokens_per_section=project_input.generation_requirements.max_tokens_per_section,
                 min_section_chars=project_input.generation_requirements.min_section_chars,
+            )
+            required_evidence_sections = list(
+                options.citation_required_sections
+                or (required_sections if options.need_citation else [])
             )
             document_id = f"document_{shared_state.run_id}"
             # 阶段 B：根据 required_sections 构建确定性的 DocumentPlan；当前不是 LLM 自主规划章节。
@@ -254,6 +284,8 @@ class SchemeGenerationUseCase:
                     rag_result.error_message if rag_result else "RAG tool is not configured",
                     node="evidence_retrieval",
                     retryable=True,
+                    failure_category=FailureCategory.AVAILABILITY,
+                    requires_human=True,
                     user_message="知识检索失败，文档生成任务已停止。",
                 )
                 state_writer.add_error(shared_state, error)
@@ -328,9 +360,8 @@ class SchemeGenerationUseCase:
                     section_evidence=list(section_evidence_bundles),
                     document_evidence_available=evidence_available,
                     document_assessment_status=assessment_status,
-                    citation_required_sections=list(
-                        options.citation_required_sections
-                    ),
+                    document_evidence_assessment=dict(evidence_assessment),
+                    citation_required_sections=required_evidence_sections,
                     created_at=started_at,
                     updated_at=self.runtime_support.now_iso(),
                 )
@@ -341,12 +372,16 @@ class SchemeGenerationUseCase:
             bindings = list(assembly.citation_bindings)
             known_chunk_ids = set(assembly.known_chunk_ids)
             semantic_evidence_sufficient = assembly.semantic_evidence_sufficient
+            evidence_requirements_satisfied = (
+                assembly.evidence_requirements_satisfied
+            )
             # 阶段 F：文档级硬门禁，检查章节完整性、引用约束、关键字段和输出 Schema。
             hard_gate = evaluate_scheme_draft(
                 draft,
                 citation_required=options.need_citation,
-                citation_required_sections=options.citation_required_sections,
+                citation_required_sections=required_evidence_sections,
                 retrieved_chunk_ids=known_chunk_ids,
+                canonical_citations=citations,
                 tool_failed=False,
                 key_fields_valid=bool(
                     project_input.task_id
@@ -355,7 +390,7 @@ class SchemeGenerationUseCase:
                     and required_sections
                 ),
                 output_schema_valid=bool(draft.full_text and draft.sections),
-                evidence_sufficient=semantic_evidence_sufficient,
+                evidence_sufficient=evidence_requirements_satisfied,
                 workflow_complete=True,
             )
             print(
@@ -375,11 +410,17 @@ class SchemeGenerationUseCase:
                 status = ExecutionStatus.SUCCESS
             output_error = None
             if not hard_gate.passed:
+                failure_category, retryable = self._hard_gate_failure_policy(
+                    hard_gate,
+                    evidence_requirements_satisfied=evidence_requirements_satisfied,
+                )
                 output_error = self.runtime_support.error(
                     "DOCUMENT_HARD_GATE_FAILED",
                     "; ".join(hard_gate.failures),
                     node="document_hard_gate",
-                    retryable=True,
+                    retryable=retryable,
+                    failure_category=failure_category,
+                    requires_human=True,
                     user_message="文档未通过强制质量校验，不能标记为成功。",
                 )
                 state_writer.add_error(shared_state, output_error)
@@ -398,12 +439,32 @@ class SchemeGenerationUseCase:
                 for message in hard_gate.warnings
             ]
 
+            rejected_artifact = (
+                RejectedDraftArtifactSchema(
+                    draft=draft,
+                    rejection_code="DOCUMENT_HARD_GATE_FAILED",
+                    rejection_reasons=list(hard_gate.failures),
+                    hard_gate=hard_gate,
+                )
+                if not hard_gate.passed
+                else None
+            )
+            deliverable_final_result = (
+                DeliverableFinalResultSchema(
+                    draft=draft,
+                    output_format=project_input.output_schema.output_format,
+                )
+                if hard_gate.passed
+                else None
+            )
             output = SchemeWriterOutputSchema(
                 task_id=shared_state.task_id,
                 run_id=shared_state.run_id,
                 status=status,
                 document_plan=document_plan,
-                scheme_draft=draft,
+                generated_draft=draft,
+                rejected_artifact=rejected_artifact,
+                deliverable_final_result=deliverable_final_result,
                 rag_context=rag_context,
                 retrieved_chunks=chunks,
                 citations=citations,
@@ -429,6 +490,12 @@ class SchemeGenerationUseCase:
                         if section.status == ExecutionStatus.PARTIAL_SUCCESS
                     ),
                     "semantic_gate_enabled": self.enable_semantic_gate,
+                    "semantic_evidence_sufficient": semantic_evidence_sufficient,
+                    "evidence_requirements_satisfied": evidence_requirements_satisfied,
+                    "section_evidence_requirements": [
+                        item.model_dump()
+                        for item in assembly.section_evidence_requirements
+                    ],
                 },
             )
             enriched_rag_output = {
@@ -444,7 +511,20 @@ class SchemeGenerationUseCase:
                 scheme_writer_output=output.model_dump(),
                 rag_tool_output=enriched_rag_output,
             )
-            state_writer.set_final_result(shared_state, output.model_dump())
+            state_writer.set_scheme_artifacts(
+                shared_state,
+                generated_draft=draft.model_dump(),
+                rejected_artifact=(
+                    rejected_artifact.model_dump()
+                    if rejected_artifact is not None
+                    else None
+                ),
+                deliverable_final_result=(
+                    deliverable_final_result.model_dump()
+                    if deliverable_final_result is not None
+                    else None
+                ),
+            )
             # 阶段 G：沉淀任务输入、检索证据、章节结果和质量信息，为评测及后训练数据构建提供原始记录。
             self.capture_service.capture(
                 shared_state, scheme_input, output, enriched_rag_output
@@ -460,7 +540,17 @@ class SchemeGenerationUseCase:
                 result_type="scheme_writer_output",
                 result={
                     "scheme_writer_output": output.model_dump(),
-                    "scheme_draft": draft.model_dump(),
+                    "generated_draft": draft.model_dump(),
+                    "rejected_artifact": (
+                        rejected_artifact.model_dump()
+                        if rejected_artifact is not None
+                        else None
+                    ),
+                    "deliverable_final_result": (
+                        deliverable_final_result.model_dump()
+                        if deliverable_final_result is not None
+                        else None
+                    ),
                 },
                 citations=citations,
                 error=output_error,
@@ -473,14 +563,23 @@ class SchemeGenerationUseCase:
                     "hard_gate_passed": hard_gate.passed,
                     "section_count": len(sections),
                     "citation_binding_count": len(bindings),
+                    "semantic_evidence_sufficient": semantic_evidence_sufficient,
+                    "evidence_requirements_satisfied": evidence_requirements_satisfied,
+                    "section_evidence_requirements": [
+                        item.model_dump()
+                        for item in assembly.section_evidence_requirements
+                    ],
                 },
             )
         except Exception as exc:
+            failure_category = classify_failure(exc)
+            retryable = RetryDecisionPolicy().should_retry(failure_category)
             error = self.runtime_support.error(
                 "SCHEME_WRITER_FAILED",
                 exc,
                 node=shared_state.current_step or self.agent_name,
-                retryable=False,
+                retryable=retryable,
+                failure_category=failure_category,
                 user_message="方案生成主链路发生错误。",
             )
             state_writer.add_error(shared_state, error)

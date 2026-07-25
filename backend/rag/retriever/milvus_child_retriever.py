@@ -169,6 +169,7 @@ class MilvusChildRetriever:
         embedding_device: str = "cuda",
         embedding_batch_size: int = 1,
         embedding_version: str = DEFAULT_EMBEDDING_VERSION,
+        embedding_backend: Any | None = None,
         hash_embedding: bool = False,
         hash_dim: int = 768,
         output_fields: Optional[Sequence[str]] = None,
@@ -204,6 +205,7 @@ class MilvusChildRetriever:
         self.embedding_device = embedding_device
         self.embedding_batch_size = embedding_batch_size
         self.embedding_version = embedding_version
+        self.embedding_backend = embedding_backend
         self.hash_embedding = hash_embedding
         self.hash_dim = int(hash_dim)
         self.output_fields = list(output_fields or DEFAULT_CHILD_OUTPUT_FIELDS)
@@ -239,6 +241,11 @@ class MilvusChildRetriever:
             raise ValueError("query cannot be empty")
         if self.hash_embedding:
             return encode_query_with_hash(query, dim=self.hash_dim)
+        if self.embedding_backend is not None:
+            return np.asarray(
+                self.embedding_backend.encode_query(query),
+                dtype=np.float32,
+            ).reshape(-1)
         if not self.embedding_model:
             raise ValueError("embedding_model is required unless hash_embedding=True")
         return encode_query_with_model(
@@ -320,6 +327,10 @@ class MilvusChildRetriever:
         阅读提示:
             主要直接调用：getattr, callable, close。
         """
-        close = getattr(self.client, "close", None)
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+        close = getattr(client, "close", None)
         if callable(close):
             close()
+        self.client = None

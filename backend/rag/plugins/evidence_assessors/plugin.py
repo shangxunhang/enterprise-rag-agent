@@ -85,6 +85,23 @@ class CRAGEvidenceAssessorPlugin:
             runtime_context=runtime_context,
         )
         report = report_object.to_dict()
+        method = str(report.get("method") or "unknown")
+        raw_item_judgements = list(report.get("item_judgements") or [])
+        item_fallback_used = any(
+            bool((item or {}).get("fallback_used"))
+            for item in raw_item_judgements
+        )
+        if method == "llm" and not item_fallback_used:
+            verification_mode = "llm_verified"
+        elif method == "deterministic_fallback" and not self.use_llm:
+            verification_mode = "deterministic_primary"
+        elif method == "deterministic_fallback" or item_fallback_used:
+            verification_mode = "degraded_deterministic_fallback"
+        else:
+            verification_mode = "unavailable"
+        quality_mode_degraded = verification_mode == "degraded_deterministic_fallback"
+        report["verification_mode"] = verification_mode
+        report["quality_mode_degraded"] = quality_mode_degraded
         item_judgements = self._item_judgements(report)
         confidence = float(report.get("retrieval_confidence") or 0.0)
         relevant_count = self._relevant_count(report)
@@ -116,6 +133,8 @@ class CRAGEvidenceAssessorPlugin:
             metadata={
                 "relevant_chunk_count": relevant_count,
                 "observed_evidence_count": len(results or []),
+                "verification_mode": verification_mode,
+                "quality_mode_degraded": quality_mode_degraded,
             },
         )
 

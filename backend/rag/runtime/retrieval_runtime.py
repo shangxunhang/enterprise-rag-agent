@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from rag.common.coercion import split_csv
 from rag.runtime.parent_child_runtime_factory import ParentChildRuntimeFactory
@@ -59,7 +59,7 @@ class RetrievalRuntimeConfig:
     db_file: str = str(PARENT_CHILD_MILVUS_DB_FILE)
     capture_output: str = "data/processed/runs/rag_runs.jsonl"
 
-    use_active_index_manifest: bool = True
+    index_source_mode: Literal["manifest", "legacy"] = "manifest"
     active_index_pointer: str = "data/processed/indexes/active_index.json"
     verify_active_index_manifest_hash: bool = True
     verify_active_index_artifacts: bool = False
@@ -138,7 +138,7 @@ class RetrievalRuntime:
         return cls(RetrievalRuntimeConfig(), project_root=project_root)
 
     def _pointer_hash(self) -> str | None:
-        if not self._base_config.use_active_index_manifest:
+        if self._base_config.index_source_mode == "legacy":
             return None
         from rag.offline.manifest import sha256_file
 

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, create_model, model_validator
+from pydantic.fields import PydanticUndefined
 
 from schemas.common import SchemaBase
 
@@ -16,6 +17,8 @@ from schemas.common import SchemaBase
 # 阅读注释（类）：封装 department group Schema，定义跨模块传递的数据结构与字段约束。
 class DepartmentGroupSchema(SchemaBase):
     """封装 department group Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     group_name: str
     department_count: int
     approximate_staff_per_department: Optional[int] = None
@@ -26,6 +29,8 @@ class DepartmentGroupSchema(SchemaBase):
 # 阅读注释（类）：封装 hardware resource Schema，定义跨模块传递的数据结构与字段约束。
 class HardwareResourceSchema(SchemaBase):
     """封装 hardware resource Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     resource_type: str
     device_model: str
     server_count: int
@@ -39,6 +44,8 @@ class HardwareResourceSchema(SchemaBase):
 # 阅读注释（类）：封装 source material Schema，定义跨模块传递的数据结构与字段约束。
 class SourceMaterialSchema(SchemaBase):
     """封装 source material Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     material_type: str
     material_name: Optional[str] = None
     status: str = "unknown"
@@ -51,6 +58,8 @@ class SourceMaterialSchema(SchemaBase):
 # 阅读注释（类）：封装 manual boundary Schema，定义跨模块传递的数据结构与字段约束。
 class ManualBoundarySchema(SchemaBase):
     """封装 manual boundary Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     item: str
     handled_by: str = "human"
     description: Optional[str] = None
@@ -59,6 +68,8 @@ class ManualBoundarySchema(SchemaBase):
 # 阅读注释（类）：封装 生成 requirements Schema，定义跨模块传递的数据结构与字段约束。
 class GenerationRequirementsSchema(SchemaBase):
     """封装 生成 requirements Schema，定义跨模块传递的数据结构与字段约束。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     required_sections: List[str] = Field(default_factory=list)
     need_citation: bool = True
     citation_required_sections: List[str] = Field(default_factory=list)
@@ -76,6 +87,8 @@ class GenerationRequirementsSchema(SchemaBase):
 # 阅读注释（类）：封装 输出 Schema definition，集中封装相关状态、依赖和行为。
 class OutputSchemaDefinition(SchemaBase):
     """封装 输出 Schema definition，集中封装相关状态、依赖和行为。"""
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
     document_title: Optional[str] = None
     output_format: str = "markdown"
     required_sections: List[str] = Field(default_factory=list)
@@ -92,6 +105,8 @@ class ProjectInputSchema(SchemaBase):
     are enterprise-document domain extensions. No agent is allowed to invent a
     fallback ProjectInput when this object is missing.
     """
+
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     schema_version: str = "project_input_v1"
 
@@ -164,6 +179,10 @@ class ProjectInputSchema(SchemaBase):
             output_sections = list(generation_sections)
         elif output_sections and not generation_sections:
             generation_sections = list(output_sections)
+        if not generation_sections:
+            raise ValueError(
+                "ProjectInput requires at least one required_sections entry"
+            )
 
         citation_sections = [
             str(item).strip()
@@ -192,3 +211,28 @@ class ProjectInputSchema(SchemaBase):
             )
 
         return self
+
+
+def _build_demo_seed_schema():
+    """Build the explicit strict contract accepted by the CLI demo adapter."""
+
+    seed_fields: dict[str, tuple[Any, Any]] = {}
+    for field_name, field_info in ProjectInputSchema.model_fields.items():
+        default = (
+            None
+            if field_info.default is PydanticUndefined
+            else field_info.default
+        )
+        seed_fields[field_name] = (field_info.annotation, default)
+    return create_model(
+        "ProjectInputDemoSeedV1Schema",
+        __config__=ConfigDict(
+            extra="forbid",
+            strict=True,
+            arbitrary_types_allowed=True,
+        ),
+        **seed_fields,
+    )
+
+
+ProjectInputDemoSeedV1Schema = _build_demo_seed_schema()

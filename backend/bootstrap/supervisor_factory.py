@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent.agent_registry import AgentRegistry
+from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema
 from agent.supervisor_agent import SupervisorAgent
 from apps.enterprise_document.agents.project_input_normalizer_agent import (
@@ -17,7 +18,9 @@ from bootstrap.observability_factory import ObservabilityFactory
 from bootstrap.rag_service_factory import RAGServiceFactory
 from bootstrap.runtime_options import RuntimeOptions
 from core.config import AppSettings
+from core.runtime.side_effects import JsonlSideEffectCommitStore
 from prompt_manager.prompt_manager import PromptManager
+from schemas.rag import RetrievalAccessScopeSchema
 from task.task_manager import JsonlTaskManager
 
 
@@ -47,8 +50,29 @@ class SupervisorFactory:
         settings: AppSettings,
         options: RuntimeOptions,
         allow_legacy_unscoped_rag: bool = False,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
     ) -> SupervisorAgent:
         """Assemble one isolated runtime for a workflow execution."""
+        if (
+            retrieval_access_scope is not None
+            and not isinstance(
+                retrieval_access_scope,
+                RetrievalAccessScopeSchema,
+            )
+        ):
+            raise TypeError(
+                "retrieval_access_scope must be a trusted "
+                "RetrievalAccessScopeSchema instance"
+            )
+        if (
+            options.use_real_rag
+            and not allow_legacy_unscoped_rag
+            and retrieval_access_scope is None
+        ):
+            raise ValueError(
+                "trusted retrieval_access_scope is required for production "
+                "secure retrieval"
+            )
         trace, capture = self.observability_factory.build(
             settings, runs_dir, captures_dir
         )
@@ -92,6 +116,7 @@ class SupervisorFactory:
                 generation_checker=agent_quality.generation_checker,
                 repair_strategy=agent_quality.repair_strategy,
                 generation_quality_metadata=agent_quality.metadata,
+                retrieval_access_scope=retrieval_access_scope,
             )
         )
         return SupervisorAgent(
@@ -102,6 +127,13 @@ class SupervisorFactory:
             model_gateway=model_gateway,
             supervisor_model_name=settings.supervisor_model_name,
             enable_llm_routing=settings.enable_llm_routing,
+            workflow_engine=LangGraphWorkflowEngine(
+                agent_registry=agents,
+                run_trace_recorder=trace,
+                side_effect_commit_store=JsonlSideEffectCommitStore(
+                    runs_dir / "side_effect_commits.jsonl"
+                ),
+            ),
             # Resources are listed in creation/dependency order. Supervisor
             # closes them in reverse: RAG first, then its ModelGateway.
             owned_resources=(model_gateway, rag_service),

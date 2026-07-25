@@ -10,6 +10,22 @@ from typing import Any, Dict, Optional
 
 from core.runtime.clock import Clock, SystemClock
 from schemas.common import ErrorSchema, ErrorSourceSchema
+from schemas.failure import FailureCategory
+
+
+# Only codes whose semantics are stable independent of the underlying exception
+# belong here. Generic wrapper codes (for example MODEL_GATEWAY_CALL_FAILED)
+# must supply an explicit category from the closest fact source.
+FIXED_FAILURE_CATEGORY_BY_ERROR_CODE: dict[str, FailureCategory] = {
+    "WORKFLOW_ROUTING_CYCLE": FailureCategory.CONFIGURATION,
+    "WORKFLOW_INCOMPLETE": FailureCategory.VALIDATION,
+    "WORKFLOW_NODE_CANCELLED": FailureCategory.CANCELLED,
+    "STATE_WRITE_CONTRACT_VIOLATION": FailureCategory.VALIDATION,
+    "WORKFLOW_NODE_NO_RESULT": FailureCategory.TRANSIENT,
+    "WORKFLOW_NODE_TIMEOUT": FailureCategory.TIMEOUT,
+    "SECTION_HARD_GATE_FAILED": FailureCategory.BUSINESS_QUALITY,
+    "RAG_TOOL_FAILED": FailureCategory.AVAILABILITY,
+}
 
 
 # 阅读注释（类）：封装 错误 工厂，负责根据配置装配并返回运行实例。
@@ -41,6 +57,9 @@ class ErrorFactory:
         user_visible_message: Optional[str] = None,
         recoverable: bool = False,
         retryable: bool = False,
+        failure_category: FailureCategory | str | None = None,
+        requires_human: bool = False,
+        requires_new_input: bool = False,
         failed_node: Optional[str] = None,
         agent_name: Optional[str] = None,
         tool_name: Optional[str] = None,
@@ -75,6 +94,23 @@ class ErrorFactory:
         阅读提示:
             主要直接调用：ErrorSchema, ErrorSourceSchema, dict, self.clock.now_iso。
         """
+        expected_category = FIXED_FAILURE_CATEGORY_BY_ERROR_CODE.get(error_code)
+        if failure_category is None:
+            if expected_category is None:
+                raise ValueError(
+                    "failure_category must be explicit for unregistered error_code: "
+                    f"{error_code}"
+                )
+            normalized_category = expected_category
+        else:
+            normalized_category = FailureCategory(failure_category)
+
+        if expected_category is not None and normalized_category != expected_category:
+            raise ValueError(
+                f"error_code={error_code} requires failure_category="
+                f"{expected_category.value}, got {normalized_category.value}"
+            )
+
         return ErrorSchema(
             error_code=error_code,
             error_type=error_type,
@@ -82,6 +118,9 @@ class ErrorFactory:
             user_visible_message=user_visible_message,
             recoverable=recoverable,
             retryable=retryable,
+            failure_category=normalized_category,
+            requires_human=requires_human,
+            requires_new_input=requires_new_input,
             failed_node=failed_node,
             source=ErrorSourceSchema(
                 component=component,

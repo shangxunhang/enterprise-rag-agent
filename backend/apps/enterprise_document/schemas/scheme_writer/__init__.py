@@ -13,10 +13,18 @@ from .evaluation import (
     TruncationCheckSchema,
 )
 from .document import SchemeDraftSchema, SchemeSectionSchema
-from .output import SchemeWriterOutputSchema
+from .output import (
+    DeliverableFinalResultSchema,
+    RejectedDraftArtifactSchema,
+    SchemeWriterOutputSchema,
+)
 from .evidence import SectionEvidenceBundleSchema
 from .section_execution import SectionExecutionRequestSchema, SectionExecutionResultSchema
-from .document_assembly import DocumentAssemblyRequestSchema, DocumentAssemblyResultSchema
+from .document_assembly import (
+    DocumentAssemblyRequestSchema,
+    DocumentAssemblyResultSchema,
+    SectionEvidenceRequirementSchema,
+)
 
 __all__ = [
     "SchemeGenerationOptionsSchema",
@@ -31,9 +39,12 @@ __all__ = [
     "HardGateResultSchema",
     "SchemeDraftSchema",
     "SchemeWriterOutputSchema",
+    "RejectedDraftArtifactSchema",
+    "DeliverableFinalResultSchema",
     "SectionEvidenceBundleSchema",
     "SectionExecutionRequestSchema",
     "SectionExecutionResultSchema",
     "DocumentAssemblyRequestSchema",
     "DocumentAssemblyResultSchema",
+    "SectionEvidenceRequirementSchema",
 ]

@@ -285,7 +285,7 @@ def main() -> int:
         },
     )
 
-    sections = list((summary.get("scheme_draft") or {}).get("sections") or [])
+    sections = list((summary.get("generated_draft") or {}).get("sections") or [])
     packages = [
         ((section.get("input") or {}).get("llm_context_package") or {})
         for section in sections

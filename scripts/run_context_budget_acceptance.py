@@ -200,7 +200,7 @@ def main() -> int:
             "task_id": "task_context_budget_failure",
             "run_id": "run_context_budget_failure",
             "status": "failed",
-            "scheme_draft": {"full_text": ""},
+            "generated_draft": {"full_text": ""},
             "scheme_writer_output": {},
             "supervisor_result": {
                 "status": "failed",
@@ -274,12 +274,14 @@ def main() -> int:
             "passed": bool(
                 persisted.get("validation_error")
                 and Path(persisted["report_path"]).is_file()
-                and Path(persisted["answer_path"]).is_file()
+                and persisted["deliverable_path"] is None
+                and persisted["rejected_draft_path"] is None
             ),
             "details": {
                 "validation_error": persisted.get("validation_error"),
                 "report_path": persisted["report_path"],
-                "answer_path": persisted["answer_path"],
+                "deliverable_path": persisted["deliverable_path"],
+                "rejected_draft_path": persisted["rejected_draft_path"],
             },
         },
     ]

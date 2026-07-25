@@ -106,6 +106,26 @@ class TextEmbedder:
 
         return embedding.reshape(1, -1).astype("float32")
 
+    def close(self) -> None:
+        """Release the owned sentence-transformer model and CUDA cache."""
+        model = getattr(self, "model", None)
+        if model is None:
+            return
+        try:
+            model.to("cpu")
+        except Exception:
+            pass
+        self.model = None
+        try:
+            import gc
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
      embedder = TextEmbedder(

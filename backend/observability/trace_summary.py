@@ -181,6 +181,7 @@ def model_request_summary(request: Any, model_name: str) -> Dict[str, Any]:
     prompt = str(getattr(request, "prompt", "") or "")
     system_prompt = str(getattr(request, "system_prompt", "") or "")
     extra = dict(getattr(request, "extra", {}) or {})
+    generation_params = dict(extra.get("generation_params") or {})
     return {
         "model_call_id": getattr(request, "model_call_id", None),
         "model_name": model_name,
@@ -193,6 +194,8 @@ def model_request_summary(request: Any, model_name: str) -> Dict[str, Any]:
         "message_count": len(getattr(request, "messages", []) or []),
         "temperature": getattr(request, "temperature", None),
         "max_tokens": getattr(request, "max_tokens", None),
+        "top_p": generation_params.get("top_p"),
+        "do_sample": generation_params.get("do_sample"),
         "prompt_id": extra.get("prompt_id"),
         "prompt_version": extra.get("prompt_version"),
         "section_id": extra.get("section_id"),

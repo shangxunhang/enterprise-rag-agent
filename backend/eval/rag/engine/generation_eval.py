@@ -30,6 +30,8 @@ RAG 生成答案评估模块。
 
 from typing import List, Optional, Set
 
+from rag.schema.eval_schema import EvalSample, GenerationEvalResult, RetrievalResult
+
 
 # 阅读注释（函数）：计算 answer keyword hit。
 def compute_answer_keyword_hit(

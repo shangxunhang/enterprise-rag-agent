@@ -52,6 +52,11 @@ class SharedStateSchema(SchemaBase):
 
     status: ExecutionStatus = ExecutionStatus.PENDING
     current_step: Optional[str] = None
+    generated_draft: Optional[Dict[str, Any]] = None
+    rejected_artifact: Optional[Dict[str, Any]] = None
+    deliverable_final_result: Optional[Dict[str, Any]] = None
+    # Generic workflow compatibility only. Enterprise document generation must
+    # use the three explicit artifact lifecycle fields above.
     final_result: Optional[Dict[str, Any]] = None
 
     state_version: int = 2

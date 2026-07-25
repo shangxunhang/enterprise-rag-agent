@@ -17,8 +17,17 @@ import numpy as np
 from rag.config.static_retrieval import ComponentConfig
 from rag.embed.embedding_service import encode_texts_with_hash, encode_texts_with_model
 from rag.schema.VectorIndexRecord_Schema import build_vector_index_record_v2
+from rag.schema.cleaned_text_unit import (
+    CleanedTextUnitSchema,
+    migrate_legacy_cleaned_text_unit_payload,
+)
 from rag.offline.config import OfflineIndexBuildConfig, OfflineIndexConfigLoader
-from rag.offline.manifest import ActiveIndexPointer, ArtifactRecord, IndexManifest, milvus_semantic_fingerprint, sha256_file
+from rag.offline.manifest import (
+    ArtifactRecord,
+    IndexManifest,
+    milvus_semantic_fingerprint,
+    sha256_file,
+)
 from rag.registry.default_registrations import build_default_component_registry
 from rag.store.parent_chunk_store import load_jsonl_dicts
 
@@ -237,19 +246,24 @@ class OfflineIndexBuilder:
             raise ValueError(f"incomplete non-empty index directory exists: {output_dir}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        records = load_jsonl_dicts(source_path)
-        # Stamp the retrieval access scope before chunking so the same boundary
-        # is preserved through parent/child artifacts, BM25 and Milvus records.
-        # Explicit per-record values win over dataset defaults.
+        source_records = load_jsonl_dicts(source_path)
+        records: list[dict[str, Any]] = []
+        # Legacy compatibility is explicit and precedes the canonical boundary.
+        # After that boundary, RAG-owned scope enrichment may add values that are
+        # not facts produced by the data-platform record itself.
+        for source_record in source_records:
+            migrated = migrate_legacy_cleaned_text_unit_payload(source_record)
+            CleanedTextUnitSchema.model_validate(migrated)
+            records.append(migrated)
+
+        # Stamp retrieval access scope only after the source payload has passed
+        # canonical validation. Explicit per-record values win over dataset
+        # defaults; malformed producer values cannot be silently coerced here.
         doc_scopes: dict[str, tuple[str, str]] = {}
         for record in records:
-            record["tenant_id"] = str(
-                record.get("tenant_id") or config.source.tenant_id or "default"
-            )
-            record["kb_id"] = str(
-                record.get("kb_id") or config.source.kb_id or "default"
-            )
-            record["file_id"] = str(
+            record["tenant_id"] = record.get("tenant_id") or config.source.tenant_id or "default"
+            record["kb_id"] = record.get("kb_id") or config.source.kb_id or "default"
+            record["file_id"] = (
                 record.get("file_id")
                 or record.get("source_name")
                 or record.get("doc_id")
@@ -494,14 +508,6 @@ class OfflineIndexBuilder:
             notes=config.notes,
         )
         manifest.write(manifest_path)
-
-        if config.outputs.update_active_pointer:
-            pointer_path = self.resolve(config.outputs.active_pointer)
-            ActiveIndexPointer(
-                index_version=index_version,
-                manifest_path=str(manifest_path),
-                manifest_sha256=sha256_file(manifest_path),
-            ).write(pointer_path)
 
         return OfflineIndexBuildResult(
             status="success",

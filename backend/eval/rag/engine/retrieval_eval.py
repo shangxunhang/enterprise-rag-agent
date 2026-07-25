@@ -42,6 +42,8 @@ RAG 检索结果评估模块。
 
 from typing import List, Set
 
+from rag.schema.eval_schema import EvalSample, RetrievalEvalResult, RetrievalResult
+
 
 # 阅读注释（函数）：获取 top k 结果集合。
 def _get_top_k_results(

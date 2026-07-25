@@ -20,8 +20,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from core.config import get_settings
 
-# RAG eval implementation has not been migrated yet. This import is intentionally
-# kept until backend/agent/legacy_simple_agent/evaluation is moved to backend/eval/rag.
 from eval.rag.capture.rag_eval_runner import RAGEvalRunner
 
 
@@ -99,6 +97,21 @@ def main() -> None:
         default=None,
         help="Report filename without extension.",
     )
+    parser.add_argument(
+        "--policy-decisions",
+        type=str,
+        default=None,
+        help=(
+            "Optional JSON mapping of capture record_id to accepted/rejected. "
+            "No quality threshold is inferred by the runner."
+        ),
+    )
+    parser.add_argument(
+        "--readiness-target",
+        choices=("training_ready", "eval_ready"),
+        default=None,
+        help="Promote externally accepted records to this readiness stage.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -118,12 +131,34 @@ def main() -> None:
     )
     report_name = args.report_name or f"rag_eval_report_{run_id}"
 
+    policy_decisions = None
+    if args.policy_decisions:
+        policy_path = Path(args.policy_decisions).expanduser().resolve()
+        payload = json.loads(policy_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("policy decisions file must contain one JSON object")
+        invalid = {
+            str(key): value
+            for key, value in payload.items()
+            if value not in {"accepted", "rejected"}
+        }
+        if invalid:
+            raise ValueError(
+                "policy decisions must be accepted/rejected: "
+                + json.dumps(invalid, ensure_ascii=False)
+            )
+        policy_decisions = {str(key): value for key, value in payload.items()}
+    if args.readiness_target and policy_decisions is None:
+        raise ValueError("--readiness-target requires --policy-decisions")
+
     runner = RAGEvalRunner()
     result = runner.evaluate_and_save(
         eval_samples_path=eval_samples_path,
         output_dir=output_dir,
         report_name=report_name,
         run_id=run_id,
+        policy_decisions=policy_decisions,
+        readiness_target=args.readiness_target,
     )
 
     report = result["report"]

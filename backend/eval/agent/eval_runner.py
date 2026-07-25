@@ -123,7 +123,7 @@ class EvalRunner:
         阅读提示:
             主要直接调用：run_summary.get, draft.get, item.get, all, sum, len, bool, self._file_exists。
         """
-        draft = run_summary.get("scheme_draft") or {}
+        draft = run_summary.get("generated_draft") or {}
         writer_output = run_summary.get("scheme_writer_output") or {}
         content = draft.get("full_text") or draft.get("content") or ""
         sections = draft.get("sections") or []

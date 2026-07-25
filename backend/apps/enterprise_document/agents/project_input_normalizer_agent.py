@@ -18,6 +18,7 @@ from apps.enterprise_document.services.project_input_normalization import (
     ProjectInputNormalizationUseCase,
 )
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.clock import Clock, SystemClock
 from schemas.agent import AgentResultSchema
 from schemas.status import ExecutionStatus
@@ -36,6 +37,7 @@ class ProjectInputNormalizerAgent(BaseAgent):
         *,
         clock: Clock | None = None,
         error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
     ) -> None:
         """初始化 ProjectInputNormalizerAgent，保存运行所需的依赖、配置或状态。
 
@@ -53,6 +55,7 @@ class ProjectInputNormalizerAgent(BaseAgent):
         self.clock = clock or SystemClock()
         self.use_case = use_case or ProjectInputNormalizationUseCase(clock=self.clock)
         self.error_factory = error_factory or ErrorFactory(self.clock)
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
 
     # 阅读注释（函数）：处理 now iso 相关逻辑。
     def _now_iso(self) -> str:
@@ -105,13 +108,16 @@ class ProjectInputNormalizerAgent(BaseAgent):
                 },
             )
         except Exception as exc:
+            failure_category = classify_failure(exc)
+            retryable = self.retry_policy.should_retry(failure_category)
             error = self.error_factory.create(
                 error_code="PROJECT_INPUT_NORMALIZATION_FAILED",
                 error_type=exc.__class__.__name__,
                 message=str(exc),
                 user_visible_message="项目输入不完整或格式不合法，无法启动文档生成流程。",
-                recoverable=True,
-                retryable=False,
+                recoverable=retryable,
+                retryable=retryable,
+                failure_category=failure_category,
                 failed_node=self.agent_name,
                 component=self.__class__.__name__,
                 agent_name=self.agent_name,
@@ -124,7 +130,11 @@ class ProjectInputNormalizerAgent(BaseAgent):
                 run_id=shared_state.run_id,
                 agent_name=self.agent_name,
                 agent_type=self.agent_type,
-                status=ExecutionStatus.FAILED,
+                status=(
+                    ExecutionStatus.RETRYABLE_FAILED
+                    if retryable
+                    else ExecutionStatus.FAILED
+                ),
                 result_type="project_input_normalization",
                 result={},
                 error=error,

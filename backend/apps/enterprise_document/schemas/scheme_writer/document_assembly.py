@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import List, Set
+from typing import Any, Dict, List, Literal, Set
 
 from pydantic import Field
 
@@ -37,10 +37,26 @@ class DocumentAssemblyRequestSchema(SchemaBase):
 
     document_evidence_available: bool = False
     document_assessment_status: str = "not_assessed"
+    document_evidence_assessment: Dict[str, Any] = Field(default_factory=dict)
     citation_required_sections: List[str] = Field(default_factory=list)
 
     created_at: str
     updated_at: str
+
+
+class SectionEvidenceRequirementSchema(SchemaBase):
+    """One section's independently evaluated evidence requirement."""
+
+    section_title: str
+    assessment_status: Literal[
+        "sufficient",
+        "insufficient",
+        "not_assessed",
+        "blocked",
+    ]
+    generation_blocked: bool = False
+    generation_block_reason: str | None = None
+    requirement_satisfied: bool = False
 
 
 class DocumentAssemblyResultSchema(SchemaBase):
@@ -55,3 +71,7 @@ class DocumentAssemblyResultSchema(SchemaBase):
     known_chunk_ids: Set[str] = Field(default_factory=set)
     evidence_available: bool = False
     semantic_evidence_sufficient: bool = False
+    evidence_requirements_satisfied: bool = False
+    section_evidence_requirements: List[SectionEvidenceRequirementSchema] = Field(
+        default_factory=list
+    )

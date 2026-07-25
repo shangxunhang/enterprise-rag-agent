@@ -13,6 +13,7 @@ from typing import Any, Dict
 from rag.evidence.contract import RAGEvidenceContractBuilder, RAGEvidenceContractReader
 from schemas.citation import CitationSchema
 from schemas.rag import (
+    EvidenceAssessmentStatus,
     RAGToolOutputSchema,
     RAGTraceSchema,
     RetrievedChunkSchema,
@@ -226,6 +227,11 @@ class FakeRAGTool(BaseTool):
                 "section_title": section_title,
             },
         )
+        # The fake corpus is intentionally authored to answer its fake query.
+        # Unlike the generic contract builder, this deterministic test adapter
+        # can make that semantic assertion explicitly.
+        evidence.assessment.status = EvidenceAssessmentStatus.SUFFICIENT
+        evidence.assessment.reason_codes = ["fake_fixture_semantically_sufficient"]
         rag_context, projected_chunks, projected_citations = (
             RAGEvidenceContractReader.projections(evidence)
         )

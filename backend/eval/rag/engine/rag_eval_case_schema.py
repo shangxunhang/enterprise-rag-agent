@@ -16,103 +16,21 @@ runner, DeepSeek-as-judge, or an internal evaluator.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-
-# 阅读注释（函数）：处理 safe 列表 相关逻辑。
-def _safe_list(value: Any) -> List[str]:
-    """处理 safe 列表 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        List[str]
-
-    阅读提示:
-        主要直接调用：isinstance, strip, str, value.strip, x.strip, value.split。
-    """
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(x).strip() for x in value if str(x).strip()]
-    if isinstance(value, tuple):
-        return [str(x).strip() for x in value if str(x).strip()]
-    if isinstance(value, str):
-        if not value.strip():
-            return []
-        # Accept both comma-separated strings and a single keyword/id.
-        if "," in value:
-            return [x.strip() for x in value.split(",") if x.strip()]
-        return [value.strip()]
-    return [str(value).strip()]
+from schemas.eval_schema import RAGEvalSampleSchema
 
 
-# 阅读注释（类）：封装 RAG 评测 case，集中封装相关状态、依赖和行为。
-@dataclass
-class RagEvalCase:
-    """One evaluation case for a RAG QA pipeline."""
-
-    case_id: str
-    query: str
-    reference_answer: str = ""
-    expected_doc_ids: List[str] = field(default_factory=list)
-    expected_parent_chunk_ids: List[str] = field(default_factory=list)
-    expected_child_chunk_ids: List[str] = field(default_factory=list)
-    expected_keywords: List[str] = field(default_factory=list)
-    answer_keywords: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    # 阅读注释（函数）：根据 字典 创建 RagEvalCase。
-    @classmethod
-    def from_dict(cls, item: Dict[str, Any], index: int = 0) -> "RagEvalCase":
-        """根据 字典 创建 RagEvalCase。
-
-        参数:
-            item: 数据项，具体约束请结合类型标注和调用方确认。
-            index: 索引，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            'RagEvalCase'
-
-        阅读提示:
-            主要直接调用：strip, str, item.get, ValueError, cls, _safe_list, isinstance。
-        """
-        query = str(item.get("query") or "").strip()
-        if not query:
-            raise ValueError(f"RagEvalCase[{index}] query cannot be empty")
-        case_id = str(item.get("case_id") or f"rag_case_{index + 1:04d}").strip()
-        return cls(
-            case_id=case_id,
-            query=query,
-            reference_answer=str(item.get("reference_answer") or ""),
-            expected_doc_ids=_safe_list(item.get("expected_doc_ids")),
-            expected_parent_chunk_ids=_safe_list(item.get("expected_parent_chunk_ids")),
-            expected_child_chunk_ids=_safe_list(item.get("expected_child_chunk_ids")),
-            expected_keywords=_safe_list(item.get("expected_keywords")),
-            answer_keywords=_safe_list(item.get("answer_keywords")),
-            metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
-        )
-
-    # 阅读注释（函数）：把 RagEvalCase 转换为 字典。
-    def to_dict(self) -> Dict[str, Any]:
-        """把 RagEvalCase 转换为 字典。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：asdict。
-        """
-        return asdict(self)
+# Legacy public name retained as a direct alias.  All RAG evaluation paths now
+# validate against one canonical sample contract in schemas.eval_schema.
+RagEvalCase = RAGEvalSampleSchema
 
 
 # 阅读注释（函数）：加载 RAG 评测 cases。
-def load_rag_eval_cases(path: str | Path) -> List[RagEvalCase]:
-    """Load eval cases from JSONL or JSON-list file."""
+def _load_raw_eval_payloads(path: str | Path) -> List[Dict[str, Any]]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"RAG eval case file not found: {p}")
@@ -128,7 +46,11 @@ def load_rag_eval_cases(path: str | Path) -> List[RagEvalCase]:
             raw = raw["cases"]
         if not isinstance(raw, list):
             raise ValueError("JSON eval case file must be a list or {'cases': [...]} object")
-        raw_items = [x for x in raw if isinstance(x, dict)]
+        raw_items = []
+        for index, item in enumerate(raw, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"JSON eval case item {index} must be an object")
+            raw_items.append(item)
     else:
         for line_no, line in enumerate(text.splitlines(), start=1):
             line = line.strip()
@@ -139,7 +61,58 @@ def load_rag_eval_cases(path: str | Path) -> List[RagEvalCase]:
                 raise ValueError(f"JSONL line {line_no} must be an object")
             raw_items.append(obj)
 
-    return [RagEvalCase.from_dict(item, index=i) for i, item in enumerate(raw_items)]
+    return raw_items
+
+
+def load_rag_eval_cases(path: str | Path) -> List[RagEvalCase]:
+    """Load only canonical eval samples without hidden migration/defaulting."""
+
+    return [
+        RagEvalCase.model_validate(item, strict=True)
+        for item in _load_raw_eval_payloads(path)
+    ]
+
+
+def migrate_legacy_rag_eval_case_v1_payload(
+    payload: Mapping[str, Any],
+    *,
+    fallback_sample_id: str,
+) -> Dict[str, Any]:
+    """Explicitly migrate the legacy ``case_id`` alias to ``sample_id``."""
+
+    if not isinstance(payload, Mapping):
+        raise TypeError("legacy RAG eval migration requires an object payload")
+    migrated = dict(payload)
+    legacy_case_id = migrated.pop("case_id", None)
+    explicit_sample_id = migrated.get("sample_id")
+    if (
+        legacy_case_id
+        and explicit_sample_id
+        and str(legacy_case_id) != str(explicit_sample_id)
+    ):
+        raise ValueError("case_id and sample_id must match when both are provided")
+    if "sample_id" not in migrated:
+        migrated["sample_id"] = (
+            legacy_case_id
+            if legacy_case_id is not None
+            else fallback_sample_id
+        )
+    return migrated
+
+
+def load_legacy_rag_eval_cases_v1(path: str | Path) -> List[RagEvalCase]:
+    """Load pre-canonical cases through the explicit v1 migration adapter."""
+
+    return [
+        RagEvalCase.model_validate(
+            migrate_legacy_rag_eval_case_v1_payload(
+                item,
+                fallback_sample_id=f"rag_case_{index:04d}",
+            ),
+            strict=True,
+        )
+        for index, item in enumerate(_load_raw_eval_payloads(path), start=1)
+    ]
 
 
 # 阅读注释（函数）：处理 索引 cases by 查询 相关逻辑。

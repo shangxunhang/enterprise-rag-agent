@@ -18,9 +18,11 @@ from contracts.observability import TraceSink
 from contracts.task_state import TaskStateManager
 from contracts.workflow_engine import WorkflowEnginePort
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from model_gateway.model_gateway import ModelGateway
 from observability.trace_context import TraceSpanHandle, activate_span
 from schemas.agent import AgentResultSchema
+from schemas.failure import FailureCategory
 from schemas.status import ExecutionStatus, is_failure
 from schemas.task import TaskSchema
 
@@ -42,6 +44,7 @@ class SupervisorAgent:
         enable_llm_routing: bool = True,
         workflow_engine: WorkflowEnginePort | None = None,
         owned_resources: Iterable[Any] | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
     ) -> None:
         self.catalog = WorkflowCatalog(workflows)
         self.model_gateway = model_gateway
@@ -60,6 +63,7 @@ class SupervisorAgent:
         self.lifecycle = TaskLifecycleService(task_manager)
         self.trace = WorkflowTraceService(run_trace_recorder)
         self.error_factory = ErrorFactory()
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
         self._owned_resources = tuple(owned_resources or ())
         self._resource_close_lock = threading.Lock()
         self._resource_close_requested = False
@@ -201,8 +205,9 @@ class SupervisorAgent:
                         error_code="WORKFLOW_INCOMPLETE",
                         error_type="WorkflowStateError",
                         message="Workflow 节点未完整结束。",
-                        recoverable=True,
-                        retryable=True,
+                        recoverable=False,
+                        retryable=False,
+                        failure_category=FailureCategory.VALIDATION,
                         failed_node=state.current_step,
                         component=self.agent_name,
                         agent_name=self.agent_name,
@@ -230,7 +235,9 @@ class SupervisorAgent:
                         ],
                         "shared_state": state.model_dump(),
                         "workflow_execution": execution.model_dump(),
-                        "final_output": state.final_result,
+                        "generated_draft": state.generated_draft,
+                        "rejected_artifact": state.rejected_artifact,
+                        "deliverable_final_result": state.deliverable_final_result,
                         "model_usage": model_usage,
                     },
                     error=final_error,
@@ -266,13 +273,16 @@ class SupervisorAgent:
                 return result
             except Exception as exc:
                 model_usage = self.model_usage_snapshot()
+                failure_category = classify_failure(exc)
+                retryable = self.retry_policy.should_retry(failure_category)
                 error = self.error_factory.create(
                     error_code="SUPERVISOR_EXECUTION_FAILED",
                     error_type=exc.__class__.__name__,
                     message=str(exc),
                     user_visible_message="任务主流程执行失败。",
-                    recoverable=True,
-                    retryable=False,
+                    recoverable=retryable,
+                    retryable=retryable,
+                    failure_category=failure_category,
                     failed_node=self.agent_name,
                     component=self.agent_name,
                     agent_name=self.agent_name,
@@ -284,7 +294,11 @@ class SupervisorAgent:
                     run_id=task.run_id,
                     agent_name=self.agent_name,
                     agent_type=self.agent_type,
-                    status=ExecutionStatus.FAILED,
+                    status=(
+                        ExecutionStatus.RETRYABLE_FAILED
+                        if retryable
+                        else ExecutionStatus.FAILED
+                    ),
                     result_type="workflow_result",
                     result={"model_usage": model_usage},
                     error=error,

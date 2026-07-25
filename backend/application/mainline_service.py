@@ -12,6 +12,10 @@ from typing import Any, Dict, Optional
 
 from application.run_workspace import RunWorkspace
 from application.task_factory import TaskFactory
+from apps.enterprise_document.schemas.project_input_schema import (
+    ProjectInputDemoSeedV1Schema,
+    ProjectInputSchema,
+)
 from apps.enterprise_document.workflows.scheme_generation import (
     build_scheme_generation_workflow,
 )
@@ -19,6 +23,7 @@ from bootstrap.runtime_options import RuntimeOptions
 from bootstrap.supervisor_factory import SupervisorFactory
 from core.config import AppSettings, get_settings
 from core.runtime.clock import Clock, SystemClock
+from schemas.rag import RetrievalAccessScopeSchema
 from task.task_manager import JsonlTaskManager
 
 
@@ -76,6 +81,7 @@ class MainlineApplicationService:
         enable_agent_self_rag: Optional[bool] = None,
         project_input: Optional[Dict[str, Any]] = None,
         allow_demo_defaults: bool = False,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
     ) -> Dict[str, Any]:
         """执行 MainlineApplicationService 的主流程。
 
@@ -99,13 +105,40 @@ class MainlineApplicationService:
         """
         # 阶段 1：解析运行配置，并为本次端到端执行生成稳定的 run_id/task_id。
         settings = settings or get_settings()
+        if (
+            retrieval_access_scope is not None
+            and not isinstance(
+                retrieval_access_scope,
+                RetrievalAccessScopeSchema,
+            )
+        ):
+            raise TypeError(
+                "retrieval_access_scope must be a trusted "
+                "RetrievalAccessScopeSchema instance"
+            )
         created_at = self.clock.now_iso()
         run_id = run_id or f"run_demo_{self._timestamp()}"
-        input_task_id = (
-            str((project_input or {}).get("task_id") or "").strip()
-            if project_input is not None
-            else ""
-        )
+        input_task_id = ""
+        if project_input is not None:
+            ingress_schema = (
+                ProjectInputDemoSeedV1Schema
+                if allow_demo_defaults
+                else ProjectInputSchema
+            )
+            validated_ingress = ingress_schema.model_validate(
+                project_input,
+                strict=True,
+            )
+            input_task_id = str(validated_ingress.task_id or "").strip()
+            if (
+                retrieval_access_scope is not None
+                and validated_ingress.tenant_id
+                != retrieval_access_scope.tenant_id
+            ):
+                raise ValueError(
+                    "ProjectInput tenant_id conflicts with authenticated "
+                    "retrieval tenant"
+                )
         if task_id is None:
             task_id = input_task_id or f"task_{run_id}"
         elif input_task_id and task_id != input_task_id:
@@ -143,6 +176,15 @@ class MainlineApplicationService:
             project_root,
             enable_agent_self_rag=enable_agent_self_rag,
         )
+        if (
+            options.use_real_rag
+            and not allow_demo_defaults
+            and retrieval_access_scope is None
+        ):
+            raise ValueError(
+                "trusted retrieval_access_scope is required for production "
+                "secure retrieval"
+            )
         # 阶段 6：通过工厂把 Workflow、Agent、Tool、RAG、Trace 等依赖注入 Supervisor。
         supervisor = self.supervisor_factory.build(
             workflow=workflow,
@@ -152,6 +194,7 @@ class MainlineApplicationService:
             settings=settings,
             options=options,
             allow_legacy_unscoped_rag=allow_demo_defaults,
+            retrieval_access_scope=retrieval_access_scope,
         )
         # 阶段 7：正式进入 Agent/Workflow 主链；无论成功、失败还是异常，都统一释放本次运行持有的资源。
         try:
@@ -191,7 +234,9 @@ class MainlineApplicationService:
         finally:
             supervisor.close()
 
-        scheme_draft: Dict[str, Any] = {}
+        generated_draft: Dict[str, Any] = {}
+        rejected_artifact: Dict[str, Any] | None = None
+        deliverable_final_result: Dict[str, Any] | None = None
         scheme_writer_output: Dict[str, Any] = {}
         for sub_result in result.result.get("sub_agent_results", []):
             if sub_result.get("agent_name") in {
@@ -199,7 +244,9 @@ class MainlineApplicationService:
                 "FakeSchemeWriterAgent",
             }:
                 payload = sub_result.get("result", {}) or {}
-                scheme_draft = payload.get("scheme_draft", {})
+                generated_draft = payload.get("generated_draft", {})
+                rejected_artifact = payload.get("rejected_artifact")
+                deliverable_final_result = payload.get("deliverable_final_result")
                 scheme_writer_output = payload.get("scheme_writer_output", {})
                 break
 
@@ -214,7 +261,9 @@ class MainlineApplicationService:
             "agent_name": result.agent_name,
             "result_type": result.result_type,
             "paths": workspace.paths(),
-            "scheme_draft": scheme_draft,
+            "generated_draft": generated_draft,
+            "rejected_artifact": rejected_artifact,
+            "deliverable_final_result": deliverable_final_result,
             "scheme_writer_output": scheme_writer_output,
             "model_usage": model_usage,
             "task_state": task_manager.get_task(task_id).model_dump(),

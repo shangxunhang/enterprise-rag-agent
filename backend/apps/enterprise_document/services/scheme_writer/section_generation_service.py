@@ -15,6 +15,7 @@ from apps.enterprise_document.schemas.table_agent_schema import StructuredFactSc
 from apps.enterprise_document.services.output_validation import detect_truncation
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSourceSchema, WarningSchema
+from schemas.failure import FailureCategory
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
 from schemas.status import ExecutionStatus
@@ -230,8 +231,14 @@ class SectionGenerationService:
                 "SECTION_MODEL_CALL_FAILED",
                 response.error_message or "model call failed",
                 node=section_id,
-                retryable=True,
+                retryable=False,
+                failure_category=FailureCategory.UNKNOWN,
                 user_message=f"‘{section_title}’章节生成失败。",
+            )
+            failure_status = (
+                ExecutionStatus.RETRYABLE_FAILED
+                if error.retryable
+                else ExecutionStatus.FAILED
             )
             return SchemeSectionSchema(
                 section_id=section_id,
@@ -244,7 +251,7 @@ class SectionGenerationService:
                 prompt=prompt_result.rendered_text,
                 model_output=response.content,
                 content=response.content,
-                status=ExecutionStatus.RETRYABLE_FAILED,
+                status=failure_status,
                 error=error,
                 truncation=detect_truncation("", response.finish_reason),
                 eval_result=SectionEvalSchema(
@@ -625,6 +632,11 @@ class SectionGenerationService:
                 flush=True,
             )
 
+        # Finalize visible citation markers from the canonical verified bindings.
+        # Optional sections may legitimately have no bindings, but they must not
+        # retain marker-like tokens that were inserted before grounding rejected
+        # the corresponding claim/evidence pair.
+        content = self.citation_service.reconcile_citation_markers(content, bindings)
         citation_ok = (not citation_required) or bool(bindings)
 
         # Citation repair / grounded regeneration may have replaced the prose.
@@ -657,6 +669,24 @@ class SectionGenerationService:
                 shared_state.generated_outputs[
                     final_semantic_response.model_call_id
                 ] = final_semantic_response.model_dump()
+
+        # Mandatory artifact integrity is narrower than the advisory semantic
+        # judge. Re-evaluate deterministic high-risk project facts against
+        # ProjectInput, then accept evidence support only for the exact claims
+        # that already have a grounding-verified CitationBinding.
+        final_fact_content = _CITATION_PATTERN.sub("", content)
+        grounded_claims = [
+            binding.claim_text
+            for binding in bindings
+            if bool((binding.metadata or {}).get("grounding_verified"))
+        ]
+        mandatory_project_fact_violations = (
+            self.advisory_service.mandatory_project_fact_violations(
+                final_fact_content,
+                project_input,
+                grounded_claims=grounded_claims,
+            )
+        )
 
         quality = self.quality_evaluator.evaluate(
             section_id=section_id,
@@ -737,6 +767,9 @@ class SectionGenerationService:
                     else None
                 ),
                 "project_fact_violations": deterministic_fact_candidates,
+                "mandatory_project_fact_violations": (
+                    mandatory_project_fact_violations
+                ),
                 "section_scope_violations": [
                     item.model_dump() for item in semantic_scope_issues
                 ],

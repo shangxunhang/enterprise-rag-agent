@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from model_gateway.model_contract import ModelSelection
+from schemas.failure import FailureCategory
 from schemas.model import ModelResponseSchema
 
 
@@ -23,6 +24,18 @@ class AvailabilityFailurePolicy:
         "KeyError",
         "OSError",
     }
+    _NON_AVAILABILITY_MARKERS = (
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+        "authentication",
+        "permission denied",
+        "bad request",
+        "invalid request",
+        "unknown model",
+    )
     _MESSAGE_MARKERS = (
         "out of memory",
         "cuda oom",
@@ -50,16 +63,39 @@ class AvailabilityFailurePolicy:
         if response.success:
             return False
         error_type = str(response.error.error_type if response.error else "")
-        if error_type in self._ERROR_TYPES:
+        failure_category = (
+            response.error.failure_category if response.error else FailureCategory.UNKNOWN
+        )
+        if failure_category in {
+            FailureCategory.CONFIGURATION,
+            FailureCategory.VALIDATION,
+            FailureCategory.BUSINESS_QUALITY,
+            FailureCategory.EVIDENCE_INSUFFICIENT,
+            FailureCategory.CANCELLED,
+        }:
+            return False
+        if failure_category in {
+            FailureCategory.AVAILABILITY,
+            FailureCategory.TIMEOUT,
+            FailureCategory.RESOURCE_EXHAUSTED,
+            FailureCategory.TRANSIENT,
+        }:
             return True
         message = str(
             response.error_message
             or (response.error.message if response.error else "")
             or ""
         ).lower()
+        # Inspect auth/config semantics before legacy exception-type fallbacks.
+        # In particular, urllib.error.HTTPError is also an OSError and old
+        # adapters may have persisted only the broader error type.
+        if any(marker in message for marker in self._NON_AVAILABILITY_MARKERS):
+            return False
+        if error_type in self._ERROR_TYPES:
+            return True
         if any(marker in message for marker in self._MESSAGE_MARKERS):
             return True
-        # Remote provider failures are availability failures when the provider
-        # did not produce a valid model response. Semantic/quality rejection is
-        # represented above the gateway and therefore never enters this branch.
-        return selection.profile.residency_policy.value == "remote"
+        # Remote residency alone is not evidence of an availability failure.
+        # Authentication/configuration/protocol errors must fail fast rather than
+        # silently changing the selected model.
+        return False

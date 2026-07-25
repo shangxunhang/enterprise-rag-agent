@@ -55,10 +55,16 @@ eval_runner.py 不应该直接写死具体的 FAISS、Milvus、Qdrant 或某个 
 import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+from typing import Any, List, Optional
+
+from rag.schema.eval_schema import EvalReport, EvalResult, EvalSample, RetrievalResult
+from eval.rag.engine.rag_eval_case_schema import (
+    migrate_legacy_rag_eval_case_v1_payload,
+)
 
 
 # 阅读注释（函数）：加载 评测 samples。
-def load_eval_samples(eval_dataset_path: str | Path) -> List[EvalSample]:
+def _load_raw_eval_samples(eval_dataset_path: str | Path) -> list[dict[str, Any]]:
     """
     加载 eval_dataset.json，并转换为 EvalSample 列表。
 
@@ -92,22 +98,39 @@ def load_eval_samples(eval_dataset_path: str | Path) -> List[EvalSample]:
     if not isinstance(raw_samples, list):
         raise ValueError("eval_dataset.json 的顶层结构必须是 list。")
 
-    samples: List[EvalSample] = []
-
     for item in raw_samples:
         if not isinstance(item, dict):
             raise ValueError("eval_dataset.json 中每条样本必须是 dict。")
+    return raw_samples
 
-        sample = EvalSample(
-            query=item["query"],
-            expected_doc_ids=item.get("expected_doc_ids", []),
-            expected_keywords=item.get("expected_keywords", []),
-            answer_keywords=item.get("answer_keywords", []),
-            metadata=item.get("metadata", {}),
+
+def load_eval_samples(eval_dataset_path: str | Path) -> List[EvalSample]:
+    """Load canonical samples without hidden ids, filtering, or coercion."""
+
+    return [
+        EvalSample.model_validate(item, strict=True)
+        for item in _load_raw_eval_samples(eval_dataset_path)
+    ]
+
+
+def load_legacy_eval_samples_v1(
+    eval_dataset_path: str | Path,
+) -> List[EvalSample]:
+    """Explicitly migrate pre-canonical samples that omitted ``sample_id``."""
+
+    return [
+        EvalSample.model_validate(
+            migrate_legacy_rag_eval_case_v1_payload(
+                item,
+                fallback_sample_id=f"legacy_eval_{index:05d}",
+            ),
+            strict=True,
         )
-        samples.append(sample)
-
-    return samples
+        for index, item in enumerate(
+            _load_raw_eval_samples(eval_dataset_path),
+            start=1,
+        )
+    ]
 
 
 # 阅读注释（函数）：规范化 检索 结果集合。

@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from pydantic import Field
+from typing import Any, Dict, List, Optional, Literal
+from pydantic import ConfigDict, Field, model_validator
 
 from .common import SchemaBase
 
@@ -24,13 +24,25 @@ class DataCaptureRecordSchema(SchemaBase):
     - rejected sample
     """
 
-    schema_version: str = "data_capture_record_v1"
+    model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
+    schema_version: Literal["data_capture_record_v2"] = "data_capture_record_v2"
 
     record_id: str
+    lifecycle_revision: int = Field(default=0, ge=0)
 
     # Classification
     capture_type: str
-    capture_stage: str = "candidate"
+    capture_stage: Literal[
+        "raw",
+        "candidate",
+        "evaluated",
+        "accepted",
+        "rejected",
+        "runtime_rejected",
+        "training_ready",
+        "eval_ready",
+    ] = "candidate"
 
     # Link to runtime
     task_id: str
@@ -51,7 +63,8 @@ class DataCaptureRecordSchema(SchemaBase):
 
     prompt: Optional[str] = None
     model_output: Optional[str] = None
-    final_output: Optional[str] = None
+    generated_draft_output: Optional[str] = None
+    deliverable_output: Optional[str] = None
 
     # Human feedback / label
     human_feedback: Dict[str, Any] = Field(default_factory=dict)
@@ -67,6 +80,7 @@ class DataCaptureRecordSchema(SchemaBase):
     # Related artifacts
     related_trace_event_ids: List[str] = Field(default_factory=list)
     related_file_ids: List[str] = Field(default_factory=list)
+    lineage_refs: Dict[str, Any] = Field(default_factory=dict)
 
     # Time
     created_at: str
@@ -86,3 +100,17 @@ class DataCaptureRecordSchema(SchemaBase):
 
     # Evaluation-oriented sample
     eval_sample: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_readiness_stage(self) -> "DataCaptureRecordSchema":
+        if self.is_usable_for_training != (self.capture_stage == "training_ready"):
+            raise ValueError(
+                "capture_stage='training_ready' iff is_usable_for_training=True"
+            )
+        if self.is_usable_for_eval != (self.capture_stage == "eval_ready"):
+            raise ValueError("capture_stage='eval_ready' iff is_usable_for_eval=True")
+        if self.capture_stage == "runtime_rejected" and (
+            self.is_usable_for_training or self.is_usable_for_eval
+        ):
+            raise ValueError("runtime_rejected capture cannot be readiness-eligible")
+        return self

@@ -10,6 +10,7 @@ import traceback
 
 from core.runtime.execution_control import WorkflowExecutionCancelled
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from model_gateway.model_registry import ModelRegistry
 from schemas.model import ModelRequestSchema, ModelResponseSchema
 
@@ -22,6 +23,7 @@ class ModelInvoker:
         self,
         registry: ModelRegistry,
         error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
     ) -> None:
         """初始化 ModelInvoker，保存运行所需的依赖、配置或状态。
 
@@ -37,6 +39,7 @@ class ModelInvoker:
         """
         self.registry = registry
         self.error_factory = error_factory or ErrorFactory()
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
 
     # 阅读注释（函数）：处理 invoke 相关逻辑。
     def invoke(
@@ -63,13 +66,16 @@ class ModelInvoker:
             # abort the logical call instead of normalizing it into fallback.
             raise
         except Exception as exc:
+            failure_category = classify_failure(exc)
+            retryable = self.retry_policy.should_retry(failure_category)
             error = self.error_factory.create(
                 error_code="MODEL_GATEWAY_CALL_FAILED",
                 error_type=exc.__class__.__name__,
                 message=str(exc),
                 user_visible_message=f"模型 {model_name} 调用失败。",
-                recoverable=True,
-                retryable=True,
+                recoverable=retryable,
+                retryable=retryable,
+                failure_category=failure_category,
                 failed_node=request.extra.get("section_id") or request.model_call_id,
                 component="ModelGateway",
                 agent_name=request.caller_agent,

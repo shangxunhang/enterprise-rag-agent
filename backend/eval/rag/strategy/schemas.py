@@ -9,73 +9,35 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from schemas.eval_schema import RAGEvalSampleSchema
+
 
 # 阅读注释（类）：封装 strict 模型，集中封装相关状态、依赖和行为。
 class StrictModel(BaseModel):
     """封装 strict 模型，集中封装相关状态、依赖和行为。"""
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
-# 阅读注释（类）：封装 rageval sample，集中封装相关状态、依赖和行为。
-class RAGEvalSample(StrictModel):
-    """封装 rageval sample，集中封装相关状态、依赖和行为。"""
-    schema_version: Literal["rag_strategy_eval_sample_v1"] = "rag_strategy_eval_sample_v1"
-    sample_id: str
-    query: str
-    expected_doc_ids: list[str] = Field(default_factory=list)
-    expected_parent_chunk_ids: list[str] = Field(default_factory=list)
-    expected_child_chunk_ids: list[str] = Field(default_factory=list)
-    expected_keywords: list[str] = Field(default_factory=list)
-    answer_keywords: list[str] = Field(default_factory=list)
-    filter_expr: str | None = None
-    keyword_doc_ids: list[str] = Field(default_factory=list)
+# Canonical sample ownership lives in ``schemas.eval_schema``.  Strategy eval
+# keeps the historical public name as an alias so existing callers do not gain
+# a second truth source.
+RAGEvalSample = RAGEvalSampleSchema
+
+
+class GoldenDatasetManifest(StrictModel):
+    """Versioned dataset envelope; it never defines a second sample schema."""
+
+    schema_version: Literal["rag_golden_dataset_manifest_v1"] = (
+        "rag_golden_dataset_manifest_v1"
+    )
+    golden_set_id: str
+    golden_set_version: str
+    sample_schema_version: Literal["rag_strategy_eval_sample_v1"] = (
+        "rag_strategy_eval_sample_v1"
+    )
+    sample_ids: list[str] = Field(default_factory=list)
+    source_hash: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    # 阅读注释（函数）：处理 not blank 相关逻辑。
-    @field_validator("sample_id", "query")
-    @classmethod
-    def _not_blank(cls, value: str) -> str:
-        """处理 not blank 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：strip, str, ValueError, field_validator。
-        """
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("sample_id/query cannot be blank")
-        return normalized
-
-    # 阅读注释（函数）：处理 require evaluation target 相关逻辑。
-    @model_validator(mode="after")
-    def _require_evaluation_target(self) -> "RAGEvalSample":
-        """处理 require evaluation target 相关逻辑。
-
-        返回:
-            'RAGEvalSample'
-
-        阅读提示:
-            主要直接调用：any, ValueError, model_validator。
-        """
-        if not any(
-            (
-                self.expected_doc_ids,
-                self.expected_parent_chunk_ids,
-                self.expected_child_chunk_ids,
-                self.expected_keywords,
-                self.answer_keywords,
-            )
-        ):
-            raise ValueError(
-                "eval sample must provide at least one expected id, keyword, "
-                "or answer keyword"
-            )
-        return self
 
 
 # 阅读注释（类）：封装 experiment 配置，集中封装相关状态、依赖和行为。

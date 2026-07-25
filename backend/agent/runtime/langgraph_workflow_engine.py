@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agent.agent_registry import AgentRegistry
 from core.runtime.execution_control import (
+    WorkflowExecutionCancelled,
     WorkflowExecutionControl,
     activate_execution_control,
 )
@@ -25,9 +26,15 @@ from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStep
 from agent.runtime.workflow_state import WorkflowStateController
 from contracts.observability import TraceSink
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.clock import Clock, SystemClock
+from core.runtime.side_effects import (
+    InMemorySideEffectCommitStore,
+    SideEffectCommitStore,
+)
 from observability.trace_context import activate_span
 from schemas.agent import AgentResultSchema
+from schemas.failure import FailureCategory
 from schemas.graph import (
     GraphNodeExecutionRecordSchema,
     GraphNodeInputSchema,
@@ -83,16 +90,27 @@ class LangGraphWorkflowEngine:
         node_adapter: AgentNodeAdapter | None = None,
         clock: Clock | None = None,
         error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
+        side_effect_commit_store: SideEffectCommitStore | None = None,
     ) -> None:
         self.agent_registry = agent_registry
         self.state_controller = state_controller or WorkflowStateController()
         self.observer = observer or WorkflowObserver(run_trace_recorder)
         self.projector = projector or GraphStateProjector()
         self.applier = applier or GraphStateApplier()
-        self.node_adapter = node_adapter or AgentNodeAdapter(agent_registry)
+        self.retry_policy = retry_policy or getattr(
+            node_adapter, "retry_policy", None
+        ) or RetryDecisionPolicy()
+        self.node_adapter = node_adapter or AgentNodeAdapter(
+            agent_registry,
+            retry_policy=self.retry_policy,
+        )
         self.differ = self.node_adapter.differ
         self.clock = clock or SystemClock()
         self.error_factory = error_factory or ErrorFactory(self.clock)
+        self.side_effect_commit_store = (
+            side_effect_commit_store or InMemorySideEffectCommitStore()
+        )
         self._worker_condition = threading.Condition()
         self._active_worker_controls: dict[str, WorkflowExecutionControl] = {}
         self._idle_callbacks: list[Callable[[], None]] = []
@@ -351,6 +369,7 @@ class LangGraphWorkflowEngine:
                     user_visible_message="工作流路由出现循环，任务已终止。",
                     recoverable=False,
                     retryable=False,
+                    failure_category=FailureCategory.CONFIGURATION,
                     failed_node=graph_state.current_node_id,
                     component=self.__class__.__name__,
                     step_name=graph_state.current_step,
@@ -463,10 +482,9 @@ class LangGraphWorkflowEngine:
                     max_attempts=max_attempts,
                 )
 
-            will_retry = (
-                is_failure(node_output.status)
-                and attempt < max_attempts
-                and self._is_retryable(node_output)
+            will_retry = is_failure(node_output.status) and self._is_retryable(
+                node_output,
+                budget_remaining=attempt < max_attempts,
             )
             if will_retry:
                 retry_count += 1
@@ -617,6 +635,10 @@ class LangGraphWorkflowEngine:
         execution_control = WorkflowExecutionControl.with_timeout(
             execution_id=worker_id,
             timeout_seconds=float(step.timeout_seconds),
+            commit_scope_id=(
+                f"{graph_state.run_id}:{step.step_id}:{node_input.input_sha256}"
+            ),
+            side_effect_store=self.side_effect_commit_store,
         )
 
         def invoke() -> None:
@@ -676,7 +698,8 @@ class LangGraphWorkflowEngine:
                 error_type="WorkflowRuntimeError",
                 message="workflow node worker exited without a result",
                 user_message=f"工作流节点 {step.step_name} 未返回结果。",
-                retryable=attempt < max_attempts,
+                retryable=self.retry_policy.should_retry(FailureCategory.TRANSIENT),
+                failure_category=FailureCategory.TRANSIENT,
                 started_at=started_at,
                 latency_ms=latency_ms,
             )
@@ -709,12 +732,54 @@ class LangGraphWorkflowEngine:
                 ),
                 user_message=f"workflow node {step.step_name} was cancelled.",
                 retryable=False,
+                failure_category=FailureCategory.CANCELLED,
                 started_at=started_at,
                 latency_ms=latency_ms,
                 metadata={
                     "execution_control": execution_control.metadata(),
                     "retry_suppressed_after_cancellation": True,
                 },
+            )
+
+        attempt_succeeded = bool(kind == "ok" and not is_failure(payload.status))
+        try:
+            external_commit_summary = execution_control.finalize_external_commits(
+                attempt_succeeded=attempt_succeeded
+            )
+        except WorkflowExecutionCancelled:
+            return self._build_failure_output(
+                step=step,
+                node_input=node_input,
+                state=graph_state,
+                error_code="WORKFLOW_NODE_CANCELLED",
+                error_type="WorkflowExecutionCancelled",
+                message=(
+                    f"workflow node {step.step_id} lost external commit authority: "
+                    f"{execution_control.cancel_reason or 'cancelled'}"
+                ),
+                user_message=f"workflow node {step.step_name} was cancelled.",
+                retryable=False,
+                failure_category=FailureCategory.CANCELLED,
+                started_at=started_at,
+                latency_ms=latency_ms,
+                metadata={"execution_control": execution_control.metadata()},
+            )
+        except Exception as exc:
+            failure_category = classify_failure(exc)
+            return self._build_failure_output(
+                step=step,
+                node_input=node_input,
+                state=graph_state,
+                error_code="WORKFLOW_EXTERNAL_COMMIT_FAILED",
+                error_type=exc.__class__.__name__,
+                message=str(exc),
+                user_message=f"工作流节点 {step.step_name} 的外部提交失败。",
+                retryable=self.retry_policy.should_retry(failure_category),
+                failure_category=failure_category,
+                started_at=started_at,
+                latency_ms=latency_ms,
+                stack_trace=traceback.format_exc(),
+                metadata={"execution_control": execution_control.metadata()},
             )
 
         if kind == "ok":
@@ -724,11 +789,13 @@ class LangGraphWorkflowEngine:
                     "timeout_seconds": step.timeout_seconds,
                     "timeout_guard": "cooperative_cancel_tracked_worker_v2",
                     "execution_control": execution_control.metadata(),
+                    "external_commit_summary": external_commit_summary,
                 }
             )
             return output
 
         exc, stack_trace = payload
+        failure_category = classify_failure(exc)
         return self._build_failure_output(
             step=step,
             node_input=node_input,
@@ -737,10 +804,12 @@ class LangGraphWorkflowEngine:
             error_type=exc.__class__.__name__,
             message=str(exc),
             user_message=f"工作流节点 {step.step_name} 执行失败。",
-            retryable=attempt < max_attempts,
+            retryable=self.retry_policy.should_retry(failure_category),
+            failure_category=failure_category,
             started_at=started_at,
             latency_ms=latency_ms,
             stack_trace=stack_trace,
+            metadata={"external_commit_summary": external_commit_summary},
         )
 
     def _build_timeout_output(
@@ -754,7 +823,7 @@ class LangGraphWorkflowEngine:
         execution_control: WorkflowExecutionControl,
         worker_still_active: bool,
     ) -> GraphNodeOutputSchema:
-        """Build one deterministic, non-retryable timeout result."""
+        """Build a timeout result while preventing overlap with a live worker."""
 
         return self._build_failure_output(
             step=step,
@@ -767,9 +836,14 @@ class LangGraphWorkflowEngine:
                 f"timeout_seconds={step.timeout_seconds}"
             ),
             user_message=f"工作流节点 {step.step_name} 执行超时。",
-            # Retrying may overlap the original native/RAG call. The current
-            # process cannot safely prove that its side effects have ended.
+            # A workflow-node deadline is a terminal execution-boundary fact.
+            # Python threads cannot be safely preempted, so retrying this same
+            # node inside the workflow could overlap the timed-out attempt.
+            # Provider/HTTP timeouts may still be retryable elsewhere; this
+            # boundary is intentionally non-retryable regardless of whether
+            # the worker happens to exit a few microseconds before inspection.
             retryable=False,
+            failure_category=FailureCategory.TIMEOUT,
             started_at=started_at,
             latency_ms=latency_ms,
             metadata={
@@ -779,6 +853,7 @@ class LangGraphWorkflowEngine:
                 "cooperative_cancel_requested": True,
                 "timeout_completed_cooperatively": not worker_still_active,
                 "retry_suppressed_after_timeout": True,
+                "timeout_retry_policy": "workflow_node_deadline_terminal_v1",
                 "worker_still_active_at_timeout": worker_still_active,
                 "active_background_workers": self.active_worker_count,
                 "execution_control": execution_control.metadata(),
@@ -797,6 +872,7 @@ class LangGraphWorkflowEngine:
         user_message: str,
         retryable: bool,
         started_at: str,
+        failure_category: FailureCategory | str | None = None,
         latency_ms: int,
         stack_trace: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -808,6 +884,7 @@ class LangGraphWorkflowEngine:
             user_visible_message=user_message,
             recoverable=retryable,
             retryable=retryable,
+            failure_category=failure_category,
             failed_node=step.step_id,
             component=self.__class__.__name__,
             agent_name=step.target_name,
@@ -898,13 +975,32 @@ class LangGraphWorkflowEngine:
         )
         return empty, "failure_discarded"
 
-    @staticmethod
-    def _is_retryable(node_output: GraphNodeOutputSchema) -> bool:
-        if node_output.status == ExecutionStatus.RETRYABLE_FAILED:
-            return True
-        return bool(
-            node_output.result.error is not None
-            and node_output.result.error.retryable
+    def _is_retryable(
+        self,
+        node_output: GraphNodeOutputSchema,
+        *,
+        budget_remaining: bool,
+    ) -> bool:
+        error = node_output.result.error
+        if error is not None and error.error_code == "WORKFLOW_NODE_TIMEOUT":
+            # Node-deadline timeout is terminal at this execution boundary.
+            # Physical worker timing is diagnostic only and cannot enable retry.
+            return False
+        if error is None:
+            return self.retry_policy.should_retry(
+                FailureCategory.UNKNOWN,
+                budget_remaining=budget_remaining,
+                legacy_retryable=(
+                    node_output.status == ExecutionStatus.RETRYABLE_FAILED
+                ),
+            )
+        return self.retry_policy.should_retry(
+            error.failure_category,
+            budget_remaining=budget_remaining,
+            worker_still_active=bool(
+                (node_output.metadata or {}).get("worker_still_active_at_timeout")
+            ),
+            legacy_retryable=error.retryable,
         )
 
     @staticmethod

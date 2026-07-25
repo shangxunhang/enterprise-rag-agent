@@ -49,10 +49,9 @@ _DEFAULT_WRITE_ALIASES: Dict[str, List[str]] = {
     "scheme_writer_input": ["contexts.scheme_writer_input"],
     "scheme_writer_output": ["contexts.scheme_writer_output"],
     "rag_tool_output": ["contexts.rag_tool_output"],
-    "scheme_draft": [
-        "contexts.scheme_writer_output.scheme_draft",
-        "final_result.scheme_draft",
-    ],
+    "generated_draft": ["generated_draft"],
+    "rejected_artifact": ["rejected_artifact"],
+    "deliverable_final_result": ["deliverable_final_result"],
     "evidence_context": ["context_bundle.evidence"],
     "generation_context": ["context_bundle.generation"],
     "generated_outputs": ["generated_outputs"],
@@ -277,10 +276,9 @@ class GraphStateProjector:
             "evidence_contract": state.context_bundle.evidence.contract,
             "rag_context": state.context_bundle.evidence.context_text,
             "scheme_writer_output": state.contexts.get("scheme_writer_output"),
-            "scheme_draft": (
-                (state.contexts.get("scheme_writer_output") or {}).get("scheme_draft")
-                or (state.final_result or {}).get("scheme_draft")
-            ),
+            "generated_draft": state.generated_draft,
+            "rejected_artifact": state.rejected_artifact,
+            "deliverable_final_result": state.deliverable_final_result,
             "final_result": state.final_result,
         }
         if key in aliases and aliases[key] is not None:

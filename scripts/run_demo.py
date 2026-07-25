@@ -31,7 +31,9 @@ for import_root in (SCRIPT_ROOT, BACKEND_ROOT):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
+from bootstrap.model_factory import build_default_model_routing
 from core.config import AppSettings, get_settings
+from experiments.manifest import ExperimentRunManifestWriter
 from mainline_runtime import (
     MAINLINE_RUNTIME_VERSION,
     build_project_input,
@@ -47,6 +49,46 @@ DEFAULT_USER_INPUT = "根据资料生成企业级 RAG-Agent 系统建设方案"
 REAL_MODEL_NAME = "local_qwen2_5_1_5b"
 SUCCESS_LIKE_STATUSES = {"success", "partial_success"}
 RUN_DEMO_LOCK_PATH = PROJECT_ROOT / "data" / "runtime" / "run_demo.lock"
+
+
+def _configured_experiment_seed() -> Optional[int]:
+    raw = os.getenv("EXPERIMENT_SEED")
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ValueError("EXPERIMENT_SEED must be an integer") from exc
+
+
+def _apply_experiment_seed(seed: Optional[int]) -> Dict[str, bool]:
+    """Apply the manifest seed to actual runtime RNGs before execution."""
+
+    applied = {"python_random": False, "numpy": False, "torch": False}
+    if seed is None:
+        return applied
+
+    import random
+
+    random.seed(seed)
+    applied["python_random"] = True
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+        applied["numpy"] = True
+    except ImportError:
+        pass
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        applied["torch"] = True
+    except ImportError:
+        pass
+    return applied
 
 
 class RunDemoAlreadyRunningError(RuntimeError):
@@ -204,6 +246,20 @@ def _configure_runtime(*, fake_runtime: bool) -> None:
     os.environ["SUPERVISOR_MODEL_NAME"] = REAL_MODEL_NAME
 
 
+def _model_routing_snapshot(settings: AppSettings) -> Dict[str, Any]:
+    """Expose the actual configured model profiles and routing policies."""
+
+    routing = build_default_model_routing(settings)
+    return {
+        "model_profiles": [
+            profile.model_dump(mode="json") for profile in routing.profiles
+        ],
+        "model_routing_policies": [
+            policy.model_dump(mode="json") for policy in routing.policies
+        ],
+    }
+
+
 # 阅读注释（函数）：处理 preflight real 运行时 相关逻辑。
 def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
     """Fail before model loading when the real runtime is not deployable."""
@@ -242,10 +298,18 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
         "model_name": settings.default_model_name,
         "model_path": str(settings.local_qwen_model_path),
         "model_device": settings.local_qwen_device,
+        **_model_routing_snapshot(settings),
         "active_index_version": index_info["index_version"],
         "active_index_backend": index_info["backend"],
         "active_index_collection": index_info["collection_name"],
+        "active_index_manifest_path": index_info["manifest_path"],
+        "active_index_manifest_sha256": index_info["manifest_hash"],
+        "active_index_dataset_version": index_info["dataset_version"],
+        "active_index_config_sha256": index_info["config_hash"],
+        "active_index_reproducibility_sha256": index_info["reproducibility_hash"],
         "embedding_model": index_info["embedding_model"],
+        "embedding_version": index_info.get("embedding_version"),
+        "embedding_dim": index_info.get("embedding_dim"),
         "static_retrieval_spec": str(static_spec),
     }
 
@@ -309,10 +373,24 @@ def _validate_end_to_end(
                 f"主链技术失败：{error_type}: {message} (failed_node={failed_node})"
             )
 
-    scheme_draft = summary.get("scheme_draft") or {}
+    generated_draft = summary.get("generated_draft") or {}
+    rejected_artifact = summary.get("rejected_artifact")
+    deliverable = summary.get("deliverable_final_result")
+    if business_gate_passed:
+        if not isinstance(deliverable, dict):
+            raise RuntimeError("Hard Gate passed but deliverable_final_result is absent")
+        if rejected_artifact is not None:
+            raise RuntimeError("Passed result cannot also expose rejected_artifact")
+        artifact_draft = deliverable.get("draft") or {}
+    else:
+        if deliverable is not None:
+            raise RuntimeError("Hard Gate failure must not expose a deliverable")
+        if not isinstance(rejected_artifact, dict):
+            raise RuntimeError("Hard Gate failure must expose rejected_artifact")
+        artifact_draft = generated_draft
     content = str(
-        scheme_draft.get("full_text")
-        or scheme_draft.get("content")
+        artifact_draft.get("full_text")
+        or artifact_draft.get("content")
         or ""
     ).strip()
     if not content:
@@ -421,6 +499,11 @@ def _validate_end_to_end(
         ),
         "business_gate_passed": business_gate_passed,
         "business_gate_failure": business_gate_failure,
+        "artifact_lifecycle": {
+            "generated_draft": bool(generated_draft),
+            "rejected_artifact": rejected_artifact is not None,
+            "deliverable_final_result": deliverable is not None,
+        },
         "content_chars": len(content),
         "trace_event_count": len(events),
         "tool_components": sorted(tool_components),
@@ -431,25 +514,21 @@ def _validate_end_to_end(
     }
 
 
-# 阅读注释（函数）：写入 answer 文件。
-def _write_answer_file(summary: Dict[str, Any], content: str) -> Path:
-    """写入 answer 文件。
-
-    参数:
-        summary: summary，具体约束请结合类型标注和调用方确认。
-        content: 待处理内容。
-
-    返回:
-        Path
-
-    阅读提示:
-        主要直接调用：Path, trace_path.with_name, answer_path.parent.mkdir, answer_path.write_text。
-    """
+# 阅读注释（函数）：写入具有明确生命周期名称的 Markdown 产物。
+def _write_markdown_artifact(
+    summary: Dict[str, Any],
+    content: str,
+    *,
+    artifact_suffix: str,
+) -> Path:
+    """Write one explicitly named markdown artifact."""
     trace_path = Path(summary["paths"]["trace"])
-    answer_path = trace_path.with_name(f"{summary['run_id']}_answer.md")
-    answer_path.parent.mkdir(parents=True, exist_ok=True)
-    answer_path.write_text(content, encoding="utf-8")
-    return answer_path
+    artifact_path = trace_path.with_name(
+        f"{summary['run_id']}_{artifact_suffix}.md"
+    )
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(content, encoding="utf-8")
+    return artifact_path
 
 
 # 阅读注释（函数）：处理 章节 report rows 相关逻辑。
@@ -465,7 +544,7 @@ def _section_report_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
     阅读提示:
         主要直接调用：summary.get, str, item.get, output.get, isinstance, draft.get, section.get, bundles.get。
     """
-    draft = summary.get("scheme_draft") or {}
+    draft = summary.get("generated_draft") or {}
     output = summary.get("scheme_writer_output") or {}
     bundles = {
         str(item.get("section_title") or ""): item
@@ -555,6 +634,13 @@ def _build_e2e_report(
         "execution_integrity": execution_integrity,
         "business_quality": business_quality,
         "business_gate_failure": _is_business_gate_failure(summary),
+        "artifact_lifecycle": {
+            "generated_draft": bool(summary.get("generated_draft")),
+            "rejected_artifact": summary.get("rejected_artifact") is not None,
+            "deliverable_final_result": (
+                summary.get("deliverable_final_result") is not None
+            ),
+        },
         "runtime_preflight": runtime_preflight,
         "validation": validation,
         "validation_error": (
@@ -644,17 +730,46 @@ def persist_end_to_end_artifacts(
     report_path: Optional[str | Path] = None,
     raise_on_validation_error: bool = True,
 ) -> Dict[str, Any]:
-    """Persist answer and report before surfacing validation failures.
+    """Persist a deliverable or rejected draft, then the diagnostic report.
 
-    A business hard-gate failure is a valid observed result: partial content,
-    Trace and the report are preserved.  Technical validation failures are
-    written into the report and then re-raised.
+    Only a hard-gate-approved result receives a deliverable filename. A rejected
+    draft is preserved under an explicitly non-deliverable artifact name.
     """
 
-    draft = summary.get("scheme_draft") or {}
-    content = str(draft.get("full_text") or draft.get("content") or "")
-    answer_path = _write_answer_file(summary, content)
-    summary.setdefault("paths", {})["answer_markdown"] = str(answer_path)
+    generated_draft = summary.get("generated_draft") or {}
+    deliverable = summary.get("deliverable_final_result")
+    rejected_artifact = summary.get("rejected_artifact")
+    deliverable_path: Path | None = None
+    rejected_draft_path: Path | None = None
+    if isinstance(deliverable, dict):
+        deliverable_draft = deliverable.get("draft") or {}
+        content = str(
+            deliverable_draft.get("full_text")
+            or deliverable_draft.get("content")
+            or ""
+        )
+        deliverable_path = _write_markdown_artifact(
+            summary,
+            content,
+            artifact_suffix="deliverable",
+        )
+        summary.setdefault("paths", {})["deliverable_markdown"] = str(
+            deliverable_path
+        )
+    elif isinstance(rejected_artifact, dict):
+        content = str(
+            generated_draft.get("full_text")
+            or generated_draft.get("content")
+            or ""
+        )
+        rejected_draft_path = _write_markdown_artifact(
+            summary,
+            content,
+            artifact_suffix="rejected_draft",
+        )
+        summary.setdefault("paths", {})["rejected_draft_markdown"] = str(
+            rejected_draft_path
+        )
 
     validation: Optional[Dict[str, Any]] = None
     validation_error: Optional[Exception] = None
@@ -681,16 +796,40 @@ def persist_end_to_end_artifacts(
         explicit_path=report_path,
     )
     summary["paths"]["e2e_report"] = str(persisted_report_path)
-    # 把更新后的完整产物路径复制进报告对象。
-    # 这里包括 answer、trace、task_state、e2e_report 等路径。
+    manifest_path = persisted_report_path.with_name(
+        f"{summary['run_id']}_experiment_manifest.json"
+    )
+    # Register the planned manifest path before the final report write so the
+    # report becomes immutable before its hash is captured by the manifest.
+    summary["paths"]["experiment_manifest"] = str(manifest_path)
     report["paths"] = dict(summary["paths"])
 
-    # 第二次覆盖写入报告，使报告文件本身也包含自己的最终路径。
     _write_e2e_report(
         summary,
         report,
         explicit_path=persisted_report_path,
     )
+
+    manifest_writer = ExperimentRunManifestWriter(PROJECT_ROOT)
+    experiment_seed = summary.get("experiment_seed")
+    if experiment_seed is None:
+        experiment_seed = _configured_experiment_seed()
+    seed_application = dict(summary.get("experiment_seed_application") or {})
+    manifest_runtime_preflight = {
+        **dict(runtime_preflight),
+        "experiment_seed": experiment_seed,
+        "experiment_seed_application": seed_application,
+        "experiment_seed_applied": bool(
+            experiment_seed is not None and any(seed_application.values())
+        ),
+    }
+    manifest = manifest_writer.build(
+        summary=summary,
+        runtime_preflight=manifest_runtime_preflight,
+        report=report,
+        seed=experiment_seed,
+    )
+    manifest_writer.write(manifest, manifest_path)
 
     if validation_error is not None and raise_on_validation_error:
         raise validation_error
@@ -705,7 +844,14 @@ def persist_end_to_end_artifacts(
             else None
         ),
         "report": report,
-        "answer_path": str(answer_path),
+        "deliverable_path": (
+            str(deliverable_path) if deliverable_path is not None else None
+        ),
+        "rejected_draft_path": (
+            str(rejected_draft_path)
+            if rejected_draft_path is not None
+            else None
+        ),
         "report_path": str(persisted_report_path),
     }
 
@@ -724,7 +870,9 @@ def run_demo(
 ) -> Dict[str, Any]:
     """Run the demo adapter while delegating execution to the shared mainline."""
 
-    return run_mainline(
+    experiment_seed = _configured_experiment_seed()
+    seed_application = _apply_experiment_seed(experiment_seed)
+    summary = run_mainline(
         user_input=user_input,
         run_id=run_id,
         task_id=task_id,
@@ -735,6 +883,9 @@ def run_demo(
         project_input=project_input,
         allow_demo_defaults=allow_demo_defaults,
     )
+    summary["experiment_seed"] = experiment_seed
+    summary["experiment_seed_application"] = seed_application
+    return summary
 
 
 # 阅读注释（函数）：处理 main 相关逻辑。
@@ -850,6 +1001,7 @@ def main() -> None:
             "mode": "fake",
             "model_name": settings.default_model_name,
             "rag_tool": "FakeRAGTool",
+            **_model_routing_snapshot(settings),
         }
     else:
         runtime_preflight = _preflight_real_runtime(settings)
@@ -885,14 +1037,16 @@ def main() -> None:
         allow_demo_defaults=project_input is None,
     )
     # 生成主链的草稿
-    scheme_draft = summary.get("scheme_draft") or {}
+    generated_draft = summary.get("generated_draft") or {}
+    deliverable = summary.get("deliverable_final_result") or {}
+    display_draft = deliverable.get("draft") or generated_draft
 
     content = str(
-        scheme_draft.get("full_text")
-        or scheme_draft.get("content")
+        display_draft.get("full_text")
+        or display_draft.get("content")
         or ""
     )
-    sections = scheme_draft.get("sections") or []
+    sections = generated_draft.get("sections") or []
     first_section = sections[0] if sections else {}
     first_section_extra = first_section.get("extra") or {}
     #主链已经执行完后，保存产物并验证这次运行是否真的走完了端到端链路
@@ -931,12 +1085,12 @@ def main() -> None:
         json.dumps(
             {
                 "prompt_id": (
-                    scheme_draft.get("prompt_id")
+                    generated_draft.get("prompt_id")
                     or first_section_extra.get("prompt_id")
                 ),
-                "prompt_name": scheme_draft.get("prompt_name"),
+                "prompt_name": generated_draft.get("prompt_name"),
                 "prompt_version": (
-                    scheme_draft.get("prompt_version")
+                    generated_draft.get("prompt_version")
                     or first_section_extra.get("prompt_version")
                 ),
                 "first_section": first_section.get("section_title"),
@@ -947,7 +1101,7 @@ def main() -> None:
     )
 
     print("\n" + "=" * 80)
-    print("最终回答")
+    print("最终可交付结果" if deliverable else "被拒绝草稿（不可交付）")
     print("=" * 80)
     if args.preview_chars > 0:
         print(content[: args.preview_chars])

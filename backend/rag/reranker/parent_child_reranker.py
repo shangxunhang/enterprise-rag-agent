@@ -223,3 +223,23 @@ class ParentChildReranker:
         for idx, item in enumerate(reranked, start=1):
             item["rank"] = idx
         return reranked
+
+    def close(self) -> None:
+        """Release the owned cross-encoder and return CUDA cache to the pool."""
+        model = getattr(self, "model", None)
+        if model is None:
+            return
+        try:
+            model.to("cpu")
+        except Exception:
+            pass
+        self.model = None
+        self.tokenizer = None
+        try:
+            import gc
+
+            gc.collect()
+            if self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+        except Exception:
+            pass

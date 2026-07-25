@@ -46,7 +46,12 @@ class ParentChildRuntimeFactory:
             "pointer_path": cfg.active_index_pointer,
         }
         pointer_path = Path(cfg.active_index_pointer)
-        if bool(getattr(cfg, "use_active_index_manifest", True)) and pointer_path.is_file():
+        index_source_mode = str(getattr(cfg, "index_source_mode", "manifest"))
+        if index_source_mode not in {"manifest", "legacy"}:
+            raise ValueError(
+                "index_source_mode must be exactly 'manifest' or 'legacy'"
+            )
+        if index_source_mode == "manifest":
             from rag.offline.resolver import ActiveIndexResolver
 
             lineage = ActiveIndexResolver(
@@ -317,5 +322,6 @@ class ParentChildRuntimeFactory:
             query_expansion_generation_params=generation_params,
             pipeline_name=cfg.pipeline_name,
             pipeline_version=cfg.pipeline_version,
+            resource_pool=resource_pool,
         )
         return engine, cfg

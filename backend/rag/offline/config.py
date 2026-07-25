@@ -131,6 +131,15 @@ class OutputConfig(BaseModel):
     active_pointer: str = "data/processed/indexes/active_index.json"
     update_active_pointer: bool = False
 
+    @model_validator(mode="after")
+    def forbid_builder_activation(self) -> "OutputConfig":
+        if self.update_active_pointer:
+            raise ValueError(
+                "outputs.update_active_pointer is forbidden even for "
+                "milvus_lite; activate only through IndexLifecycleManager"
+            )
+        return self
+
 
 # 阅读注释（类）：封装 离线 索引 build 配置，集中封装相关状态、依赖和行为。
 class OfflineIndexBuildConfig(BaseModel):
@@ -181,10 +190,6 @@ class OfflineIndexBuildConfig(BaseModel):
         """
         if not self.chunker.enabled:
             raise ValueError("offline index build requires an enabled chunker")
-        if self.outputs.update_active_pointer and self.index.backend != "milvus_lite":
-            raise ValueError(
-                "only a milvus_lite build can update the online active-index pointer"
-            )
         return self
 
     # 阅读注释（函数）：处理 canonical 字典 相关逻辑。

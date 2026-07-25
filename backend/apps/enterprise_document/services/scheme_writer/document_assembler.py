@@ -11,6 +11,7 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     DocumentAssemblyRequestSchema,
     DocumentAssemblyResultSchema,
     SchemeDraftSchema,
+    SectionEvidenceRequirementSchema,
 )
 
 
@@ -82,9 +83,6 @@ class DocumentAssembler:
         citation_required_titles = list(
             dict.fromkeys(request.citation_required_sections)
         )
-        document_assessment_status = str(
-            request.document_assessment_status or "not_assessed"
-        ).strip().lower() or "not_assessed"
         final_section_statuses: dict[str, str] = {}
         for bundle in request.section_evidence:
             if bundle.section_title not in citation_required_titles:
@@ -98,26 +96,78 @@ class DocumentAssembler:
             ).strip().lower() or "not_assessed"
             final_section_statuses[bundle.section_title] = status
 
-        effective_assessment_by_section: dict[str, str] = {}
-        if citation_required_titles:
-            for title in citation_required_titles:
-                section_status = final_section_statuses.get(title, "not_assessed")
-                effective_assessment_by_section[title] = (
-                    section_status
-                    if section_status != "not_assessed"
-                    else document_assessment_status
+        section_by_title = {
+            section.section_title: section for section in sections
+        }
+        section_requirements: list[SectionEvidenceRequirementSchema] = []
+        for title in citation_required_titles:
+            section = section_by_title.get(title)
+            status = final_section_statuses.get(title, "not_assessed")
+            generation_blocked = bool(
+                section
+                and (section.extra or {}).get("generation_blocked")
+            )
+            generation_block_reason = (
+                str((section.extra or {}).get("generation_block_reason") or "")
+                if section is not None
+                else ""
+            )
+            explicitly_blocked = (
+                generation_blocked
+                and generation_block_reason == "evidence_insufficient"
+            )
+            if explicitly_blocked:
+                effective_status = "blocked"
+            elif status in {"sufficient", "insufficient"}:
+                effective_status = status
+            else:
+                effective_status = "not_assessed"
+            section_requirements.append(
+                SectionEvidenceRequirementSchema(
+                    section_title=title,
+                    assessment_status=effective_status,
+                    generation_blocked=generation_blocked,
+                    generation_block_reason=(
+                        generation_block_reason or None
+                    ),
+                    requirement_satisfied=(
+                        effective_status in {"sufficient", "blocked"}
+                    ),
                 )
-            assessed_statuses = list(effective_assessment_by_section.values())
-        else:
-            assessed_statuses = [document_assessment_status]
+            )
 
-        if "insufficient" in assessed_statuses:
-            semantic_evidence_sufficient = False
-        elif "sufficient" in assessed_statuses:
-            semantic_evidence_sufficient = True
-        else:
-            # Legacy/fake evidence contracts may still be not_assessed.
-            semantic_evidence_sufficient = evidence_available
+        # Required evidence is universal quantification. A document-level
+        # assessment cannot substitute for a missing/not_assessed section.
+        semantic_evidence_sufficient = bool(section_requirements) and all(
+            item.assessment_status == "sufficient"
+            for item in section_requirements
+        )
+        evidence_requirements_satisfied = (
+            all(item.requirement_satisfied for item in section_requirements)
+            if citation_required_titles
+            else True
+        )
+
+        degraded_sections: list[str] = []
+        evidence_by_section = {
+            bundle.section_id: dict((bundle.metadata or {}).get("evidence_assessment") or {})
+            for bundle in request.section_evidence
+        }
+        for section in sections:
+            generation_check = dict((section.extra or {}).get("generation_check") or {})
+            evidence_assessment = evidence_by_section.get(section.section_id, {})
+            evidence_details = dict(evidence_assessment.get("details") or {})
+            if bool(generation_check.get("quality_mode_degraded")) or bool(
+                evidence_details.get("quality_mode_degraded")
+            ):
+                degraded_sections.append(section.section_id)
+        document_assessment_details = dict(
+            (request.document_evidence_assessment or {}).get("details") or {}
+        )
+        quality_mode_degraded = bool(
+            degraded_sections
+            or document_assessment_details.get("quality_mode_degraded")
+        )
 
         draft = SchemeDraftSchema(
             draft_id=f"draft_{request.run_id}_scheme",
@@ -136,6 +186,10 @@ class DocumentAssembler:
             summary=f"共生成{len(sections)}个章节。",
             created_at=request.created_at,
             updated_at=request.updated_at,
+            extra={
+                "quality_mode_degraded": quality_mode_degraded,
+                "quality_degraded_section_ids": list(dict.fromkeys(degraded_sections)),
+            },
         )
 
         return DocumentAssemblyResultSchema(
@@ -146,4 +200,6 @@ class DocumentAssembler:
             known_chunk_ids=known_chunk_ids,
             evidence_available=evidence_available,
             semantic_evidence_sufficient=semantic_evidence_sufficient,
+            evidence_requirements_satisfied=evidence_requirements_satisfied,
+            section_evidence_requirements=section_requirements,
         )

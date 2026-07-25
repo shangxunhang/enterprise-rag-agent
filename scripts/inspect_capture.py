@@ -106,7 +106,11 @@ def _print_record(name: str, path: Path) -> None:
 
     print("prompt chars:", len(record.get("prompt") or ""))
     print("model_output chars:", len(record.get("model_output") or ""))
-    print("final_output chars:", len(record.get("final_output") or ""))
+    print(
+        "generated_draft_output chars:",
+        len(record.get("generated_draft_output") or ""),
+    )
+    print("deliverable_output chars:", len(record.get("deliverable_output") or ""))
 
     print("prompt_info:", (record.get("prompt_info") or {}).get("prompt_id"))
     print("model_info:", (record.get("model_info") or {}).get("model_name"))

@@ -61,6 +61,7 @@ class ParentChildRAGEngine:
         pipeline_version: str = "v1.0",
         retrieval_evaluator: Any = evaluate_retrieval_results_v2,
         record_builder: RAGRunRecordBuilder | None = None,
+        resource_pool: Any | None = None,
         clock: Clock | None = None,
         run_id_generator: IdGenerator | None = None,
     ) -> None:
@@ -92,6 +93,7 @@ class ParentChildRAGEngine:
         self.pipeline_version = pipeline_version
         self.retrieval_evaluator = retrieval_evaluator
         self.record_builder = record_builder or RAGRunRecordBuilder()
+        self.resource_pool = resource_pool
         self.clock = clock or SystemClock()
         self.run_id_generator = run_id_generator or TimestampedUuidIdGenerator(
             self.clock
@@ -126,6 +128,7 @@ class ParentChildRAGEngine:
             self.corrective_retrieval_gate,
             self.corrective_query_planner,
             self.query_llm_generator,
+            self.resource_pool,
         ]
         for component in components:
             if component is None or id(component) in seen:

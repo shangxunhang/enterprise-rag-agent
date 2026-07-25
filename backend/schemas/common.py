@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from schemas.failure import FailureCategory
+
 
 # 阅读注释（类）：封装 Schema base，集中封装相关状态、依赖和行为。
 class SchemaBase(BaseModel):
@@ -45,6 +47,9 @@ class ErrorSchema(SchemaBase):
 
     recoverable: bool = True
     retryable: bool = False
+    failure_category: FailureCategory = FailureCategory.UNKNOWN
+    requires_human: bool = False
+    requires_new_input: bool = False
     failed_node: Optional[str] = None
 
     source: Optional[ErrorSourceSchema] = None

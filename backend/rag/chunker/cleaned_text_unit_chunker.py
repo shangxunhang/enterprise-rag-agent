@@ -34,6 +34,7 @@ from rag.configs.SchemaConfig import (
     DEFAULT_SOURCE_TYPE,
 )
 from rag.schema.Chunk_Schema import build_chunk_v1
+from rag.schema.cleaned_text_unit import CleanedTextUnitSchema
 from rag.util.text_utils import (
     as_list,
     normalize_text,
@@ -71,39 +72,25 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
 
 # 阅读注释（函数）：处理 row to unit 相关逻辑。
 def row_to_unit(row: Any) -> Dict[str, Any]:
-    """把 Spark Row / dict 统一转换成 chunk 策略内部使用的 unit。"""
+    """Validate a canonical cleaned unit before applying chunk-only normalization.
+
+    ``row_to_unit`` is a canonical production boundary, not a compatibility
+    mapper.  Required defaults, type coercion, unknown-field dropping and
+    legacy migration must never happen before this validation step.
+    """
     d = _row_to_dict(row)
-    text = normalize_text(d.get("text"))
+    validated = CleanedTextUnitSchema.model_validate(d)
+    projected = validated.model_dump(exclude={"schema_version"})
 
-    extra = d.get("extra") or {}
-    if not isinstance(extra, dict):
-        extra = {}
-
-    unit_id = d.get("unit_id") or extra.get("source_parse_unit_id")
-
-    return {
-        "unit_id": unit_id,
-        "doc_id": d.get("doc_id"),
-        "source_type": d.get("source_type") or DEFAULT_SOURCE_TYPE,
-        "source_uri": d.get("source_uri"),
-        "source_name": d.get("source_name"),
-        "source_format": d.get("source_format"),
-        "batch_id": d.get("batch_id"),
-        "title": d.get("title"),
-        "section": d.get("section"),
-        "section_level": safe_int(d.get("section_level"), None),
-        "page_start": safe_int(d.get("page_start"), None),
-        "page_end": safe_int(d.get("page_end"), None),
-        "unit_type": d.get("unit_type") or "other",
-        "unit_order": safe_int(d.get("unit_order"), 0),
-        "text": text,
-        "text_length": len(text),
-        "language": d.get("language") or "unknown",
-        "quality_score": safe_float(d.get("quality_score"), None),
-        "quality_flags": as_list(d.get("quality_flags")),
-        "cleaning_version": d.get("cleaning_version") or DEFAULT_CLEANING_VERSION,
-        "extra": extra,
-    }
+    # Normalization below is internal chunk preparation and happens only after
+    # the producer payload has satisfied the canonical contract.
+    text = normalize_text(projected.get("text"))
+    extra = dict(projected.get("extra") or {})
+    projected["unit_id"] = projected.get("unit_id") or extra.get("source_parse_unit_id")
+    projected["text"] = text
+    projected["text_length"] = len(text)
+    projected["extra"] = extra
+    return projected
 
 
 # =========================================================

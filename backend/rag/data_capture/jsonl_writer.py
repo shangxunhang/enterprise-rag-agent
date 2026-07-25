@@ -20,7 +20,9 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
+
+from core.persistence.crash_safe_jsonl import CrashSafeJsonlRecordSink
 
 
 # 阅读注释（函数）：把 jsonl writer 转换为 jsonable。
@@ -62,6 +64,7 @@ class JsonlWriter:
         """
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._sink = CrashSafeJsonlRecordSink(self.path)
 
     # 阅读注释（函数）：写入 JsonlWriter。
     def write(self, record: Dict[str, Any]) -> Path:
@@ -77,6 +80,30 @@ class JsonlWriter:
             主要直接调用：to_jsonable, self.path.open, f.write, json.dumps。
         """
         jsonable = to_jsonable(record)
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(jsonable, ensure_ascii=False) + "\n")
+        self._sink.append_record(
+            json.dumps(jsonable, ensure_ascii=False, separators=(",", ":"))
+        )
+        return self.path
+
+    def write_once(
+        self,
+        record: Dict[str, Any],
+        *,
+        id_field: str,
+        semantic_projection: Callable[[dict[str, Any]], Any] | None = None,
+        semantic_fingerprint: str | None = None,
+    ) -> Path:
+        """Append once by a stable adapter-owned idempotency field."""
+
+        jsonable = to_jsonable(record)
+        identity = jsonable.get(id_field)
+        if not isinstance(identity, str) or not identity:
+            raise ValueError(f"{id_field} must be a non-empty string")
+        self._sink.append_record_once(
+            json.dumps(jsonable, ensure_ascii=False, separators=(",", ":")),
+            id_field=id_field,
+            identity=identity,
+            semantic_projection=semantic_projection,
+            semantic_fingerprint=semantic_fingerprint,
+        )
         return self.path

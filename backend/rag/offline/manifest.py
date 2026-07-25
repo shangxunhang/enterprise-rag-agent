@@ -241,7 +241,7 @@ def effective_artifact_integrity_mode(
 # 阅读注释（类）：封装 artifact 记录，集中封装相关状态、依赖和行为。
 class ArtifactRecord(BaseModel):
     """封装 artifact 记录，集中封装相关状态、依赖和行为。"""
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     path: str
     sha256: str
     record_count: int | None = None
@@ -253,7 +253,7 @@ class ArtifactRecord(BaseModel):
 # 阅读注释（类）：封装 索引 manifest，集中封装相关状态、依赖和行为。
 class IndexManifest(BaseModel):
     """封装 索引 manifest，集中封装相关状态、依赖和行为。"""
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: Literal["rag_index_manifest_v1"] = "rag_index_manifest_v1"
     index_version: str
     build_id: str
@@ -298,7 +298,7 @@ class IndexManifest(BaseModel):
 # 阅读注释（类）：封装 active 索引 pointer，集中封装相关状态、依赖和行为。
 class ActiveIndexPointer(BaseModel):
     """封装 active 索引 pointer，集中封装相关状态、依赖和行为。"""
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     schema_version: Literal["active_rag_index_pointer_v1"] = "active_rag_index_pointer_v1"
     index_version: str
     manifest_path: str

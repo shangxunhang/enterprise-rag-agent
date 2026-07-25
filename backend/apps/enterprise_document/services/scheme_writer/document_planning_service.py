@@ -41,6 +41,11 @@ class DocumentPlanningService:
         """
         citation_required = set(
             project_input.generation_requirements.citation_required_sections
+            or (
+                required_sections
+                if project_input.generation_requirements.need_citation
+                else []
+            )
         )
         return DocumentPlanSchema(
             plan_id=f"plan_{run_id}",

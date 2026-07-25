@@ -211,18 +211,23 @@ def main() -> int:
     )
 
     business_report_path = Path(business_persisted["report_path"])
-    business_answer_path = Path(business_persisted["answer_path"])
+    business_rejected_draft_path = Path(
+        business_persisted["rejected_draft_path"]
+    )
     business_report = json.loads(business_report_path.read_text(encoding="utf-8"))
     check(
         "business_failure_artifacts_preserved",
         business_failure.get("status") == "failed"
-        and business_answer_path.is_file()
-        and bool(business_answer_path.read_text(encoding="utf-8").strip())
+        and business_persisted["deliverable_path"] is None
+        and business_rejected_draft_path.is_file()
+        and bool(
+            business_rejected_draft_path.read_text(encoding="utf-8").strip()
+        )
         and business_report.get("business_gate_failure") is True
         and (business_report.get("hard_gate") or {}).get("passed") is False,
         {
             "status": business_failure.get("status"),
-            "answer_path": str(business_answer_path),
+            "rejected_draft_path": str(business_rejected_draft_path),
             "report_path": str(business_report_path),
             "hard_gate": business_report.get("hard_gate"),
         },
@@ -263,7 +268,9 @@ def main() -> int:
             "corrective_trace": corrective["paths"]["trace"],
             "collision_trace": collision["paths"]["trace"],
             "business_failure_trace": business_failure["paths"]["trace"],
-            "business_failure_answer": str(business_answer_path),
+            "business_failure_rejected_draft": str(
+                business_rejected_draft_path
+            ),
             "business_failure_report": str(business_report_path),
         },
         "checks": checks,

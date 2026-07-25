@@ -313,7 +313,12 @@ def test_console_validation_allows_only_business_gate_failure(tmp_path) -> None:
     task_state.write_text("{}\n", encoding="utf-8")
     summary = {
         "status": "failed",
-        "scheme_draft": {"full_text": "部分方案正文"},
+        "generated_draft": {"full_text": "部分方案正文"},
+        "rejected_artifact": {
+            "artifact_type": "rejected_draft",
+            "rejection_code": "DOCUMENT_HARD_GATE_FAILED",
+        },
+        "deliverable_final_result": None,
         "scheme_writer_output": {
             "hard_gate": {"passed": False},
             "error": {"error_code": "DOCUMENT_HARD_GATE_FAILED"},
@@ -358,7 +363,7 @@ def test_console_validation_rejects_technical_failure_even_in_interactive_mode(
     task_state.write_text("{}\n", encoding="utf-8")
     summary = {
         "status": "failed",
-        "scheme_draft": {"full_text": "部分方案正文"},
+        "generated_draft": {"full_text": "部分方案正文"},
         "scheme_writer_output": {
             "error": {"error_code": "MODEL_RUNTIME_FAILED"},
         },

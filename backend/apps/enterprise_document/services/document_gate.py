@@ -6,15 +6,20 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections import Counter
 from typing import Any, Dict, Iterable
 
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     HardGateResultSchema,
     SchemeDraftSchema,
 )
+from schemas.citation import CitationSchema
 from schemas.status import ExecutionStatus
 
 
+_CITATION_PATTERN = re.compile(r"\[([A-Za-z0-9_.:\-]+)\]")
 _REFUSAL_TERMS = ("证据不足", "无法确认", "待补充", "需项目方确认", "无法得出")
 
 
@@ -24,6 +29,7 @@ def evaluate_scheme_draft(
     *,
     citation_required: bool,
     retrieved_chunk_ids: Iterable[str],
+    canonical_citations: Iterable[CitationSchema] = (),
     citation_required_sections: Iterable[str] = (),
     tool_failed: bool = False,
     key_fields_valid: bool = True,
@@ -84,6 +90,182 @@ def evaluate_scheme_draft(
     if not checks["citations_present"]:
         failures.append("必须引用但无有效引用绑定")
 
+    visible_marker_counts = Counter(
+        match.group(1) for match in _CITATION_PATTERN.finditer(draft.full_text or "")
+    )
+    binding_counts = Counter(
+        binding.citation_id for binding in draft.citation_bindings if binding.citation_id
+    )
+    binding_id_counts = Counter(
+        binding.binding_id for binding in draft.citation_bindings if binding.binding_id
+    )
+    duplicate_binding_ids = sorted(
+        binding_id for binding_id, count in binding_id_counts.items() if count != 1
+    )
+    invalid_binding_ids = [
+        binding.binding_id or "<blank>"
+        for binding in draft.citation_bindings
+        if not str(binding.binding_id or "").strip()
+        or not str(binding.citation_id or "").strip()
+    ]
+    canonical_citation_list = list(canonical_citations)
+    canonical_citation_id_counts = Counter(
+        citation.citation_id
+        for citation in canonical_citation_list
+        if citation.citation_id
+    )
+    duplicate_citation_ids = sorted(
+        citation_id
+        for citation_id, count in canonical_citation_id_counts.items()
+        if count != 1
+    )
+    citations_by_id = {
+        citation.citation_id: citation
+        for citation in canonical_citation_list
+        if citation.citation_id
+    }
+    unknown_binding_citation_ids = sorted(
+        {
+            binding.citation_id
+            for binding in draft.citation_bindings
+            if binding.citation_id not in citations_by_id
+        }
+    )
+    binding_lineage_mismatches: list[str] = []
+    for binding in draft.citation_bindings:
+        citation = citations_by_id.get(binding.citation_id)
+        if citation is None:
+            continue
+        expected_chunk_id = (
+            citation.chunk_id
+            or citation.child_chunk_id
+            or citation.parent_chunk_id
+        )
+        expected_document_id = citation.source_document_id or citation.doc_id
+        lineage_matches = (
+            bool(expected_chunk_id)
+            and binding.source_chunk_id == expected_chunk_id
+            and binding.source_document_id == expected_document_id
+            and binding.source_parent_chunk_id == citation.parent_chunk_id
+        )
+        if not lineage_matches:
+            binding_lineage_mismatches.append(binding.binding_id or "<blank>")
+
+    checks["citation_referential_integrity"] = not (
+        duplicate_citation_ids
+        or unknown_binding_citation_ids
+        or binding_lineage_mismatches
+    )
+    if duplicate_citation_ids:
+        failures.append(
+            "存在重复 canonical citation_id：" + "、".join(duplicate_citation_ids)
+        )
+    if unknown_binding_citation_ids:
+        failures.append(
+            "引用绑定指向不存在的 canonical citation："
+            + "、".join(unknown_binding_citation_ids)
+        )
+    if binding_lineage_mismatches:
+        failures.append(
+            "引用绑定与 canonical citation 来源谱系不一致："
+            + "、".join(binding_lineage_mismatches)
+        )
+
+    citation_ids = set(visible_marker_counts) | set(binding_counts)
+    marker_binding_count_mismatches = {
+        citation_id: {
+            "marker_occurrences": visible_marker_counts[citation_id],
+            "binding_count": binding_counts[citation_id],
+        }
+        for citation_id in sorted(citation_ids)
+        if visible_marker_counts[citation_id] != binding_counts[citation_id]
+    }
+    orphan_marker_ids = sorted(
+        citation_id
+        for citation_id in citation_ids
+        if visible_marker_counts[citation_id] > binding_counts[citation_id]
+    )
+    binding_without_marker_ids = sorted(
+        citation_id
+        for citation_id in citation_ids
+        if binding_counts[citation_id] > visible_marker_counts[citation_id]
+    )
+
+    section_marker_binding_mismatches: dict[str, Any] = {}
+    section_binding_payload_mismatches: dict[str, Any] = {}
+    aggregate_bindings_by_section = {
+        section.section_id: Counter(
+            binding.citation_id
+            for binding in draft.citation_bindings
+            if binding.target_section_id == section.section_id and binding.citation_id
+        )
+        for section in draft.sections
+    }
+    for section in draft.sections:
+        section_markers = Counter(
+            match.group(1) for match in _CITATION_PATTERN.finditer(section.content or "")
+        )
+        section_declared_bindings = Counter(
+            binding.citation_id
+            for binding in section.citation_bindings
+            if binding.citation_id
+        )
+        section_aggregate_bindings = aggregate_bindings_by_section[section.section_id]
+        section_binding_payloads = Counter(
+            json.dumps(
+                binding.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for binding in section.citation_bindings
+        )
+        aggregate_binding_payloads = Counter(
+            json.dumps(
+                binding.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for binding in draft.citation_bindings
+            if binding.target_section_id == section.section_id
+        )
+        if section_binding_payloads != aggregate_binding_payloads:
+            section_binding_payload_mismatches[section.section_id] = {
+                "section_binding_count": sum(section_binding_payloads.values()),
+                "document_binding_count": sum(
+                    aggregate_binding_payloads.values()
+                ),
+            }
+        if not (
+            section_markers
+            == section_declared_bindings
+            == section_aggregate_bindings
+        ):
+            section_marker_binding_mismatches[section.section_id] = {
+                "marker_occurrences": dict(section_markers),
+                "section_binding_counts": dict(section_declared_bindings),
+                "document_binding_counts": dict(section_aggregate_bindings),
+            }
+
+    checks["citation_marker_binding_consistent"] = not (
+        marker_binding_count_mismatches
+        or duplicate_binding_ids
+        or invalid_binding_ids
+        or section_marker_binding_mismatches
+        or section_binding_payload_mismatches
+    )
+    if marker_binding_count_mismatches:
+        failures.append("引用标记与绑定数量不是一一对应")
+    if duplicate_binding_ids:
+        failures.append("存在重复 citation binding_id：" + "、".join(duplicate_binding_ids))
+    if invalid_binding_ids:
+        failures.append("存在空 binding_id 或 citation_id 的引用绑定")
+    if section_marker_binding_mismatches:
+        failures.append("章节级引用标记与绑定不一致")
+    if section_binding_payload_mismatches:
+        failures.append("章节级与文档级引用绑定内容不一致")
+
     required_citation_titles = {
         str(title).strip() for title in citation_required_sections if str(title).strip()
     }
@@ -102,7 +284,7 @@ def evaluate_scheme_draft(
 
     known_chunks = {item for item in retrieved_chunk_ids if item}
     binding_sources_valid = all(
-        (not binding.source_chunk_id) or binding.source_chunk_id in known_chunks
+        bool(binding.source_chunk_id) and binding.source_chunk_id in known_chunks
         for binding in draft.citation_bindings
     )
     section_ids = {section.section_id for section in draft.sections}
@@ -122,8 +304,43 @@ def evaluate_scheme_draft(
     if unverified_bindings:
         failures.append("存在未通过 Claim-Evidence 校验的引用")
 
-    refused_or_qualified = any(term in draft.full_text for term in _REFUSAL_TERMS)
-    checks["evidence_boundary_respected"] = evidence_sufficient or refused_or_qualified
+    unsupported_project_facts = [
+        {
+            "section_id": section.section_id,
+            "section_title": section.section_title,
+            **dict(violation),
+        }
+        for section in draft.sections
+        for violation in list(
+            (section.extra or {}).get("mandatory_project_fact_violations")
+            or []
+        )
+    ]
+    checks["high_risk_claims_grounded"] = not unsupported_project_facts
+    if unsupported_project_facts:
+        failures.append("存在未获项目输入或已验证证据支撑的高风险项目事实")
+
+    # Do not infer a safe no-evidence response from prose keywords.  A phrase
+    # such as “证据不足，但本项目确定建设1000个节点” must not let the unsupported
+    # claim hitchhike through the gate.  When evidence is insufficient, only
+    # sections explicitly produced by the fail-closed generation branch count
+    # as respecting the evidence boundary.
+    substantive_sections = [
+        section for section in draft.sections if str(section.content or "").strip()
+    ]
+    evidence_blocked_section_ids = [
+        section.section_id
+        for section in substantive_sections
+        if bool((section.extra or {}).get("generation_blocked"))
+        and str((section.extra or {}).get("generation_block_reason") or "")
+        == "evidence_insufficient"
+    ]
+    explicitly_blocked_for_no_evidence = bool(substantive_sections) and (
+        len(evidence_blocked_section_ids) == len(substantive_sections)
+    )
+    checks["evidence_boundary_respected"] = (
+        evidence_sufficient or explicitly_blocked_for_no_evidence
+    )
     if not checks["evidence_boundary_respected"]:
         failures.append("证据不足却生成确定性结论")
 
@@ -162,7 +379,20 @@ def evaluate_scheme_draft(
             "citation_binding_count": binding_count,
             "missing_citation_sections": missing_citation_sections,
             "unverified_binding_ids": unverified_bindings,
+            "unsupported_project_facts": unsupported_project_facts,
+            "orphan_citation_marker_ids": orphan_marker_ids,
+            "binding_without_marker_ids": binding_without_marker_ids,
+            "marker_binding_count_mismatches": marker_binding_count_mismatches,
+            "duplicate_binding_ids": duplicate_binding_ids,
+            "invalid_binding_ids": invalid_binding_ids,
+            "duplicate_citation_ids": duplicate_citation_ids,
+            "unknown_binding_citation_ids": unknown_binding_citation_ids,
+            "binding_lineage_mismatches": binding_lineage_mismatches,
+            "section_marker_binding_mismatches": section_marker_binding_mismatches,
+            "section_binding_payload_mismatches": section_binding_payload_mismatches,
             "partial_sections": partial_sections,
+            "evidence_blocked_section_ids": evidence_blocked_section_ids,
+            "explicitly_blocked_for_no_evidence": explicitly_blocked_for_no_evidence,
         },
     )
 

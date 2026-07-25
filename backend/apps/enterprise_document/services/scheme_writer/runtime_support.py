@@ -9,6 +9,7 @@ from typing import Optional
 
 from core.error_factory import ErrorFactory
 from schemas.common import ErrorSchema
+from schemas.failure import FailureCategory
 
 
 # 阅读注释（类）：封装 scheme writer 运行时 support，集中封装相关状态、依赖和行为。
@@ -39,6 +40,9 @@ class SchemeWriterRuntimeSupport:
         *,
         node: str,
         retryable: bool = False,
+        failure_category: FailureCategory | str | None = None,
+        requires_human: bool = False,
+        requires_new_input: bool = False,
         user_message: Optional[str] = None,
     ) -> ErrorSchema:
         """处理 错误 相关逻辑。
@@ -71,6 +75,9 @@ class SchemeWriterRuntimeSupport:
             user_visible_message=user_message or message,
             recoverable=True,
             retryable=retryable,
+            failure_category=failure_category,
+            requires_human=requires_human,
+            requires_new_input=requires_new_input,
             failed_node=node,
             component="SchemeWriterAgent",
             agent_name="SchemeWriterAgent",

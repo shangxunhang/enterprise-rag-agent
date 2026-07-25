@@ -12,6 +12,7 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     TruncationCheckSchema,
 )
 from schemas.common import ErrorSchema, ErrorSourceSchema, WarningSchema
+from schemas.failure import FailureCategory
 from schemas.status import ExecutionStatus
 
 from .runtime_support import SchemeWriterRuntimeSupport
@@ -161,6 +162,8 @@ class SectionQualityEvaluator:
                 "; ".join(failures),
                 node=section_id,
                 retryable=True,
+                failure_category=FailureCategory.BUSINESS_QUALITY,
+                requires_human=True,
                 user_message=f"‘{section_title}’章节存在不可放行的运行完整性问题。",
             )
 

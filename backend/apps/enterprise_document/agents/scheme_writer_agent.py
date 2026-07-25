@@ -52,6 +52,7 @@ from contracts.rag import RAGServicePort
 from model_gateway.model_gateway import ModelGateway
 from prompt_manager.prompt_manager import PromptManager
 from schemas.agent import AgentResultSchema
+from schemas.rag import RetrievalAccessScopeSchema
 
 
 class SchemeWriterAgent(BaseAgent):
@@ -75,6 +76,7 @@ class SchemeWriterAgent(BaseAgent):
         generation_checker: object | None = None,
         repair_strategy: object | None = None,
         generation_quality_metadata: Optional[dict] = None,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
     ) -> None:
         # Long-lived adapters and configuration are owned by the composition
         # root.  Focused services receive only the collaborators they use.
@@ -89,6 +91,7 @@ class SchemeWriterAgent(BaseAgent):
             rag_service=rag_service,
             agent_name=self.agent_name,
             model_gateway=model_gateway,
+            retrieval_access_scope=retrieval_access_scope,
         )
         self.prompt_service = SectionPromptService(
             context_manager=context_manager,

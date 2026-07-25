@@ -13,9 +13,11 @@ from agent.runtime.graph_state import GraphStateSchema
 from agent.runtime.graph_state_ops import GraphStateDiffer, StateWriteContractViolation
 from agent.runtime.workflow_schema import WorkflowStepSchema
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.clock import Clock, SystemClock
 from core.runtime.timing import MonotonicTimer, elapsed_ms
 from schemas.agent import AgentResultSchema
+from schemas.failure import FailureCategory
 from schemas.graph import GraphNodeInputSchema, GraphNodeOutputSchema
 from schemas.status import ExecutionStatus
 
@@ -35,11 +37,13 @@ class AgentNodeAdapter:
         differ: GraphStateDiffer | None = None,
         clock: Clock | None = None,
         error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
     ) -> None:
         self.agent_registry = agent_registry
         self.differ = differ or GraphStateDiffer()
         self.clock = clock or SystemClock()
         self.error_factory = error_factory or ErrorFactory()
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
 
     def execute(
         self,
@@ -79,6 +83,7 @@ class AgentNodeAdapter:
                 user_visible_message=f"workflow node {step.step_name} was cancelled.",
                 recoverable=False,
                 retryable=False,
+                failure_category=FailureCategory.CANCELLED,
                 failed_node=step.step_id,
                 component="AgentNodeAdapter",
                 agent_name=step.target_name,
@@ -103,13 +108,16 @@ class AgentNodeAdapter:
             # before generic adapter normalization can enable a retry.
             if execution_control is not None and execution_control.should_stop:
                 execution_control.checkpoint()
+            failure_category = classify_failure(exc)
+            retryable = self.retry_policy.should_retry(failure_category)
             error = self.error_factory.create(
                 error_code="WORKFLOW_NODE_ADAPTER_EXCEPTION",
                 error_type=exc.__class__.__name__,
                 message=str(exc),
                 user_visible_message=f"工作流节点 {step.step_name} 执行失败。",
-                recoverable=True,
-                retryable=step.max_retries > 0,
+                recoverable=retryable,
+                retryable=retryable,
+                failure_category=failure_category,
                 failed_node=step.step_id,
                 component="AgentNodeAdapter",
                 agent_name=step.target_name,
@@ -153,6 +161,7 @@ class AgentNodeAdapter:
                 ),
                 recoverable=False,
                 retryable=False,
+                failure_category=FailureCategory.VALIDATION,
                 failed_node=step.step_id,
                 component="AgentNodeAdapter",
                 agent_name=step.target_name,

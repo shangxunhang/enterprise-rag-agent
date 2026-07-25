@@ -19,6 +19,7 @@ from typing import Any, Dict
 
 from mainline_runtime import run_mainline
 from mainline_runtime import resolve_project_path
+from schemas.rag import RetrievalAccessScopeSchema
 
 
 # 阅读注释（函数）：加载 项目 输入。
@@ -44,6 +45,15 @@ def load_project_input(path: str | Path) -> Dict[str, Any]:
     return payload
 
 
+def load_retrieval_access_scope(
+    path: str | Path,
+) -> RetrievalAccessScopeSchema:
+    """Load authorization truth from a channel separate from ProjectInput."""
+
+    payload = load_project_input(path)
+    return RetrievalAccessScopeSchema.model_validate(payload, strict=True)
+
+
 # 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
     """处理 main 相关逻辑。
@@ -58,6 +68,14 @@ def main() -> None:
         description="Run the Agent-RAG mainline from an explicit ProjectInput."
     )
     parser.add_argument("--project-input-file", required=True)
+    parser.add_argument(
+        "--retrieval-access-scope-file",
+        required=True,
+        help=(
+            "Trusted application/security scope JSON. This is intentionally "
+            "separate from caller-controlled ProjectInput."
+        ),
+    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--clean-existing", action="store_true")
@@ -79,6 +97,9 @@ def main() -> None:
         )
 
     project_input = load_project_input(args.project_input_file)
+    retrieval_access_scope = load_retrieval_access_scope(
+        args.retrieval_access_scope_file
+    )
     user_query = str(project_input.get("user_query") or "").strip()
     if not user_query:
         raise ValueError("ProjectInput.user_query is required")
@@ -91,6 +112,7 @@ def main() -> None:
         enable_agent_self_rag=not args.disable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=False,
+        retrieval_access_scope=retrieval_access_scope,
     )
 
     print(json.dumps(

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rag.common.coercion import as_int, as_str_list
-from schemas.rag import RAGToolInputSchema, RetrievalAccessScopeSchema
+from schemas.rag import RAGToolInputSchema
 
 
 def _escape_filter_value(value: str) -> str:
@@ -45,39 +45,34 @@ class RAGRequestMapper:
         if not query:
             raise ValueError("RAGService requires a non-empty query")
 
-        request_data = {
-            **request.model_dump(),
-            **dict(request.extra or {}),
-        }
+        # Keep the public extension bag nested. Promoting arbitrary caller
+        # keys into the normalized request would let untrusted values impersonate
+        # authorization-sensitive fields such as a raw Milvus filter.
+        request_data = request.model_dump()
         max_context_chars = as_int(request_data.get("max_context_chars"), 6000)
         max_context_items = as_int(request_data.get("max_context_items"), 3)
 
-        filters = request_data.get("filters") or {}
-        legacy_doc_ids = as_str_list(filters.get("doc_ids") or request_data.get("doc_ids"))
-        legacy_file_ids = as_str_list(filters.get("file_ids") or request_data.get("file_ids"))
-        requested_filter_expr = str(request_data.get("filter_expr") or "").strip()
+        filters = request.filters
+        legacy_doc_ids = as_str_list(filters.doc_ids)
+        legacy_file_ids = as_str_list(filters.file_ids)
+        requested_tenant_id = str(filters.tenant_id or "").strip()
 
         access_scope = request.access_scope
-        # Backward-compatible bridge: callers that already send tenant_id +
-        # kb_ids through the legacy contract are upgraded to a strict scope.
-        if access_scope is None:
-            tenant_id = str(filters.get("tenant_id") or "").strip()
-            legacy_kb_ids = as_str_list(request.kb_ids)
-            if tenant_id and legacy_kb_ids:
-                access_scope = RetrievalAccessScopeSchema(
-                    tenant_id=tenant_id,
-                    authorized_kb_ids=legacy_kb_ids,
-                    allowed_file_ids=legacy_file_ids,
-                    allowed_doc_ids=legacy_doc_ids,
-                )
-            elif not self.allow_legacy_unscoped:
-                raise ValueError(
-                    "retrieval access scope is required; mandatory tenant/KB "
-                    "boundaries cannot be disabled by request payloads"
-                )
+        if access_scope is None and not self.allow_legacy_unscoped:
+            raise ValueError(
+                "retrieval access scope is required; mandatory tenant/KB "
+                "boundaries must be supplied by the trusted application boundary"
+            )
 
         keyword_scope: dict[str, Any] = {}
         if access_scope is not None:
+            if (
+                requested_tenant_id
+                and requested_tenant_id != access_scope.tenant_id
+            ):
+                raise ValueError(
+                    "requested tenant_id conflicts with the authorized retrieval scope"
+                )
             requested_kb_ids = as_str_list(request.kb_ids)
             effective_kb_ids = list(access_scope.authorized_kb_ids)
             if requested_kb_ids:
@@ -118,8 +113,6 @@ class RAGRequestMapper:
             if allowed_doc_ids:
                 scope_parts.append(_in_expr("doc_id", allowed_doc_ids))
             filter_expr = " and ".join(scope_parts)
-            if requested_filter_expr:
-                filter_expr = f"({filter_expr}) and ({requested_filter_expr})"
             keyword_scope = {
                 "tenant_id": access_scope.tenant_id,
                 "kb_ids": effective_kb_ids,
@@ -131,12 +124,16 @@ class RAGRequestMapper:
             # with tenant/KB metadata.  It is intentionally not advertised as a
             # security boundary.
             allowed_doc_ids = legacy_doc_ids
-            filter_expr = requested_filter_expr
-            if not filter_expr and allowed_doc_ids:
-                filter_expr = _in_expr("doc_id", allowed_doc_ids)
+            filter_expr = (
+                _in_expr("doc_id", allowed_doc_ids)
+                if allowed_doc_ids
+                else ""
+            )
             keyword_scope = {"doc_ids": allowed_doc_ids}
 
-        planner_context = dict(request_data.get("extra_metadata") or {})
+        # Consume the one explicit metadata sub-channel without flattening it
+        # into authorization or retrieval-control fields.
+        planner_context = dict(request.extra.get("extra_metadata") or {})
         # Keep workflow/model-call lineage inside RAG's existing extra-metadata
         # channel; no public RAG schema fields are added. These identity fields
         # are canonical and must never be overridden by caller metadata.

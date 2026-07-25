@@ -39,22 +39,12 @@ retrieval_eval.py、generation_eval.py 和 eval_runner.py 都应基于这里定�
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from schemas.eval_schema import RAGEvalSampleSchema
 
-# 阅读注释（类）：封装 评测 sample，集中封装相关状态、依赖和行为。
-@dataclass
-class EvalSample:
-    """
-    单条 RAG 评估样本。
 
-    用于描述一个 query 的标准答案、期望命中的文档、期望关键词等信息。
-    第一版主要服务于轻量级检索评估和关键词级生成评估。
-    """
-
-    query: str
-    expected_doc_ids: List[str] = field(default_factory=list)
-    expected_keywords: List[str] = field(default_factory=list)
-    answer_keywords: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+# Legacy engine code keeps this public name, but the sample contract itself is
+# canonical and shared with ``eval.rag.strategy``.
+EvalSample = RAGEvalSampleSchema
 
 
 # 阅读注释（类）：封装 检索 结果，集中封装相关状态、依赖和行为。

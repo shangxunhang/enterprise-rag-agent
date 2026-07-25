@@ -176,14 +176,22 @@ def extract_answer(sample: Dict[str, Any]) -> str:
     阅读提示:
         主要直接调用：sample.get, isinstance, value.strip, eval_sample.get。
     """
-    for key in ("final_output", "model_output"):
+    for key in (
+        "deliverable_output",
+        "generated_draft_output",
+        "model_output",
+    ):
         value = sample.get(key)
         if isinstance(value, str) and value.strip():
             return value
 
     eval_sample = sample.get("eval_sample") or {}
     if isinstance(eval_sample, dict):
-        for key in ("final_output", "model_output"):
+        for key in (
+            "deliverable_output",
+            "generated_draft_output",
+            "model_output",
+        ):
             value = eval_sample.get(key)
             if isinstance(value, str) and value.strip():
                 return value

@@ -282,6 +282,31 @@ class CitationService:
         return "\n".join(lines), selected
 
     @staticmethod
+    def reconcile_citation_markers(
+        content: str,
+        bindings: Iterable[CitationBindingSchema],
+    ) -> str:
+        """Remove citation markers that are not backed by verified bindings.
+
+        The visible document must never advertise a citation that the canonical
+        ``CitationBinding`` contract rejected.  This method is intentionally
+        policy-neutral: it does not decide whether a section requires citations;
+        it only enforces marker/binding consistency for citations that are shown.
+        """
+
+        verified_ids = {
+            binding.citation_id
+            for binding in bindings
+            if bool((binding.metadata or {}).get("grounding_verified"))
+        }
+
+        def replace(match: re.Match[str]) -> str:
+            citation_id = match.group(1)
+            return match.group(0) if citation_id in verified_ids else ""
+
+        return _CITATION_PATTERN.sub(replace, content)
+
+    @staticmethod
     def strip_known_citation_markers(
         text: str,
         citation_ids: Iterable[str],

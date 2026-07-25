@@ -10,6 +10,7 @@ from contracts.model_gateway import ModelGatewayPort
 from contracts.observability import TraceSink
 from contracts.rag import RAGServicePort
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.execution_control import WorkflowExecutionCancelled
 from core.runtime.timing import MonotonicTimer, Timer, elapsed_ms
 from model_gateway.call_boundary import ModelCallBudgetExceeded
@@ -112,6 +113,7 @@ class RAGService(RAGServicePort):
         allow_legacy_unscoped: bool = False,
         result_mapper: RAGResultMapper | None = None,
         error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
         timer: Timer | None = None,
     ) -> None:
         self.rag_project_root = Path(rag_project_root).resolve()
@@ -154,6 +156,7 @@ class RAGService(RAGServicePort):
         )
         self.result_mapper = result_mapper or RAGResultMapper()
         self.error_factory = error_factory or ErrorFactory()
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
         self.timer = timer or MonotonicTimer()
 
     def retrieve(self, request: RAGToolInputSchema) -> EvidenceBundleSchema:
@@ -172,6 +175,8 @@ class RAGService(RAGServicePort):
         except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
             raise
         except Exception as exc:
+            failure_category = classify_failure(exc)
+            retryable = self.retry_policy.should_retry(failure_category)
             trace = RAGTraceSchema(
                 retrieval_mode="adaptive",
                 query=request.query,
@@ -197,8 +202,9 @@ class RAGService(RAGServicePort):
                     error_code="RAG_RETRIEVAL_FAILED",
                     error_type=exc.__class__.__name__,
                     message=str(exc),
-                    recoverable=True,
-                    retryable=True,
+                    recoverable=retryable,
+                    retryable=retryable,
+                    failure_category=failure_category,
                     component=self.service_name,
                 ),
             )

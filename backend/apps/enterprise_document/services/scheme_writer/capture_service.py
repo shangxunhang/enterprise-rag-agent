@@ -48,12 +48,22 @@ class SchemeCaptureService:
         """
         if self.data_capture_recorder is None:
             return
-        draft = output.scheme_draft
+        draft = output.generated_draft
+        deliverable = output.deliverable_final_result
         payload = draft.model_dump() if draft else {}
+        trace_id = f"trace_{shared_state.run_id}"
+        model_call_ids = list(shared_state.generated_outputs.keys())
+        retrieval_trace_ids = list(
+            dict.fromkeys(
+                tool_call_id
+                for section in (draft.sections if draft else [])
+                for tool_call_id in list((section.extra or {}).get("evidence_tool_call_ids") or [])
+            )
+        )
         common = dict(
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
-            trace_id=f"trace_{shared_state.run_id}",
+            trace_id=trace_id,
             user_input=shared_state.user_input,
             rag_context=(output.rag_context.model_dump() if output.rag_context else {}),
             retrieved_chunks=[item.model_dump() for item in output.retrieved_chunks],
@@ -62,7 +72,10 @@ class SchemeCaptureService:
             structured_facts={"scheme_writer_input": scheme_input.model_dump()},
             prompt="\n\n".join(section.prompt for section in (draft.sections if draft else [])),
             model_output="\n\n".join(section.model_output for section in (draft.sections if draft else [])),
-            final_output=(draft.full_text if draft else ""),
+            generated_draft_output=(draft.full_text if draft else ""),
+            deliverable_output=(
+                deliverable.draft.full_text if deliverable is not None else None
+            ),
             eval_sample={
                 "required_sections": scheme_input.required_sections,
                 "hard_gate": output.hard_gate.model_dump() if output.hard_gate else {},
@@ -71,18 +84,56 @@ class SchemeCaptureService:
             source_component_type="agent",
             source_component_name=self.agent_name,
             source_event_type="agent_finished",
-            quality_score=1.0 if output.status == ExecutionStatus.SUCCESS else 0.0,
+            quality_score=None,
             need_human_review=True,
-            is_usable_for_training=output.status == ExecutionStatus.SUCCESS,
-            is_usable_for_eval=True,
+            lineage_refs={
+                "trace_id": trace_id,
+                "model_call_ids": model_call_ids,
+                "retrieval_trace_ids": retrieval_trace_ids,
+                "canonical_sources": {
+                    "execution": "run_trace",
+                    "retrieval": "rag_run",
+                    "model_usage": "model_usage_ledger",
+                    "sample": "data_capture",
+                },
+            },
             metadata={
                 "output_schema": output.schema_version,
                 "status": output.status.value,
+                "quality_decision": "pending_evaluation",
+                "artifact_lifecycle": {
+                    "generated_draft": draft is not None,
+                    "rejected_artifact": output.rejected_artifact is not None,
+                    "deliverable_final_result": deliverable is not None,
+                },
+                "compatibility_snapshots": [
+                    "rag_context",
+                    "retrieved_chunks",
+                    "citations",
+                    "rag_trace",
+                ],
             },
         )
-        self.data_capture_recorder.record(capture_type="raw_interactions", **common)
-        self.data_capture_recorder.record(capture_type="eval_samples", **common)
+        self.data_capture_recorder.record(
+            capture_type="raw_interactions",
+            **{**common, "capture_stage": "raw"},
+        )
         if output.status == ExecutionStatus.SUCCESS:
-            self.data_capture_recorder.record(capture_type="sft_candidates", **common)
+            self.data_capture_recorder.record(
+                capture_type="eval_samples",
+                **{**common, "capture_stage": "candidate"},
+            )
+            self.data_capture_recorder.record(
+                capture_type="sft_candidates",
+                **{**common, "capture_stage": "candidate"},
+            )
         else:
-            self.data_capture_recorder.record(capture_type="rejected", **common)
+            rejected_common = {**common, "capture_stage": "runtime_rejected"}
+            self.data_capture_recorder.record(
+                capture_type="eval_samples",
+                **rejected_common,
+            )
+            self.data_capture_recorder.record(
+                capture_type="rejected",
+                **rejected_common,
+            )

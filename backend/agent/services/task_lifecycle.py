@@ -11,6 +11,7 @@ from typing import Optional
 from contracts.task_state import TaskStateManager
 from core.error_factory import ErrorFactory
 from schemas.agent import AgentResultSchema
+from schemas.failure import FailureCategory
 from schemas.status import ExecutionStatus
 from schemas.task import TaskSchema
 
@@ -81,11 +82,21 @@ class TaskLifecycleService:
                 error_type="WorkflowFailure",
                 message=result.error_message or "workflow failed",
                 component="TaskLifecycleService",
+                # This fallback exists only when the workflow failed without a
+                # structured source error, so the root cause is genuinely unknown.
+                failure_category=FailureCategory.UNKNOWN,
                 failed_node="SupervisorAgent",
             )
-            self.task_manager.mark_failed(
-                task,
-                error=error,
-                retryable=result.status == ExecutionStatus.RETRYABLE_FAILED,
-                result=result,
-            )
+            if result.status == ExecutionStatus.CANCELLED:
+                self.task_manager.mark_cancelled(
+                    task,
+                    error=error,
+                    result=result,
+                )
+            else:
+                self.task_manager.mark_failed(
+                    task,
+                    error=error,
+                    retryable=result.status == ExecutionStatus.RETRYABLE_FAILED,
+                    result=result,
+                )

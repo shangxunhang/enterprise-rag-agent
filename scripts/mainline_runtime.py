@@ -30,6 +30,7 @@ from bootstrap.supervisor_factory import SupervisorFactory
 from core.config import AppSettings, get_settings
 from core.runtime.clock import SystemClock
 from schemas.task import TaskSchema
+from schemas.rag import RetrievalAccessScopeSchema
 from task.task_manager import JsonlTaskManager
 
 MAINLINE_RUNTIME_VERSION = "stage1-mainline-stability-v7.9.0-20260718"
@@ -76,7 +77,7 @@ def build_project_input(
     user_input: str,
     raw_project_input: Optional[Dict[str, Any]] = None,
     *,
-    allow_demo_defaults: bool = True,
+    allow_demo_defaults: bool = False,
 ):
     """构建 项目 输入。
 
@@ -108,7 +109,7 @@ def build_task(
     created_at: str,
     project_input: Optional[Dict[str, Any]] = None,
     *,
-    allow_demo_defaults: bool = True,
+    allow_demo_defaults: bool = False,
 ) -> TaskSchema:
     """构建 任务。
 
@@ -144,6 +145,7 @@ def build_supervisor(
     task_manager: JsonlTaskManager,
     settings: AppSettings,
     enable_agent_self_rag: Optional[bool] = None,
+    retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
 ) -> SupervisorAgent:
     """构建 supervisor。
 
@@ -173,6 +175,7 @@ def build_supervisor(
         task_manager=task_manager,
         settings=settings,
         options=options,
+        retrieval_access_scope=retrieval_access_scope,
     )
 
 
@@ -187,6 +190,7 @@ def run_mainline(
     enable_agent_self_rag: Optional[bool] = None,
     project_input: Optional[Dict[str, Any]] = None,
     allow_demo_defaults: bool = False,
+    retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
 ) -> Dict[str, Any]:
     """执行 主链 运行时 的主流程。
 
@@ -218,4 +222,5 @@ def run_mainline(
         enable_agent_self_rag=enable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=allow_demo_defaults,
+        retrieval_access_scope=retrieval_access_scope,
     )

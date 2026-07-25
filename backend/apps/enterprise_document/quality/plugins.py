@@ -84,8 +84,24 @@ class SelfRAGLiteGenerationCheckerPlugin:
             context=context,
             citations=citations,
         ).to_dict()
+        method = str(report.get("method") or "unknown")
+        report_metadata = dict(report.get("metadata") or {})
+        fallback_used = bool(report_metadata.get("fallback_used"))
+        if method == "llm" and not fallback_used:
+            verification_mode = "llm_verified"
+        elif method == "deterministic_fallback" and not self.use_llm:
+            verification_mode = "deterministic_primary"
+        elif method == "deterministic_fallback" or fallback_used:
+            verification_mode = "degraded_deterministic_fallback"
+        else:
+            verification_mode = "unavailable"
+        quality_mode_degraded = verification_mode == "degraded_deterministic_fallback"
+        report["verification_mode"] = verification_mode
+        report["quality_mode_degraded"] = quality_mode_degraded
         report["metadata"] = {
-            **dict(report.get("metadata") or {}),
+            **report_metadata,
+            "verification_mode": verification_mode,
+            "quality_mode_degraded": quality_mode_degraded,
             "citation_count": len(citations),
             "citation_binding_count": len(citation_bindings or []),
             "agent_final_section": bool(

@@ -501,7 +501,7 @@ def evaluate_ragas_style_proxy(
 
     return {
         "schema_version": "ragas_style_proxy_eval_v1",
-        "case_id": eval_case.case_id,
+        "case_id": eval_case.sample_id,
         "run_id": run_record.get("run_id"),
         "query": query,
         "top_k": top_k,
@@ -513,7 +513,7 @@ def evaluate_ragas_style_proxy(
             "answer_relevancy": answer_relevancy,
             "citation_hit": citation_hit,
         },
-        "eval_case": eval_case.to_dict(),
+        "eval_case": eval_case.model_dump(),
     }
 
 

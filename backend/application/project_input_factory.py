@@ -9,7 +9,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
-from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
+from apps.enterprise_document.schemas.project_input_schema import (
+    ProjectInputDemoSeedV1Schema,
+    ProjectInputSchema,
+)
 
 
 DEFAULT_SCHEME_SECTIONS = [
@@ -65,7 +68,7 @@ class ProjectInputFactory:
         user_input: str,
         raw_project_input: Optional[Dict[str, Any]] = None,
         *,
-        allow_demo_defaults: bool = True,
+        allow_demo_defaults: bool = False,
     ) -> ProjectInputSchema:
         """构建 ProjectInputFactory。
 
@@ -81,9 +84,30 @@ class ProjectInputFactory:
         阅读提示:
             主要直接调用：dict, strip, str, payload.get, ValueError, payload.setdefault, generation_requirements.setdefault, list。
         """
-        payload: Dict[str, Any] = dict(raw_project_input or {})
-        if not allow_demo_defaults and not str(payload.get("task_id") or "").strip():
-            raise ValueError("ProjectInput.task_id is required")
+        if not allow_demo_defaults:
+            # Production ingress is the canonical contract itself. Validate
+            # before reading/defaulting/filtering any caller field.
+            canonical = ProjectInputSchema.model_validate(
+                raw_project_input,
+                strict=True,
+            )
+            if canonical.task_id != task_id:
+                raise ValueError(
+                    f"task_id mismatch: runtime={task_id}, ProjectInput={canonical.task_id}"
+                )
+            if canonical.user_query != user_input:
+                raise ValueError(
+                    "user_input must match canonical ProjectInput.user_query"
+                )
+            return canonical
+
+        # Demo defaults are an explicitly selected, versioned adapter. The
+        # strict seed schema validates all supplied fields before enrichment.
+        demo_seed = ProjectInputDemoSeedV1Schema.model_validate(
+            raw_project_input if raw_project_input is not None else {},
+            strict=True,
+        )
+        payload: Dict[str, Any] = demo_seed.model_dump(exclude_none=True)
         payload.setdefault("task_id", task_id)
         payload.setdefault("tenant_id", "default")
         payload.setdefault("user_query", user_input)
@@ -91,43 +115,26 @@ class ProjectInputFactory:
 
         generation_requirements = dict(payload.get("generation_requirements") or {})
         output_schema = dict(payload.get("output_schema") or {})
-        if allow_demo_defaults:
-            payload.setdefault("task_type", "scheme_generation")
-            generation_requirements.setdefault(
-                "required_sections", list(DEFAULT_SCHEME_SECTIONS)
-            )
-            generation_requirements.setdefault("need_citation", True)
-            generation_requirements.setdefault(
-                "citation_required_sections",
-                ["建设内容", "技术方案", "安全设计"],
-            )
-            output_schema.setdefault(
-                "document_title", _derive_document_title(payload, user_input)
-            )
-            output_schema.setdefault("output_format", "markdown")
-            output_schema.setdefault(
-                "required_sections", list(DEFAULT_SCHEME_SECTIONS)
-            )
-        else:
-            if not str(payload.get("task_type") or "").strip():
-                raise ValueError("ProjectInput.task_type is required")
-            caller_sections = (
-                generation_requirements.get("required_sections")
-                or output_schema.get("required_sections")
-                or []
-            )
-            if not caller_sections:
-                raise ValueError(
-                    "ProjectInput must provide generation_requirements.required_sections "
-                    "or output_schema.required_sections"
-                )
+        payload.setdefault("task_type", "scheme_generation")
+        generation_requirements.setdefault(
+            "required_sections", list(DEFAULT_SCHEME_SECTIONS)
+        )
+        generation_requirements.setdefault("need_citation", True)
+        generation_requirements.setdefault(
+            "citation_required_sections",
+            ["建设内容", "技术方案", "安全设计"],
+        )
+        output_schema.setdefault(
+            "document_title", _derive_document_title(payload, user_input)
+        )
+        output_schema.setdefault("output_format", "markdown")
+        output_schema.setdefault(
+            "required_sections", list(DEFAULT_SCHEME_SECTIONS)
+        )
 
         payload["generation_requirements"] = generation_requirements
         payload["output_schema"] = output_schema
         metadata = dict(payload.get("metadata") or {})
-        metadata.setdefault(
-            "input_source",
-            "run_demo_cli" if allow_demo_defaults else "project_input_file",
-        )
+        metadata.setdefault("input_source", "run_demo_cli")
         payload["metadata"] = metadata
-        return ProjectInputSchema.model_validate(payload)
+        return ProjectInputSchema.model_validate(payload, strict=True)

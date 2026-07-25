@@ -8,11 +8,32 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
+from core.persistence.crash_safe_jsonl import (
+    CrashSafeJsonlRecordSink,
+    canonical_json_sha256,
+)
 from core.runtime.clock import Clock, SystemClock
+from core.runtime.execution_control import current_execution_control
 from core.runtime.ids import IdGenerator, UuidIdGenerator
 from schemas.data_capture import DataCaptureRecordSchema
+
+
+def data_capture_semantic_projection(record: dict[str, Any]) -> dict[str, Any]:
+    """Project fields that determine the durable capture business fact.
+
+    ``created_at`` and ``metadata.execution_attempt`` describe when and by
+    which retry the adapter wrote the fact. They do not change the captured
+    business content, source lineage, model output, or lifecycle state.
+    """
+
+    projection = dict(record)
+    projection.pop("created_at", None)
+    metadata = dict(projection.get("metadata") or {})
+    metadata.pop("execution_attempt", None)
+    projection["metadata"] = metadata
+    return projection
 
 
 # 阅读注释（类）：封装 jsonl 数据 capture recorder，集中封装相关状态、依赖和行为。
@@ -115,26 +136,27 @@ class JsonlDataCaptureRecorder:
             capture_type: str,
             task_id: str,
             run_id: str,
+            capture_stage: Literal["raw", "candidate", "runtime_rejected"] = "candidate",
             user_input: Optional[str] = None,
             rewritten_query: Optional[str] = None,
             rag_context: Optional[Dict[str, Any]] = None,
             structured_facts: Optional[Dict[str, Any]] = None,
             prompt: Optional[str] = None,
             model_output: Optional[str] = None,
-            final_output: Optional[str] = None,
+            generated_draft_output: Optional[str] = None,
+            deliverable_output: Optional[str] = None,
             human_feedback: Optional[Dict[str, Any]] = None,
             label: Optional[Dict[str, Any]] = None,
             quality_score: Optional[float] = None,
             quality_flags: Optional[List[str]] = None,
             need_human_review: bool = True,
-            is_usable_for_training: bool = False,
-            is_usable_for_eval: bool = False,
             trace_id: Optional[str] = None,
             source_component_type: Optional[str] = None,
             source_component_name: Optional[str] = None,
             source_event_type: Optional[str] = None,
             related_trace_event_ids: Optional[List[str]] = None,
             related_file_ids: Optional[List[str]] = None,
+            lineage_refs: Optional[Dict[str, Any]] = None,
             metadata: Optional[Dict[str, Any]] = None,
             extra: Optional[Dict[str, Any]] = None,
             retrieved_chunks: Optional[List[Dict[str, Any]]] = None,
@@ -156,7 +178,6 @@ class JsonlDataCaptureRecorder:
             structured_facts: structured facts，具体约束请结合类型标注和调用方确认。
             prompt: 提示词，具体约束请结合类型标注和调用方确认。
             model_output: 模型 输出，具体约束请结合类型标注和调用方确认。
-            final_output: final 输出，具体约束请结合类型标注和调用方确认。
             human_feedback: human 反馈，具体约束请结合类型标注和调用方确认。
             label: label，具体约束请结合类型标注和调用方确认。
             quality_score: 质量 score，具体约束请结合类型标注和调用方确认。
@@ -185,9 +206,38 @@ class JsonlDataCaptureRecorder:
         阅读提示:
             主要直接调用：DataCaptureRecordSchema, self._new_id, self._now_iso, self._capture_path, path.open, f.write, json.dumps, record.model_dump。
         """
+        if capture_stage not in {"raw", "candidate", "runtime_rejected"}:
+            raise ValueError(
+                "runtime recorder cannot create promoted lifecycle state; "
+                "use DataCaptureLifecycleStore.transition"
+            )
+
+        execution_control = current_execution_control()
+        side_effect_id = (
+            execution_control.reserve_side_effect_id(
+                f"data_capture:{capture_type}:{capture_stage}"
+            )
+            if execution_control is not None
+            else None
+        )
+        effective_metadata = dict(metadata or {})
+        if execution_control is not None:
+            effective_metadata["execution_attempt"] = {
+                "execution_id": execution_control.execution_id,
+                "commit_scope_id": execution_control.commit_scope_id,
+                "side_effect_id": side_effect_id,
+                "external_commit_policy": "attempt_scoped_deferred_v1",
+                "requires_attempt_success": capture_stage == "candidate",
+            }
+
         record = DataCaptureRecordSchema(
-            record_id=self._new_id("capture"),
+            record_id=(
+                f"capture_{side_effect_id.removeprefix('side_effect_')}"
+                if side_effect_id is not None
+                else self._new_id("capture")
+            ),
             capture_type=capture_type,
+            capture_stage=capture_stage,
             task_id=task_id,
             run_id=run_id,
             trace_id=trace_id,
@@ -200,18 +250,20 @@ class JsonlDataCaptureRecorder:
             structured_facts=structured_facts or {},
             prompt=prompt,
             model_output=model_output,
-            final_output=final_output,
+            generated_draft_output=generated_draft_output,
+            deliverable_output=deliverable_output,
             human_feedback=human_feedback or {},
             label=label or {},
             quality_score=quality_score,
             quality_flags=quality_flags or [],
             need_human_review=need_human_review,
-            is_usable_for_training=is_usable_for_training,
-            is_usable_for_eval=is_usable_for_eval,
+            is_usable_for_training=False,
+            is_usable_for_eval=False,
             related_trace_event_ids=related_trace_event_ids or [],
             related_file_ids=related_file_ids or [],
+            lineage_refs=lineage_refs or {},
             created_at=self._now_iso(),
-            metadata=metadata or {},
+            metadata=effective_metadata,
             extra=extra or {},
             retrieved_chunks=retrieved_chunks or [],
             citations=citations or [],
@@ -222,8 +274,35 @@ class JsonlDataCaptureRecorder:
         )
 
         path = self._capture_path(capture_type, run_id)
+        sink = CrashSafeJsonlRecordSink(path)
+        record_data = record.model_dump()
+        serialized = json.dumps(
+            record_data,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        semantic_fingerprint = canonical_json_sha256(
+            data_capture_semantic_projection(record_data)
+        )
 
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record.model_dump(), ensure_ascii=False) + "\n")
+        def append_record() -> None:
+            sink.append_record_once(
+                serialized,
+                id_field="record_id",
+                identity=record.record_id,
+                semantic_projection=data_capture_semantic_projection,
+                semantic_fingerprint=semantic_fingerprint,
+            )
+
+        if execution_control is None:
+            append_record()
+        else:
+            execution_control.defer_external_commit(
+                append_record,
+                description=f"data_capture:{capture_type}:{record.record_id}",
+                requires_success=capture_stage == "candidate",
+                side_effect_id=side_effect_id,
+                semantic_fingerprint=semantic_fingerprint,
+            )
 
         return record

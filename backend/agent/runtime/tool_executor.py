@@ -9,6 +9,7 @@ import traceback
 
 from contracts.observability import TraceSink
 from core.error_factory import ErrorFactory
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from observability.trace_context import activate_span, current_span, new_span
 from observability.trace_summary import (
     extract_tool_lineage,
@@ -30,6 +31,7 @@ class ToolExecutor:
         run_trace_recorder: TraceSink | None = None,
         *,
         error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
     ) -> None:
         """初始化 ToolExecutor，保存运行所需的依赖、配置或状态。
 
@@ -47,6 +49,7 @@ class ToolExecutor:
         self.tool_registry = tool_registry
         self.run_trace_recorder = run_trace_recorder
         self.error_factory = error_factory or ErrorFactory()
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
 
     # 阅读注释（函数）：处理 Trace 相关逻辑。
     def _trace(self, **kwargs) -> None:
@@ -113,13 +116,16 @@ class ToolExecutor:
                 tool = self.tool_registry.get(tool_call.tool_name)
                 result = tool.run(tool_call)
             except Exception as exc:
+                failure_category = classify_failure(exc)
+                retryable = self.retry_policy.should_retry(failure_category)
                 error = self.error_factory.create(
                     error_code="TOOL_EXECUTION_EXCEPTION",
                     error_type=exc.__class__.__name__,
                     message=str(exc),
                     user_visible_message=f"工具 {tool_call.tool_name} 执行失败。",
-                    recoverable=True,
-                    retryable=False,
+                    recoverable=retryable,
+                    retryable=retryable,
+                    failure_category=failure_category,
                     failed_node=tool_call.step_id or tool_call.tool_name,
                     component="ToolExecutor",
                     tool_name=tool_call.tool_name,
@@ -132,7 +138,11 @@ class ToolExecutor:
                     run_id=tool_call.run_id,
                     tool_name=tool_call.tool_name,
                     success=False,
-                    status=ExecutionStatus.FAILED,
+                    status=(
+                        ExecutionStatus.RETRYABLE_FAILED
+                        if retryable
+                        else ExecutionStatus.FAILED
+                    ),
                     result={},
                     error=error,
                     error_message=error.message,

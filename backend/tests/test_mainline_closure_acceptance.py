@@ -150,9 +150,7 @@ def test_self_rag_need_retrieve_more_runs_bounded_retrieval_and_recheck(
     assert rounds[0]["check_after"]["need_retrieve_more"] is False
     assert safety["retrieval_scope"] == "self_rag_recovery"
 
-    sections = (summary.get("scheme_writer_output") or {}).get("scheme_draft", {}).get(
-        "sections", []
-    )
+    sections = (summary.get("generated_draft") or {}).get("sections", [])
     safety_section = next(
         item for item in sections if item.get("section_title") == "安全设计"
     )
@@ -193,10 +191,11 @@ def test_business_failure_preserves_partial_answer_and_report(tmp_path) -> None:
         expected_real_rag=False,
     )
 
-    answer_path = Path(persisted["answer_path"])
+    rejected_draft_path = Path(persisted["rejected_draft_path"])
     report_path = Path(persisted["report_path"])
-    assert answer_path.is_file()
-    assert answer_path.read_text(encoding="utf-8").strip()
+    assert persisted["deliverable_path"] is None
+    assert rejected_draft_path.is_file()
+    assert rejected_draft_path.read_text(encoding="utf-8").strip()
     assert report_path.is_file()
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -212,7 +211,7 @@ def test_business_failure_preserves_partial_answer_and_report(tmp_path) -> None:
         for section in report["sections"]
     )
     assert report["metrics"]["corrective_retrieval_count"] >= 1
-    assert report["paths"]["answer_markdown"] == str(answer_path)
+    assert report["paths"]["rejected_draft_markdown"] == str(rejected_draft_path)
     assert report["paths"]["e2e_report"] == str(report_path)
 
 
@@ -270,7 +269,9 @@ def test_request_level_technical_failure_is_preserved_without_reraising(tmp_path
         "task_id": "task_technical_failure",
         "run_id": "run_technical_failure",
         "status": "failed",
-        "scheme_draft": {"full_text": ""},
+        "generated_draft": {"full_text": ""},
+        "rejected_artifact": None,
+        "deliverable_final_result": None,
         "scheme_writer_output": {},
         "supervisor_result": {
             "status": "failed",
@@ -301,4 +302,5 @@ def test_request_level_technical_failure_is_preserved_without_reraising(tmp_path
     assert "ContextBudgetExceededError" in persisted["validation_error"]["message"]
     report = json.loads(Path(persisted["report_path"]).read_text(encoding="utf-8"))
     assert report["error"]["error_type"] == "ContextBudgetExceededError"
-    assert Path(persisted["answer_path"]).is_file()
+    assert persisted["deliverable_path"] is None
+    assert persisted["rejected_draft_path"] is None
