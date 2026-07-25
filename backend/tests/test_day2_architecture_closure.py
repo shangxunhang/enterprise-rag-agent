@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
@@ -63,6 +64,25 @@ from core.error_factory import ErrorFactory, FIXED_FAILURE_CATEGORY_BY_ERROR_COD
 
 
 NOW = "2026-07-23T00:00:00+00:00"
+
+
+def _run_git(repo: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise AssertionError(
+            f"git {' '.join(args)} failed in {repo}\n"
+            f"stdout:\n{exc.stdout}\n"
+            f"stderr:\n{exc.stderr}"
+        ) from exc
+    return result.stdout.strip()
 
 
 def _binding(
@@ -948,17 +968,60 @@ def test_experiment_manifest_losslessly_persists_real_model_usage_ledger(tmp_pat
         )
 
 
-def test_experiment_manifest_records_current_git_identity() -> None:
-    project_root = Path(__file__).resolve().parents[2]
-    manifest = ExperimentRunManifestWriter(project_root).build(
+def test_experiment_manifest_records_current_git_identity(tmp_path: Path) -> None:
+    project_root = tmp_path / "git-project"
+    project_root.mkdir()
+    _run_git(project_root, "init")
+    _run_git(project_root, "config", "user.name", "Test User")
+    _run_git(project_root, "config", "user.email", "test@example.com")
+
+    readme = project_root / "README.md"
+    readme.write_text("hermetic manifest fixture\n", encoding="utf-8")
+    _run_git(project_root, "add", "README.md")
+    _run_git(project_root, "commit", "-m", "initial")
+    _run_git(project_root, "branch", "-M", "main")
+    _run_git(project_root, "tag", "test-manifest-v1")
+
+    expected_sha = _run_git(project_root, "rev-parse", "HEAD")
+    expected_tag = _run_git(
+        project_root,
+        "describe",
+        "--tags",
+        "--exact-match",
+    )
+    expected_branch = _run_git(
+        project_root,
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+    )
+
+    writer = ExperimentRunManifestWriter(project_root)
+    clean_manifest = writer.build(
         summary={"task_id": "task", "run_id": "run", "paths": {}},
         runtime_preflight={},
         report={"schema_version": "report_v1", "metrics": {}},
     )
-    assert manifest.code["git_commit_sha"] == "7628a3385831813be83152e4d6cbd036153d19aa"
-    assert manifest.code["git_tag"] == "langchain-langgraph-integration-v1"
-    assert manifest.code["git_branch"] == "main"
-    assert manifest.code["git_dirty"] is True
+    assert expected_tag == "test-manifest-v1"
+    assert expected_branch == "main"
+    assert clean_manifest.code["git_commit_sha"] == expected_sha
+    assert clean_manifest.code["git_tag"] == expected_tag
+    assert clean_manifest.code["git_branch"] == expected_branch
+    assert clean_manifest.code["git_dirty"] is False
+
+    readme.write_text(
+        "hermetic manifest fixture\nuncommitted change\n",
+        encoding="utf-8",
+    )
+    dirty_manifest = writer.build(
+        summary={"task_id": "task", "run_id": "run-dirty", "paths": {}},
+        runtime_preflight={},
+        report={"schema_version": "report_v1", "metrics": {}},
+    )
+    assert dirty_manifest.code["git_commit_sha"] == expected_sha
+    assert dirty_manifest.code["git_tag"] == expected_tag
+    assert dirty_manifest.code["git_branch"] == expected_branch
+    assert dirty_manifest.code["git_dirty"] is True
 
 
 def test_golden_dataset_manifest_reuses_canonical_rag_sample_schema() -> None:

@@ -674,7 +674,7 @@ def test_interrogative_project_input_cannot_support_affirmative_server_claim() -
     assert gate.passed is False
 
 
-def test_negated_generated_server_fact_is_not_affirmative_commitment() -> None:
+def test_negated_generated_server_value_still_requires_support() -> None:
     section = _generate_project_fact_section(
         project_input=_project_fact_input("task-project-fact"),
         content="本项目不部署4台服务器。",
@@ -683,9 +683,11 @@ def test_negated_generated_server_fact_is_not_affirmative_commitment() -> None:
 
     gate = _evaluate_project_fact_section(section, citations=[])
 
-    assert section.extra["mandatory_project_fact_violations"] == []
-    assert gate.checks["high_risk_claims_grounded"] is True
-    assert gate.passed is True
+    violations = section.extra["mandatory_project_fact_violations"]
+    assert violations
+    assert violations[0]["commitment"] == "negated"
+    assert gate.checks["high_risk_claims_grounded"] is False
+    assert gate.passed is False
 
 
 def test_negation_cannot_cross_scope_boundary_to_exempt_server_fact() -> None:

@@ -14,6 +14,8 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 from schemas.citation import CitationSchema
 
 from .citation_service import CitationService
+from .high_risk_claim_service import HighRiskClaimExtractor, HighRiskClaimGate
+from .trusted_fact_ledger import TrustedFactLedgerBuilder
 from .constants import (
     HARDWARE_RESOURCE_PATTERN as _HARDWARE_RESOURCE_PATTERN,
     HIGH_RISK_QUANTIFIED_PATTERN as _HIGH_RISK_QUANTIFIED_PATTERN,
@@ -595,189 +597,34 @@ class SectionAdvisoryService:
         cls,
         content: str,
     ) -> list[_MandatoryProjectFact]:
-        facts: list[_MandatoryProjectFact] = []
-        seen: set[
-            tuple[str, str, int | float | None, str, str, str]
-        ] = set()
-        for clause in cls._mandatory_atomic_clauses(content):
-            clause_facts: list[_MandatoryProjectFact] = []
-            for fact_type, subject, unit, pattern in _MANDATORY_FACT_PATTERNS:
-                for match in pattern.finditer(clause):
-                    commitment = cls._detect_fact_commitment(
-                        clause,
-                        match.span(),
-                        fact_type=fact_type,
-                        subject=subject,
-                        unit=unit,
-                    )
-                    fact = _MandatoryProjectFact(
-                        fact_type=fact_type,
-                        subject=subject,
-                        value=cls._mandatory_numeric_value(match.group("value")),
-                        unit=unit,
-                        commitment=commitment,
-                        claim=clause,
-                    )
-                    clause_facts.append(fact)
-
-            if not clause_facts:
-                extracted_values = [
-                    cls._mandatory_numeric_value(item)
-                    for item in _NUMERIC_OR_MODEL_PATTERN.findall(clause)
-                    if not re.search(r"[a-z]", str(item), re.IGNORECASE)
-                ]
-                has_quantified_fact = bool(
-                    any(value is not None for value in extracted_values)
-                    and _HIGH_RISK_QUANTIFIED_PATTERN.search(clause)
-                )
-                has_resource_commitment = bool(
-                    (
-                        _HARDWARE_RESOURCE_PATTERN.search(clause)
-                        and _RESOURCE_COMMITMENT_VERB_PATTERN.search(clause)
-                    )
-                    or (
-                        _STAFF_RESOURCE_PATTERN.search(clause)
-                        and _STAFF_COMMITMENT_VERB_PATTERN.search(clause)
-                    )
-                )
-                if has_quantified_fact or has_resource_commitment:
-                    fact_type, subject, unit = cls._fallback_mandatory_subject(
-                        clause
-                    )
-                    value = next(
-                        (
-                            item
-                            for item in extracted_values
-                            if item is not None
-                        ),
-                        None,
-                    )
-                    value_match = re.search(_MANDATORY_NUMBER, clause)
-                    span = value_match.span() if value_match else (0, len(clause))
-                    clause_facts.append(
-                        _MandatoryProjectFact(
-                            fact_type=fact_type,
-                            subject=subject,
-                            value=value,
-                            unit=unit,
-                            commitment=cls._detect_fact_commitment(
-                                clause,
-                                span,
-                                fact_type=fact_type,
-                                subject=subject,
-                                unit=unit,
-                            ),
-                            claim=clause,
-                        )
-                    )
-
-            for fact in clause_facts:
-                identity = (*fact.support_key, fact.claim)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                facts.append(fact)
-        return facts
+        return [
+            _MandatoryProjectFact(
+                fact_type=claim.fact_type,
+                subject=claim.subject,
+                value=claim.value,
+                unit=claim.unit,
+                commitment=claim.commitment,
+                claim=claim.clause_text,
+            )
+            for claim in HighRiskClaimExtractor().extract(content)
+        ]
 
     @classmethod
     def _build_mandatory_project_fact_support(
         cls,
         project_input: ProjectInputSchema,
     ) -> set[tuple[str, str, int | float | None, str, str]]:
-        support: set[
-            tuple[str, str, int | float | None, str, str]
-        ] = set()
-
-        def add(
-            fact_type: str,
-            subject: str,
-            value: Any,
-            unit: str,
-        ) -> None:
-            normalized_value = cls._mandatory_numeric_value(value)
-            if normalized_value is not None:
-                support.add(
-                    (
-                        fact_type,
-                        subject,
-                        normalized_value,
-                        unit,
-                        "affirmative",
-                    )
-                )
-
-        add("staff_count", "staff_total", project_input.total_staff, "count")
-        add(
-            "department_count",
-            "functional_department",
-            project_input.functional_department_count,
-            "count",
-        )
-        add(
-            "department_count",
-            "business_department",
-            project_input.business_department_count,
-            "count",
-        )
-        for group in project_input.department_groups:
-            group_name = str(group.group_name or "")
-            if "职能" in group_name:
-                add(
-                    "department_count",
-                    "functional_department",
-                    group.department_count,
-                    "count",
-                )
-            elif "业务" in group_name:
-                add(
-                    "department_count",
-                    "business_department",
-                    group.department_count,
-                    "count",
-                )
-        for resource in project_input.hardware_resources:
-            add(
-                "hardware_count",
-                "server",
-                resource.server_count,
-                "count",
+        del cls
+        return {
+            (
+                fact.fact_type,
+                fact.subject,
+                fact.value,
+                fact.unit,
+                "affirmative",
             )
-            resource_text = " ".join(
-                [
-                    str(resource.resource_type or ""),
-                    str(resource.device_model or ""),
-                    str(resource.description or ""),
-                ]
-            ).upper()
-            for keyword, subject in (
-                ("GPU", "gpu"),
-                ("显卡", "gpu"),
-                ("CPU", "cpu"),
-                ("NPU", "npu"),
-            ):
-                if keyword.upper() in resource_text:
-                    add(
-                        "hardware_count",
-                        subject,
-                        resource.total_cards,
-                        "count",
-                    )
-
-        for key, value in dict(project_input.metadata or {}).items():
-            mapping = _MANDATORY_METADATA_FACTS.get(str(key))
-            if mapping is not None:
-                add(*mapping[:2], value, mapping[2])
-
-        for source_text in (
-            project_input.user_query,
-            project_input.business_goal,
-        ):
-            support.update(
-                fact.support_key
-                for fact in cls._extract_mandatory_high_risk_facts(source_text)
-                if fact.commitment == "affirmative"
-            )
-        return support
+            for fact in TrustedFactLedgerBuilder().build(project_input)
+        }
 
     @classmethod
     def mandatory_project_fact_violations(
@@ -786,37 +633,23 @@ class SectionAdvisoryService:
         project_input: ProjectInputSchema,
         *,
         grounded_claims: Iterable[str] = (),
+        bindings: Iterable[Any] = (),
     ) -> List[Dict[str, Any]]:
-        """Validate affirmative deliverable facts against exact support slots."""
+        """Compatibility facade for the dedicated mandatory hard gate.
 
-        project_support = cls._build_mandatory_project_fact_support(
-            project_input
+        ``grounded_claims`` remains accepted for callers on the previous
+        interface, but free text is never promoted to trusted support.  Exact
+        evidence support requires the corresponding verified bindings.
+        """
+
+        del grounded_claims
+        return list(
+            HighRiskClaimGate().evaluate(
+                content,
+                project_input=project_input,
+                bindings=bindings,
+            ).violations
         )
-        verified_claims = {
-            clause
-            for item in grounded_claims
-            for clause in cls._mandatory_atomic_clauses(item)
-        }
-        violations: list[Dict[str, Any]] = []
-        for fact in cls._extract_mandatory_high_risk_facts(content):
-            if fact.commitment != "affirmative":
-                continue
-            if cls._normalize_mandatory_claim(fact.claim) in verified_claims:
-                continue
-            if fact.support_key in project_support:
-                continue
-            violations.append(
-                {
-                    "claim": fact.claim,
-                    "reason": "mandatory_project_fact_not_supported",
-                    "fact_type": fact.fact_type,
-                    "subject": fact.subject,
-                    "value": fact.value,
-                    "unit": fact.unit,
-                    "commitment": fact.commitment,
-                }
-            )
-        return violations
 
     # 阅读注释（函数）：处理 项目 fact violations 相关逻辑。
     @classmethod

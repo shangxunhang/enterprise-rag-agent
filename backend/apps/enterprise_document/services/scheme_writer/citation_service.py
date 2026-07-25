@@ -19,6 +19,7 @@ from .constants import (
     MIN_CITATION_SUPPORT_SCORE as _MIN_CITATION_SUPPORT_SCORE,
     MIN_CITATION_TOKEN_OVERLAP as _MIN_CITATION_TOKEN_OVERLAP,
 )
+from .citation_integrity_service import CitationOccurrenceIntegrityGate
 
 
 class CitationService:
@@ -59,47 +60,42 @@ class CitationService:
     ) -> List[CitationBindingSchema]:
         by_id = {item.citation_id: item for item in citations}
         bindings: list[CitationBindingSchema] = []
-        paragraphs = [
-            item.strip() for item in re.split(r"\n\s*\n", content) if item.strip()
-        ]
-        for paragraph_index, paragraph in enumerate(paragraphs, start=1):
-            paragraph_id = f"{section_id}_paragraph_{paragraph_index:03d}"
-            for marker_index, marker_match in enumerate(
-                _CITATION_PATTERN.finditer(paragraph), start=1
-            ):
-                citation_id = marker_match.group(1)
-                citation = by_id.get(citation_id)
-                if citation is None:
-                    continue
-                marker = f"[{citation_id}]"
-                claim = CitationService._claim_for_marker(
-                    paragraph,
-                    marker,
-                    marker_position=marker_match.start(),
+        occurrences = CitationOccurrenceIntegrityGate.extract_marker_occurrences(
+            section_id=section_id,
+            content=content,
+        )
+        for occurrence in occurrences:
+            citation = by_id.get(occurrence.citation_id)
+            if citation is None:
+                continue
+            bindings.append(
+                CitationBindingSchema(
+                    binding_id=(
+                        f"binding_{section_id}_"
+                        f"{occurrence.target_paragraph_id.rsplit('_', 1)[-1]}_"
+                        f"{occurrence.marker_ordinal:03d}"
+                    ),
+                    citation_id=occurrence.citation_id,
+                    target_document_id=document_id,
+                    target_section_id=section_id,
+                    target_paragraph_id=occurrence.target_paragraph_id,
+                    target_claim_id=occurrence.target_claim_id,
+                    target_marker_index=occurrence.marker_index,
+                    marker_ordinal=occurrence.marker_ordinal,
+                    target_marker_start=occurrence.marker_start,
+                    target_marker_end=occurrence.marker_end,
+                    source_document_id=citation.source_document_id or citation.doc_id,
+                    source_chunk_id=(
+                        citation.chunk_id
+                        or citation.child_chunk_id
+                        or citation.parent_chunk_id
+                    ),
+                    source_parent_chunk_id=citation.parent_chunk_id,
+                    claim_text=occurrence.claim_text,
+                    quote_text=citation.quote_text,
+                    confidence=citation.confidence,
                 )
-                claim_id = f"{paragraph_id}_claim_{marker_index:03d}"
-                bindings.append(
-                    CitationBindingSchema(
-                        binding_id=(
-                            f"binding_{section_id}_{paragraph_index:03d}_{marker_index:03d}"
-                        ),
-                        citation_id=citation_id,
-                        target_document_id=document_id,
-                        target_section_id=section_id,
-                        target_paragraph_id=paragraph_id,
-                        target_claim_id=claim_id,
-                        source_document_id=citation.source_document_id or citation.doc_id,
-                        source_chunk_id=(
-                            citation.chunk_id
-                            or citation.child_chunk_id
-                            or citation.parent_chunk_id
-                        ),
-                        source_parent_chunk_id=citation.parent_chunk_id,
-                        claim_text=claim,
-                        quote_text=citation.quote_text,
-                        confidence=citation.confidence,
-                    )
-                )
+            )
         return bindings
 
     @staticmethod
@@ -294,17 +290,18 @@ class CitationService:
         it only enforces marker/binding consistency for citations that are shown.
         """
 
-        verified_ids = {
-            binding.citation_id
-            for binding in bindings
-            if bool((binding.metadata or {}).get("grounding_verified"))
+        binding_list = list(bindings)
+        section_ids = {
+            binding.target_section_id
+            for binding in binding_list
+            if binding.target_section_id
         }
-
-        def replace(match: re.Match[str]) -> str:
-            citation_id = match.group(1)
-            return match.group(0) if citation_id in verified_ids else ""
-
-        return _CITATION_PATTERN.sub(replace, content)
+        section_id = next(iter(section_ids)) if len(section_ids) == 1 else None
+        return CitationOccurrenceIntegrityGate().reconcile_content(
+            content,
+            binding_list,
+            section_id=section_id,
+        )
 
     @staticmethod
     def strip_known_citation_markers(

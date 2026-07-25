@@ -56,6 +56,10 @@ class CitationBindingSchema(SchemaBase):
     target_section_id: str
     target_paragraph_id: str
     target_claim_id: str
+    target_marker_index: Optional[int] = None
+    marker_ordinal: Optional[int] = None
+    target_marker_start: Optional[int] = None
+    target_marker_end: Optional[int] = None
 
     source_document_id: Optional[str] = None
     source_chunk_id: Optional[str] = None

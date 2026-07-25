@@ -53,6 +53,10 @@ class SchemeGenerationUseCase:
             not bool(hard_gate.checks.get(check_name, True))
             for check_name in (
                 "citation_marker_binding_consistent",
+                "citation_marker_binding_bijection",
+                "citation_marker_occurrences_verified",
+                "citation_orphan_markers_absent",
+                "citation_orphan_bindings_absent",
                 "citation_targets_valid",
                 "citation_grounding_verified",
             )
@@ -381,6 +385,7 @@ class SchemeGenerationUseCase:
                 citation_required=options.need_citation,
                 citation_required_sections=required_evidence_sections,
                 retrieved_chunk_ids=known_chunk_ids,
+                project_input=project_input,
                 canonical_citations=citations,
                 tool_failed=False,
                 key_fields_valid=bool(

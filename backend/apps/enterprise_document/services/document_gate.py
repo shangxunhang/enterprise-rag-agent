@@ -15,6 +15,16 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     HardGateResultSchema,
     SchemeDraftSchema,
 )
+from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
+from apps.enterprise_document.services.scheme_writer.citation_integrity_service import (
+    CitationOccurrenceIntegrityGate,
+)
+from apps.enterprise_document.services.scheme_writer.high_risk_claim_service import (
+    HighRiskClaimGate,
+)
+from apps.enterprise_document.services.scheme_writer.trusted_fact_ledger import (
+    TrustedFactLedgerBuilder,
+)
 from schemas.citation import CitationSchema
 from schemas.status import ExecutionStatus
 
@@ -29,6 +39,7 @@ def evaluate_scheme_draft(
     *,
     citation_required: bool,
     retrieved_chunk_ids: Iterable[str],
+    project_input: ProjectInputSchema | None = None,
     canonical_citations: Iterable[CitationSchema] = (),
     citation_required_sections: Iterable[str] = (),
     tool_failed: bool = False,
@@ -248,13 +259,20 @@ def evaluate_scheme_draft(
                 "document_binding_counts": dict(section_aggregate_bindings),
             }
 
+    occurrence_integrity = CitationOccurrenceIntegrityGate().evaluate(
+        sections=draft.sections,
+        bindings=draft.citation_bindings,
+        full_text=draft.full_text,
+    )
+    checks.update(occurrence_integrity.checks)
+
     checks["citation_marker_binding_consistent"] = not (
         marker_binding_count_mismatches
         or duplicate_binding_ids
         or invalid_binding_ids
         or section_marker_binding_mismatches
         or section_binding_payload_mismatches
-    )
+    ) and occurrence_integrity.passed
     if marker_binding_count_mismatches:
         failures.append("引用标记与绑定数量不是一一对应")
     if duplicate_binding_ids:
@@ -265,6 +283,14 @@ def evaluate_scheme_draft(
         failures.append("章节级引用标记与绑定不一致")
     if section_binding_payload_mismatches:
         failures.append("章节级与文档级引用绑定内容不一致")
+    if not checks["citation_marker_binding_bijection"]:
+        failures.append("引用标记 occurrence 与绑定不是一一对应")
+    if not checks["citation_marker_occurrences_verified"]:
+        failures.append("存在未通过 grounding 校验的引用 occurrence")
+    if not checks["citation_orphan_markers_absent"]:
+        failures.append("最终正文存在 orphan citation marker")
+    if not checks["citation_orphan_bindings_absent"]:
+        failures.append("存在未指向真实 marker occurrence 的引用绑定")
 
     required_citation_titles = {
         str(title).strip() for title in citation_required_sections if str(title).strip()
@@ -304,7 +330,7 @@ def evaluate_scheme_draft(
     if unverified_bindings:
         failures.append("存在未通过 Claim-Evidence 校验的引用")
 
-    unsupported_project_facts = [
+    recorded_unsupported_project_facts = [
         {
             "section_id": section.section_id,
             "section_title": section.section_title,
@@ -316,6 +342,112 @@ def evaluate_scheme_draft(
             or []
         )
     ]
+    inferred_project_inputs: dict[str, ProjectInputSchema] = {}
+    project_input_parse_failures: list[str] = []
+    for section in draft.sections:
+        if project_input is not None:
+            inferred_project_inputs[section.section_id] = project_input
+            continue
+        payload = dict(section.input or {}).get("project_input")
+        if payload is None:
+            continue
+        try:
+            inferred_project_inputs[section.section_id] = (
+                ProjectInputSchema.model_validate(payload)
+            )
+        except Exception:
+            project_input_parse_failures.append(section.section_id)
+
+    ledger_builder = TrustedFactLedgerBuilder()
+    trusted_facts = ledger_builder.build_many(
+        inferred_project_inputs.values()
+    )
+    high_risk_gate = HighRiskClaimGate(ledger_builder=ledger_builder)
+    final_unsupported_project_facts: list[dict[str, Any]] = []
+    supported_section_fact_occurrences: Counter[
+        tuple[str, str, int | float | str, str]
+    ] = Counter()
+    for section in draft.sections:
+        section_result = high_risk_gate.evaluate(
+            str(section.content or ""),
+            project_input=inferred_project_inputs.get(section.section_id),
+            bindings=section.citation_bindings,
+            target_section_id=section.section_id,
+        )
+        section_violation_counts = Counter(
+            (
+                str(violation.get("fact_type") or ""),
+                str(violation.get("subject") or ""),
+                violation.get("value"),
+                str(violation.get("unit") or ""),
+            )
+            for violation in section_result.violations
+        )
+        for claim in section_result.claims:
+            if section_violation_counts[claim.identity] > 0:
+                section_violation_counts[claim.identity] -= 1
+                continue
+            supported_section_fact_occurrences[claim.identity] += 1
+        final_unsupported_project_facts.extend(
+            {
+                "section_id": section.section_id,
+                "section_title": section.section_title,
+                **dict(violation),
+            }
+            for violation in section_result.violations
+        )
+
+    document_result = high_risk_gate.evaluate(
+        str(draft.full_text or ""),
+        trusted_facts=trusted_facts,
+        bindings=(),
+    )
+    remaining_supported_occurrences = supported_section_fact_occurrences.copy()
+    for violation in document_result.violations:
+        identity = (
+            str(violation.get("fact_type") or ""),
+            str(violation.get("subject") or ""),
+            violation.get("value"),
+            str(violation.get("unit") or ""),
+        )
+        if remaining_supported_occurrences[identity] > 0:
+            remaining_supported_occurrences[identity] -= 1
+            continue
+        final_unsupported_project_facts.append(
+            {
+                "section_id": "<document>",
+                "section_title": draft.title,
+                **dict(violation),
+            }
+        )
+
+    unsupported_project_facts: list[dict[str, Any]] = []
+    seen_unsupported_facts: set[str] = set()
+    for violation in [
+        *recorded_unsupported_project_facts,
+        *final_unsupported_project_facts,
+    ]:
+        identity = json.dumps(
+            {
+                key: violation.get(key)
+                for key in (
+                    "section_id",
+                    "reason",
+                    "fact_type",
+                    "subject",
+                    "value",
+                    "unit",
+                    "span_start",
+                    "span_end",
+                )
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if identity in seen_unsupported_facts:
+            continue
+        seen_unsupported_facts.add(identity)
+        unsupported_project_facts.append(violation)
     checks["high_risk_claims_grounded"] = not unsupported_project_facts
     if unsupported_project_facts:
         failures.append("存在未获项目输入或已验证证据支撑的高风险项目事实")
@@ -390,6 +522,12 @@ def evaluate_scheme_draft(
             "binding_lineage_mismatches": binding_lineage_mismatches,
             "section_marker_binding_mismatches": section_marker_binding_mismatches,
             "section_binding_payload_mismatches": section_binding_payload_mismatches,
+            **occurrence_integrity.metadata,
+            "project_input_parse_failure_section_ids": project_input_parse_failures,
+            "recorded_unsupported_project_facts": (
+                recorded_unsupported_project_facts
+            ),
+            "final_unsupported_project_facts": final_unsupported_project_facts,
             "partial_sections": partial_sections,
             "evidence_blocked_section_ids": evidence_blocked_section_ids,
             "explicitly_blocked_for_no_evidence": explicitly_blocked_for_no_evidence,

@@ -24,6 +24,7 @@ from .advisory_service import SectionAdvisoryService
 from .citation_service import CitationService
 from .constants import CITATION_PATTERN as _CITATION_PATTERN
 from .grounding_repair_service import GroundingRepairService
+from .high_risk_claim_service import HighRiskClaimGate
 from .model_service import SectionModelService
 from .prompt_service import SectionPromptService
 from .runtime_support import SchemeWriterRuntimeSupport
@@ -57,6 +58,7 @@ class SectionGenerationService:
         self.citation_service = citation_service
         self.grounding_repair_service = grounding_repair_service
         self.advisory_service = advisory_service
+        self.high_risk_claim_gate = HighRiskClaimGate()
         self.semantic_judge = semantic_judge
         self.enable_semantic_gate = enable_semantic_gate
         self.semantic_gate_model_name = semantic_gate_model_name
@@ -674,18 +676,13 @@ class SectionGenerationService:
         # judge. Re-evaluate deterministic high-risk project facts against
         # ProjectInput, then accept evidence support only for the exact claims
         # that already have a grounding-verified CitationBinding.
-        final_fact_content = _CITATION_PATTERN.sub("", content)
-        grounded_claims = [
-            binding.claim_text
-            for binding in bindings
-            if bool((binding.metadata or {}).get("grounding_verified"))
-        ]
-        mandatory_project_fact_violations = (
-            self.advisory_service.mandatory_project_fact_violations(
-                final_fact_content,
-                project_input,
-                grounded_claims=grounded_claims,
-            )
+        mandatory_project_fact_violations = list(
+            self.high_risk_claim_gate.evaluate(
+                content,
+                project_input=project_input,
+                bindings=bindings,
+                target_section_id=section_id,
+            ).violations
         )
 
         quality = self.quality_evaluator.evaluate(
