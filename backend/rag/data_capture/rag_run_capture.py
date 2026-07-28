@@ -1,24 +1,12 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：RagRunCapture。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/data_capture/rag_run_capture.py
-===========================================
+"""把一次完整 RAG 查询运行保存为可重放 JSONL 记录。
 
-P4-lite RAG run capture.
+采集记录可用于调试、评测重放、SFT/DPO 候选构造和 Reranker 数据集构造，但运行时
+成功并不自动等于训练或评测真值。本模块只保存运行轨迹；后续 Builder 必须与父工作流
+最终结果关联后，才能决定样本是否可用。
 
-It writes a full single-query RAG trace into JSONL for later:
-- debugging
-- eval replay
-- SFT candidate construction
-- DPO / preference candidate construction
-- reranker dataset construction
-
-职责边界：
-- 只保存运行轨迹，不筛选训练样本。
-- 后续 DatasetBuilder 再从 runs 中构造 SFT/DPO/RAG eval 数据。
+在受控执行上下文中，写入会延迟到当前尝试成功后提交，并通过业务语义投影实现幂等；
+没有执行上下文时则立即追加为不可训练的原始遥测记录。
 """
 
 from __future__ import annotations
@@ -32,6 +20,7 @@ from core.runtime.execution_control import current_execution_control
 from rag.data_capture.jsonl_writer import JsonlWriter
 
 
+# 顶层运行诊断字段不改变 RAG 业务事实，因此从幂等语义投影中排除。
 _TOP_LEVEL_RUNTIME_DIAGNOSTIC_FIELDS = frozenset(
     {
         "attempt_id",
@@ -45,6 +34,7 @@ _TOP_LEVEL_RUNTIME_DIAGNOSTIC_FIELDS = frozenset(
     }
 )
 
+# 模型调用 envelope 中的调用身份、尝试列表和计时字段也属于运行诊断。
 _MODEL_CALL_RUNTIME_DIAGNOSTIC_FIELDS = frozenset(
     {
         "attempt_id",
@@ -62,6 +52,8 @@ _MODEL_CALL_RUNTIME_DIAGNOSTIC_FIELDS = frozenset(
 
 
 def _drop_fields(container: Any, fields: frozenset[str]) -> None:
+    """从字典中原地删除指定字段；非字典输入直接忽略。"""
+
     if not isinstance(container, dict):
         return
     for field in fields:
@@ -69,20 +61,28 @@ def _drop_fields(container: Any, fields: frozenset[str]) -> None:
 
 
 def _project_model_call_envelopes(model_calls: Any) -> None:
+    """从模型调用列表中移除运行级诊断字段。"""
+
     if not isinstance(model_calls, list):
         return
     for model_call in model_calls:
-        _drop_fields(model_call, _MODEL_CALL_RUNTIME_DIAGNOSTIC_FIELDS)
+        _drop_fields(
+            model_call,
+            _MODEL_CALL_RUNTIME_DIAGNOSTIC_FIELDS,
+        )
 
 
 def _project_query_expansion_runtime(query_expansion: Any) -> None:
-    """Remove timings only from the concrete QueryExpansionResult envelope."""
+    """只移除具体 QueryExpansionResult 中 RAG-Fusion/HyDE 的延迟。"""
 
+    # 第一步：确认查询扩展和其 metadata 都是对象。
     if not isinstance(query_expansion, dict):
         return
     metadata = query_expansion.get("metadata")
     if not isinstance(metadata, dict):
         return
+
+    # 第二步：保留扩展查询、模型输出和策略，只删除不稳定的耗时字段。
     for runtime_component in ("rag_fusion", "hyde"):
         component = metadata.get(runtime_component)
         if isinstance(component, dict):
@@ -90,12 +90,19 @@ def _project_query_expansion_runtime(query_expansion: Any) -> None:
 
 
 def _project_evidence_assessment_runtime(evidence_quality: Any) -> None:
-    """Remove timings only from concrete CRAG assessment report paths."""
+    """只移除 CRAG 证据评估 envelope 中的延迟字段。"""
 
     if not isinstance(evidence_quality, dict):
         return
+
+    # 顶层评估耗时不影响证据结论。
     evidence_quality.pop("latency_ms", None)
-    for assessment_name in ("initial_assessment", "final_assessment"):
+
+    # 初始和最终评估报告中的耗时同样排除，评分、原因和证据细节全部保留。
+    for assessment_name in (
+        "initial_assessment",
+        "final_assessment",
+    ):
         assessment = evidence_quality.get(assessment_name)
         if not isinstance(assessment, dict):
             continue
@@ -104,70 +111,91 @@ def _project_evidence_assessment_runtime(evidence_quality: Any) -> None:
             report.pop("latency_ms", None)
 
 
-def rag_run_semantic_projection(record: dict[str, Any]) -> dict[str, Any]:
-    """Project RAG business semantics using explicit runtime paths.
+def rag_run_semantic_projection(
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """提取用于幂等判断的 RAG 业务语义投影。
 
-    Retrieval, evidence, citation, context, source-lineage, and caller metadata
-    subtrees are deliberately preserved without recursive field-name filtering.
+    Args:
+        record: 完整运行采集记录。
+
+    Returns:
+        深拷贝后的投影，移除尝试、计时和模型调用身份等不稳定诊断字段。
+
+    检索结果、证据、引用、上下文、来源血缘和调用方 metadata 都被完整保留。这里不做
+    递归“按字段名删除”，避免误删业务对象中恰好同名的合法字段。
     """
 
+    # 第一步：深拷贝，投影过程不能修改真正待落盘的原始遥测记录。
     projection = deepcopy(record)
+
+    # 第二步：移除执行尝试 envelope 和顶层诊断字段。
     projection.pop("attempt", None)
-    _drop_fields(projection, _TOP_LEVEL_RUNTIME_DIAGNOSTIC_FIELDS)
+    _drop_fields(
+        projection,
+        _TOP_LEVEL_RUNTIME_DIAGNOSTIC_FIELDS,
+    )
 
+    # 第三步：清理顶层模型调用、查询扩展和证据评估中的运行时噪声。
     _project_model_call_envelopes(projection.get("model_calls"))
-    _project_query_expansion_runtime(projection.get("query_expansion"))
-    _project_evidence_assessment_runtime(projection.get("evidence_quality"))
+    _project_query_expansion_runtime(
+        projection.get("query_expansion")
+    )
+    _project_evidence_assessment_runtime(
+        projection.get("evidence_quality")
+    )
 
+    # 第四步：同样处理 metadata 内的兼容投影，但保留其他业务 metadata。
     metadata = projection.get("metadata")
     if isinstance(metadata, dict):
         metadata.pop("model_call_ids", None)
         metadata.pop("query_expansion_model_call_ids", None)
-        _project_model_call_envelopes(metadata.get("model_calls"))
-        _project_query_expansion_runtime(metadata.get("query_expansion"))
-        _project_evidence_assessment_runtime(metadata.get("evidence_quality"))
+        _project_model_call_envelopes(
+            metadata.get("model_calls")
+        )
+        _project_query_expansion_runtime(
+            metadata.get("query_expansion")
+        )
+        _project_evidence_assessment_runtime(
+            metadata.get("evidence_quality")
+        )
 
     return projection
 
 
-# 阅读注释（类）：封装 RAG run capture，集中封装相关状态、依赖和行为。
 class RagRunCapture:
-    """Capture one RAG pipeline run as one JSONL record."""
+    """把每次 RAG Pipeline 运行追加到一个 JSONL 文件。"""
 
-    # 阅读注释（函数）：初始化 RagRunCapture，保存运行所需的依赖、配置或状态。
-    def __init__(self, output_path: str | Path = "data/runs/rag_runs.jsonl"):
-        """初始化 RagRunCapture，保存运行所需的依赖、配置或状态。
+    def __init__(
+        self,
+        output_path: str | Path = "data/runs/rag_runs.jsonl",
+    ) -> None:
+        """初始化目标路径和崩溃安全写入器。"""
 
-        参数:
-            output_path: 输出 路径，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：Path, JsonlWriter。
-        """
         self.output_path = Path(output_path)
         self.writer = JsonlWriter(self.output_path)
 
-    # 阅读注释（函数）：记录并沉淀 RagRunCapture。
     def capture(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """记录并沉淀 RagRunCapture。
+        """立即或延迟保存一条 RAG 运行记录。
 
-        参数:
-            record: 记录，具体约束请结合类型标注和调用方确认。
+        Args:
+            record: 已组装的完整运行字典，通常包含 run_id、检索、证据、上下文和模型输出。
 
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：self.writer.write, str, record.get。
+        Returns:
+            写入状态字典。立即模式返回 ``saved=True``；受控执行模式返回
+            ``deferred=True`` 和稳定 ``capture_id``。
         """
+
+        # 第一步：读取当前尝试级执行控制；普通脚本环境通常没有该上下文。
         execution_control = current_execution_control()
+
+        # 第二步：无执行控制时立即保存不可晋级的原始遥测。
         if execution_control is None:
             capture_record = {
                 **record,
-                "capture_semantics": "immutable_raw_attempt_telemetry_v1",
+                "capture_semantics": (
+                    "immutable_raw_attempt_telemetry_v1"
+                ),
                 "training_eligible": False,
                 "eval_eligible": False,
                 "parent_workflow_outcome": "not_joined",
@@ -180,7 +208,12 @@ class RagRunCapture:
                 "run_id": record.get("run_id"),
             }
 
-        side_effect_id = execution_control.reserve_side_effect_id("rag_run_capture")
+        # 第三步：受控执行中为本副作用分配尝试范围内的稳定身份。
+        side_effect_id = execution_control.reserve_side_effect_id(
+            "rag_run_capture"
+        )
+
+        # 第四步：构造尝试级遥测。即使检索成功，训练/评测资格仍保持 False。
         capture_record = {
             **record,
             "capture_id": side_effect_id,
@@ -192,16 +225,17 @@ class RagRunCapture:
                 "cancelled": False,
                 "timeout": False,
             },
-            # A successful retrieval attempt is not training/eval truth. A
-            # downstream builder must join the terminal parent workflow result.
             "training_eligible": False,
             "eval_eligible": False,
             "parent_workflow_outcome": "pending_join",
         }
+
+        # 第五步：对排除运行噪声后的业务投影计算稳定指纹。
         semantic_fingerprint = canonical_json_sha256(
             rag_run_semantic_projection(capture_record)
         )
 
+        # 第六步：定义成功提交时执行的幂等写入闭包。
         def append_record() -> None:
             self.writer.write_once(
                 capture_record,
@@ -210,13 +244,18 @@ class RagRunCapture:
                 semantic_fingerprint=semantic_fingerprint,
             )
 
+        # 第七步：把外部副作用绑定到当前尝试成功；失败、取消或超时不会提交。
         execution_control.defer_external_commit(
             append_record,
-            description=f"rag_run_capture:{record.get('run_id')}",
+            description=(
+                f"rag_run_capture:{record.get('run_id')}"
+            ),
             requires_success=True,
             side_effect_id=side_effect_id,
             semantic_fingerprint=semantic_fingerprint,
         )
+
+        # 第八步：返回待提交信息，调用方无需假设文件已经可见。
         return {
             "saved": False,
             "deferred": True,
@@ -226,17 +265,10 @@ class RagRunCapture:
             "capture_id": side_effect_id,
         }
 
-    # 阅读注释（函数）：以可调用对象形式执行 RagRunCapture 的核心逻辑。
-    def __call__(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """以可调用对象形式执行 RagRunCapture 的核心逻辑。
+    def __call__(
+        self,
+        record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """允许实例作为可调用采集函数使用。"""
 
-        参数:
-            record: 记录，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：self.capture。
-        """
         return self.capture(record)

@@ -858,7 +858,7 @@ def persist_end_to_end_artifacts(
 
 # 阅读注释（函数）：执行 run 演示 的主流程。
 def run_demo(
-    user_input: str = DEFAULT_USER_INPUT,
+    user_input: str = DEFAULT_USER_INPUT,      #
     run_id: Optional[str] = None,
     task_id: Optional[str] = None,
     output_root: Optional[str | Path] = None,
@@ -976,7 +976,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    #接收用户输入
     user_input = _resolve_console_question(args.user_input)
+    # 创建运行时配置
     _configure_runtime(fake_runtime=args.fake_runtime)
 
     # 接下用户自己上传的rag配置

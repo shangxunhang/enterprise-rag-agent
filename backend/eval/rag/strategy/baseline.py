@@ -1,46 +1,41 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：BaselineManager。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Baseline selection and metric delta calculation."""
+"""选择策略评测基线并计算实验相对增量。"""
+
 from __future__ import annotations
 
 from .schemas import ComparisonRow, ExperimentReport
 
 
-# 阅读注释（类）：封装 baseline 管理器，集中封装相关状态、依赖和行为。
 class BaselineManager:
-    """封装 baseline 管理器，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 BaselineManager，保存运行所需的依赖、配置或状态。
+    """基于 experiment_id 管理基线报告和对比表。
+
+    Attributes:
+        baseline_experiment_id: 配置指定的基线实验标识。为空时不计算任何增量，
+            但仍生成所有实验的绝对指标行。
+    """
+
     def __init__(self, baseline_experiment_id: str | None) -> None:
-        """初始化 BaselineManager，保存运行所需的依赖、配置或状态。
+        """保存可选基线实验标识。"""
 
-        参数:
-            baseline_experiment_id: baseline experiment 标识，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-        """
         self.baseline_experiment_id = baseline_experiment_id
 
-    # 阅读注释（函数）：选择 BaselineManager。
     def select(
         self,
         reports: list[ExperimentReport],
     ) -> ExperimentReport | None:
-        """选择 BaselineManager。
+        """从报告列表中选择配置指定的基线。
 
-        参数:
-            reports: reports，具体约束请结合类型标注和调用方确认。
+        Args:
+            reports: 本次矩阵执行产生的实验报告。
 
-        返回:
-            ExperimentReport | None
-
-        阅读提示:
-            主要直接调用：next。
+        Returns:
+            experiment_id 匹配的首个报告；未配置或未找到时返回 ``None``。
         """
+
+        # 未配置基线时显式返回 None，调用方只展示绝对指标。
         if not self.baseline_experiment_id:
             return None
+
+        # 按报告原顺序查找，experiment_id 唯一性由配置 Schema 负责保证。
         return next(
             (
                 report
@@ -50,36 +45,43 @@ class BaselineManager:
             None,
         )
 
-    # 阅读注释（函数）：处理 rows 相关逻辑。
     def rows(
         self,
         reports: list[ExperimentReport],
         metrics: list[str],
     ) -> list[ComparisonRow]:
-        """处理 rows 相关逻辑。
+        """构建每个实验相对基线的指标对比行。
 
-        参数:
-            reports: reports，具体约束请结合类型标注和调用方确认。
-            metrics: 指标，具体约束请结合类型标注和调用方确认。
+        Args:
+            reports: 待比较实验报告。
+            metrics: 需要计算 delta 的稳定指标名称列表。
 
-        返回:
-            list[ComparisonRow]
-
-        阅读提示:
-            主要直接调用：self.select, report.aggregate_metrics.get, baseline.aggregate_metrics.get, float, rows.append, ComparisonRow。
+        Returns:
+            与 ``reports`` 顺序一致的对比行。当前值或基线值缺失时，相应 delta
+            设为 ``None``，不把“缺失”误写成零改进。
         """
+
+        # 第一步：只选择一次基线，保证整张表使用同一参考对象。
         baseline = self.select(reports)
         rows: list[ComparisonRow] = []
+
+        # 第二步：逐实验计算指定指标相对基线的绝对差值。
         for report in reports:
             deltas: dict[str, float | None] = {}
             for metric in metrics:
                 current = report.aggregate_metrics.get(metric)
-                base = baseline.aggregate_metrics.get(metric) if baseline else None
+                base = (
+                    baseline.aggregate_metrics.get(metric)
+                    if baseline is not None
+                    else None
+                )
                 deltas[metric] = (
                     float(current) - float(base)
                     if current is not None and base is not None
                     else None
                 )
+
+            # 第三步：保留实验身份、静态检索配置哈希和运行统计，形成完整对比记录。
             rows.append(
                 ComparisonRow(
                     experiment_id=report.experiment_id,
@@ -96,4 +98,5 @@ class BaselineManager:
                     duration_ms=report.duration_ms,
                 )
             )
+
         return rows

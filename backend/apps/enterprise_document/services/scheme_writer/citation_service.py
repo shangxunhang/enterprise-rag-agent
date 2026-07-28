@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：确定性引用处理服务。
-# 只负责引用标记解析、绑定、支持性评分、严格过滤和确定性 marker 插入；不调用 LLM。
-# =============================================================================
-"""Deterministic citation binding and grounding verification."""
+"""确定性引用绑定与 Grounding 校验服务。
+
+本模块解析正文引用标记、定位其前置 Claim、构造 CitationBinding、计算文本支持度并过滤
+弱绑定；必要时可按确定性规则插入标记，但绝不调用模型。LLM 修复只负责提出候选文本，
+最终是否接受仍由这里的绑定和支持性检查决定。
+"""
 
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from .citation_integrity_service import CitationOccurrenceIntegrityGate
 
 
 class CitationService:
-    """Pure deterministic citation/grounding policy; never invokes a model."""
+    """纯规则引用策略：同一正文和引用集合必须产生相同绑定与支持性结论。"""
 
     @staticmethod
     def _claim_for_marker(

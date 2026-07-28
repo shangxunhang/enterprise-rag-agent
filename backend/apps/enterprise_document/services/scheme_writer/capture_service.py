@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SchemeCaptureService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""把一次方案生成运行沉淀为原始交互、评测候选、SFT 候选或拒绝样本。
+
+本服务只组织捕获内容和生命周期分类；幂等写入、尝试级延迟提交与训练可用性晋级由底层
+DataCapture 实现负责。成功运行形成 candidate，失败运行只能形成 runtime_rejected。
+"""
 
 
 from typing import Any, Dict
@@ -13,8 +13,9 @@ from schemas.status import ExecutionStatus
 from contracts.observability import DataCaptureSink
 
 
-# 阅读注释（类）：封装 scheme capture 服务，封装一组可复用的业务能力。
 class SchemeCaptureService:
+    """汇总生成、证据、模型和门禁血缘，并交给统一数据采集端口。"""
+
     def __init__(
         self,
         *,
@@ -23,8 +24,7 @@ class SchemeCaptureService:
     ) -> None:
         self.data_capture_recorder = data_capture_recorder
         self.agent_name = agent_name
-    """封装 scheme capture 服务，封装一组可复用的业务能力。"""
-    # 阅读注释（函数）：记录并沉淀 SchemeCaptureService。
+
     def capture(
         self,
         shared_state: SharedStateSchema,
@@ -32,19 +32,11 @@ class SchemeCaptureService:
         output: SchemeWriterOutputSchema,
         rag_output: Dict[str, Any],
     ) -> None:
-        """记录并沉淀 SchemeCaptureService。
+        """记录一次方案生成的运行快照和候选样本。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            scheme_input: scheme 输入，具体约束请结合类型标注和调用方确认。
-            output: 输出，具体约束请结合类型标注和调用方确认。
-            rag_output: RAG 输出，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：draft.model_dump, dict, output.rag_context.model_dump, item.model_dump, rag_output.get, scheme_input.model_dump, join, output.hard_gate.model_dump。
+        ``raw_interactions`` 始终记录；只有最终状态成功时才创建 eval/SFT candidate，失败
+        草稿则进入 eval 与 rejected 的 ``runtime_rejected`` 阶段。Capture 中的 RAG 与
+        Trace 字段是兼容快照，canonical 运行、检索和模型用量仍由各自账本负责。
         """
         if self.data_capture_recorder is None:
             return

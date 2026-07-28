@@ -1,9 +1,9 @@
-# =============================================================================
-# 中文阅读说明：文档级确定性聚合服务。
-# 只负责把章节、证据、引用和检索结果组装为完整 SchemeDraft 与 Hard Gate 所需聚合数据。
-# 不调用 RAG、LLM，不写 SharedState，不执行 Capture 或 Document Hard Gate。
-# =============================================================================
-"""Deterministic document assembly for scheme generation."""
+"""把已完成章节、证据和引用确定性聚合为文档草稿及门禁输入。
+
+装配器不调用 RAG 或 LLM，不写 SharedState，也不执行 Capture 或文档硬门禁。它只计算
+缺失章节、正文顺序、引用绑定、Chunk 去重和逐章节证据要求，确保后续门禁看到完整且
+可复现的文档级事实。
+"""
 
 from __future__ import annotations
 
@@ -16,13 +16,18 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
 
 
 class DocumentAssembler:
-    """Own deterministic aggregation from completed sections to one document draft."""
+    """负责从章节结果到 ``SchemeDraft`` 的纯聚合，不决定是否允许交付。"""
 
     def assemble(
         self,
         request: DocumentAssemblyRequestSchema,
     ) -> DocumentAssemblyResultSchema:
-        """Assemble completed section results without external I/O or side effects."""
+        """无外部 I/O 地装配章节，并计算文档门禁所需的证据覆盖状态。
+
+        检索 Chunk 按稳定标识去重，同时保留父子 Chunk 的全部已知 ID。引用必需章节采用
+        全称量化：每个章节都必须独立达到 sufficient，或因证据不足而被明确 blocked；
+        文档级证据判断不能替代缺失或未评估的章节结论。
+        """
 
         sections = list(request.sections)
         required_sections = list(request.required_sections)

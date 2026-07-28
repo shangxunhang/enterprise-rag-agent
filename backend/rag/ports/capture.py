@@ -1,15 +1,14 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：RAGRunCapturePort。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""RAG run-capture port."""
+"""RAG 单次运行记录的持久化端口。"""
 from __future__ import annotations
 
 from typing import Any, Dict, Protocol
 
 
-# 阅读注释（类）：封装 ragrun capture port，定义模块间调用契约，具体实现由适配器或插件提供。
 class RAGRunCapturePort(Protocol):
-    """封装 ragrun capture port，定义模块间调用契约，具体实现由适配器或插件提供。"""
-    # 阅读注释（函数）：记录并沉淀 RAGRunCapturePort。
+    """接收完整 RAG 运行记录并返回实际持久化后的标准记录。
+
+    Pipeline 只依赖该协议，不关心实现使用 JSONL、数据库还是测试内存；实现方应负责
+    幂等、序列化和外部副作用时机。
+    """
+
     def capture(self, record: Dict[str, Any]) -> Dict[str, Any]: ...

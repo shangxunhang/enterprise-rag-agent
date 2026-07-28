@@ -77,6 +77,7 @@ class SchemeWriterAgent(BaseAgent):
         repair_strategy: object | None = None,
         generation_quality_metadata: Optional[dict] = None,
         retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
+        section_max_concurrency: int = 1,
     ) -> None:
         # Long-lived adapters and configuration are owned by the composition
         # root.  Focused services receive only the collaborators they use.
@@ -165,6 +166,7 @@ class SchemeWriterAgent(BaseAgent):
             agent_type=self.agent_type,
             rag_service_name=rag_service_name,
             enable_semantic_gate=enable_semantic_gate,
+            section_max_concurrency=section_max_concurrency,
         )
         self.stage_service = self.use_case.stage_service
 

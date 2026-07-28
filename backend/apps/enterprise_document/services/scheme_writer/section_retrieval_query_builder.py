@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：章节级检索 Query Builder。
-# 只负责把 ProjectInput + section title 转换为普通检索或恢复检索查询，不执行 RAG。
-# =============================================================================
-"""Build section-aware retrieval queries for scheme generation."""
+"""把 ProjectInput 与章节标题转换为确定性的普通或恢复检索查询。
+
+该服务只组织查询意图，不执行 RAG。它会过滤 ``unspecified``、默认项目等占位值，优先
+使用真实项目类型/名称，必要时才从用户请求或文档标题提取项目标签。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 
 
 class SectionRetrievalQueryBuilder:
-    """Build deterministic section/recovery queries from project context."""
+    """为不同章节附加领域提示，并在恢复模式强调可直接绑定引用的原文证据。"""
 
     @staticmethod
     def build(
@@ -22,6 +22,7 @@ class SectionRetrievalQueryBuilder:
         *,
         recovery: bool = False,
     ) -> str:
+        """构造章节检索 Query；``recovery=True`` 时收紧到确定性陈述支撑证据。"""
         placeholder_values = {
             "",
             "unspecified",

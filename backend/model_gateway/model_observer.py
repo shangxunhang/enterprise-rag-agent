@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：ModelCallObserver。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Trace v2 model-call observer."""
+"""记录模型调用的 Trace v2 起止事件、用量、上下文血缘和失败信息。"""
 
 from __future__ import annotations
 
@@ -15,39 +11,22 @@ from schemas.model import ModelRequestSchema, ModelResponseSchema
 from schemas.status import ExecutionStatus
 
 
-# 阅读注释（类）：封装 模型 call observer，集中封装相关状态、依赖和行为。
 class ModelCallObserver:
-    """封装 模型 call observer，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 ModelCallObserver，保存运行所需的依赖、配置或状态。
+    """围绕一次逻辑模型调用创建 client span，不参与模型选择或异常处理。"""
     def __init__(self, sink: Optional[TraceSink] = None) -> None:
-        """初始化 ModelCallObserver，保存运行所需的依赖、配置或状态。
-
-        参数:
-            sink: sink，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-        """
+        """注入可选 Trace sink；禁用观测时其余调用链仍保持相同行为。"""
         self.sink = sink
 
-    # 阅读注释（函数）：启动 ModelCallObserver。
     def start(
         self,
         request: ModelRequestSchema,
         *,
         model_name: str,
     ) -> TraceSpanHandle:
-        """启动 ModelCallObserver。
+        """创建模型调用 span，并记录有界输入摘要与选择血缘。
 
-        参数:
-            request: 当前请求对象。
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            TraceSpanHandle
-
-        阅读提示:
-            主要直接调用：new_span, current_span, self.sink.record, model_request_summary, request.extra.get, get, bool。
+        不把完整 Prompt 写入 Trace；摘要只保存长度、哈希、短预览和上下文包标识，既能
+        复核具体调用，又避免 Trace 成为第二份业务文档或泄露敏感内容。
         """
         handle = new_span(
             run_id=request.run_id,
@@ -95,7 +74,6 @@ class ModelCallObserver:
             )
         return handle
 
-    # 阅读注释（函数）：处理 finish 相关逻辑。
     def finish(
         self,
         request: ModelRequestSchema,
@@ -104,19 +82,10 @@ class ModelCallObserver:
         model_name: str,
         handle: TraceSpanHandle,
     ) -> None:
-        """处理 finish 相关逻辑。
+        """关闭模型 span，补齐延迟、Token 用量、失败状态和调用血缘。
 
-        参数:
-            request: 当前请求对象。
-            response: 下游返回的响应对象。
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-            handle: handle，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：handle.latency_ms, response.token_usage.model_dump, self.sink.record, model_response_summary, request.extra.get, get, bool。
+        客户端未返回延迟时使用 span 本地计时，并同步写回响应对象，保证 Trace 与上层
+        数据采集看到同一数值。
         """
         if self.sink is None:
             return
@@ -173,7 +142,6 @@ class ModelCallObserver:
             tags=["trace_v2", "model"],
         )
 
-    # 阅读注释（函数）：记录 ModelCallObserver。
     def record(
         self,
         request: ModelRequestSchema,

@@ -1,9 +1,9 @@
-# =============================================================================
-# 中文阅读说明：单章节完整生命周期编排。
-# 负责章节检索、证据门禁、生成、Self-RAG 恢复、引用恢复、证据汇总与预算快照。
-# 不负责整篇文档组装、Document Hard Gate、最终 Capture 或 AgentResult。
-# =============================================================================
-"""Coordinate one complete section lifecycle without changing generation algorithms."""
+"""编排一个章节从证据选择到最终章节结果的完整生命周期。
+
+协调器负责普通/恢复检索、证据充分性门禁、章节生成、Self-RAG 补检索、引用恢复、证据
+汇总和工作流预算快照；具体检索与生成算法仍由注入服务实现。它不负责整篇文档装配、
+Document Hard Gate、最终 Capture 或 AgentResult 映射。
+"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from .section_retrieval_query_builder import SectionRetrievalQueryBuilder
 
 
 class SectionExecutionCoordinator:
-    """Own one section from evidence selection through final section result."""
+    """串联单章节子流程，并将所有检索历史和最终有效证据一起返回。"""
 
     def __init__(
         self,
@@ -74,7 +74,7 @@ class SectionExecutionCoordinator:
         section_order: int,
         fallback_section: SchemeSectionSchema | None = None,
     ) -> SchemeSectionSchema:
-        """Preserve the best available section when a hard workflow budget trips."""
+        """工作流硬预算耗尽时保留当前最佳章节，或构造需人工复核的最小占位章节。"""
 
         if fallback_section is not None:
             return fallback_section.model_copy(deep=True)
@@ -120,7 +120,7 @@ class SectionExecutionCoordinator:
         section_budget: WorkflowBudget,
         exhausted: WorkflowBudgetExceeded,
     ) -> SchemeSectionSchema:
-        """Record budget exhaustion without masking any pre-existing hard failure."""
+        """记录预算耗尽，但不把已有硬失败错误降级为 partial success。"""
 
         section = section.model_copy(deep=True)
         budget_usage = section_budget.snapshot()
@@ -228,18 +228,22 @@ class SectionExecutionCoordinator:
         )
 
         state_writer = SharedStateWriter()
-        state_writer.set_current_section(
-            shared_state,
-            section_id=section_id,
-            section_title=title,
-        )
+        if not request.parallel_isolated:
+            state_writer.set_current_section(
+                shared_state,
+                section_id=section_id,
+                section_title=title,
+            )
         print(
             f"[Section {order}/{total_sections}] START {title}",
             flush=True,
         )
 
         section_budget = WorkflowBudget.from_policy_metadata(
-            self.generation_quality_metadata
+            {
+                **self.generation_quality_metadata,
+                **dict(request.budget_policy_override),
+            }
         )
 
         active_context = request.document_rag_context
@@ -792,6 +796,7 @@ class SectionExecutionCoordinator:
             evidence=evidence,
             retrieved_chunks=retrieved_chunks,
             rag_outputs=rag_outputs,
+            citation_registry=citation_registry.all(),
             budget_usage=budget_usage,
             need_human_review=bool(
                 budget_exhaustion is not None

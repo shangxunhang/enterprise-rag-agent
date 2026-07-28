@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Config-driven RAG strategy evaluation."""
+"""配置驱动的 RAG 策略实验、指标、运行时和报告公开入口。"""
 
 from .baseline import BaselineManager
 from .config import ExperimentConfigLoader
@@ -12,12 +8,13 @@ from .runner import StrategyEvalRunner
 from .schemas import (
     ExperimentConfig,
     ExperimentMatrixConfig,
-    GoldenDatasetManifest,
     ExperimentReport,
+    GoldenDatasetManifest,
     MatrixReport,
     RAGEvalSample,
 )
 
+# 限定包级公开 API，内部报告写入器和运行时适配器由 Runner 统一协调。
 __all__ = [
     "BaselineManager",
     "ExperimentConfigLoader",

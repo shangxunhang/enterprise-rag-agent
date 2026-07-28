@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：旧 RAG ToolResult / 兼容 payload 到 canonical evidence contract 的适配器。
-# 新主链不在这里执行检索；这里只承担历史契约升级。
-# =============================================================================
-"""Compatibility adapter from legacy RAG tool payloads to canonical evidence."""
+"""把旧 RAG ToolResult/payload 升级为 canonical Evidence Contract。
+
+新主链不会在此执行检索。若 payload 已包含结构化证据契约，本适配器只校验并重建兼容
+投影；若只有旧 Chunk/引用字段，则补齐最小来源信息并通过 Builder 构造统一契约。
+"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from schemas.tool import ToolResultSchema
 
 
 class LegacyEvidenceAdapter:
-    """Upgrade legacy ToolResult payloads into the Step-12 evidence contract."""
+    """集中承担历史协议升级，避免兼容分支散落在生成服务中。"""
 
     @staticmethod
     def extract(
@@ -35,6 +35,11 @@ class LegacyEvidenceAdapter:
         List[CitationSchema],
         Dict[str, Any],
     ]:
+        """返回上下文、Chunk、引用和标准化 payload 四个兼容投影。
+
+        已有契约以结构化对象为事实源；旧 payload 缺少引用时可从检索 Chunk 重建来源引用，
+        但不会据此宣称语义充分。所有升级结果都附带契约哈希和血缘，便于审计迁移路径。
+        """
         payload = result.result if result and result.success else {}
         payload = payload or {}
         raw_contract = payload.get("evidence")

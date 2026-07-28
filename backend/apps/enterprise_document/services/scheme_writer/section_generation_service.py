@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：方案章节生成主流程：组装上下文、调用模型、处理截断、绑定引用，并执行 Self-RAG 检查与修复。
-# 主要定义：SectionGenerationService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""单章节文本生成、恢复、引用绑定和质量评估主流程。
+
+该服务从已经选定的章节证据开始：渲染受预算约束的 Prompt、调用模型、处理失败或截断、
+执行确定性引用绑定和高风险事实检查，再按配置触发语义门禁、Self-RAG 或 Grounding 修复。
+章节检索与文档级装配由外层协调器负责。
+"""
 
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,9 +33,8 @@ from .section_content_recovery import SectionContentRecovery
 from .section_quality_evaluator import SectionQualityEvaluator
 
 
-# 阅读注释（类）：封装 章节 生成 服务，封装一组可复用的业务能力。
 class SectionGenerationService:
-    """封装 章节 生成 服务，封装一组可复用的业务能力。"""
+    """把一次模型输出收敛为可评测、可引用且带恢复血缘的章节产物。"""
 
     def __init__(
         self,
@@ -160,7 +160,6 @@ class SectionGenerationService:
             },
         )
 
-    # 阅读注释（函数）：生成 章节。
     def generate_section(
         self,
         shared_state: SharedStateSchema,
@@ -175,25 +174,14 @@ class SectionGenerationService:
         previous_sections: List[SchemeSectionSchema],
         generation_attempt: int = 1,
     ) -> SchemeSectionSchema:
-        """生成 章节。
+        """执行一个章节的完整生成和质量收敛流程。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            document_id: 文档 标识，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            structured_facts: structured facts，具体约束请结合类型标注和调用方确认。
-            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
-            generation_attempt: 生成 attempt，具体约束请结合类型标注和调用方确认。
+        主路径按文件内“生成阶段”注释推进：构造 Context/Prompt、执行模型调用、恢复截断或
+        过长输出、绑定并验证引用、检查项目事实和高风险承诺、执行可选语义与 Self-RAG
+        评估，最后返回携带原始输出、正文、引用、评测、警告和恢复元数据的章节对象。
 
-        返回:
-            SchemeSectionSchema
-
-        阅读提示:
-            主要直接调用：self.runtime_support.now_iso, self.prompt_service.render_section_prompt, dict, get, self.model_service.call_model, self.runtime_support.error, SchemeSectionSchema, project_input.model_dump。
+        ``generation_attempt`` 只改变模型调用身份，便于补充检索后重新生成时保留独立血缘；
+        不会静默覆盖第一次尝试的模型响应。
         """
         started_at = self.runtime_support.now_iso()
         section_id = f"section_{shared_state.run_id}_{section_order:03d}"

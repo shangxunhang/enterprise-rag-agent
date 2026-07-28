@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：evaluate_scheme_draft、extract_runtime_hard_failures。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Hard-failure rules shared by runtime and offline evaluation."""
+"""运行时与离线评测共用的文档级硬失败规则。
+
+该门禁只消费已经装配完成的草稿和结构化运行事实，统一检查必需章节、截断、工具状态、
+输出结构、引用出现次数与绑定一致性、Chunk 血缘、证据覆盖和高风险项目事实。它不会
+调用模型，也不会修复正文；失败草稿可保留诊断，但不得升级为业务交付物。
+"""
 
 from __future__ import annotations
 
@@ -33,7 +34,6 @@ _CITATION_PATTERN = re.compile(r"\[([A-Za-z0-9_.:\-]+)\]")
 _REFUSAL_TERMS = ("证据不足", "无法确认", "待补充", "需项目方确认", "无法得出")
 
 
-# 阅读注释（函数）：评估 scheme draft。
 def evaluate_scheme_draft(
     draft: SchemeDraftSchema,
     *,
@@ -48,24 +48,12 @@ def evaluate_scheme_draft(
     evidence_sufficient: bool = True,
     workflow_complete: bool = True,
 ) -> HardGateResultSchema:
-    """评估 scheme draft。
+    """对完整草稿执行确定性文档硬门禁。
 
-    参数:
-        draft: draft，具体约束请结合类型标注和调用方确认。
-        citation_required: 引用 required，具体约束请结合类型标注和调用方确认。
-        retrieved_chunk_ids: retrieved 文本块 标识集合，具体约束请结合类型标注和调用方确认。
-        citation_required_sections: 引用 required sections，具体约束请结合类型标注和调用方确认。
-        tool_failed: 工具 failed，具体约束请结合类型标注和调用方确认。
-        key_fields_valid: key fields valid，具体约束请结合类型标注和调用方确认。
-        output_schema_valid: 输出 Schema valid，具体约束请结合类型标注和调用方确认。
-        evidence_sufficient: 证据 sufficient，具体约束请结合类型标注和调用方确认。
-        workflow_complete: 工作流 complete，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        HardGateResultSchema
-
-    阅读提示:
-        主要直接调用：all, failures.append, len, strip, str, sorted, join, bool。
+    引用检查不仅要求存在标记，还要求每次可见 marker 与唯一 Binding 对应、Binding 指向
+    canonical Citation，且来源 Chunk 属于已检索集合。项目高风险事实会用最终正文重新
+    计算，不能仅信任章节阶段记录的旧结果。明确因证据不足而 blocked 的章节可作为安全
+    拒绝说明存在，但普通未评估或证据不足章节不能被文档级判断替代。
     """
     checks: Dict[str, bool] = {}
     failures: list[str] = []
@@ -535,9 +523,8 @@ def evaluate_scheme_draft(
     )
 
 
-# 阅读注释（函数）：提取 运行时 hard failures。
 def extract_runtime_hard_failures(run_summary: Dict[str, Any]) -> list[str]:
-    """Read embedded hard-gate failures from run_demo output."""
+    """从主链摘要提取嵌入的硬门禁失败；缺失明细时补充主链失败状态。"""
 
     failures: list[str] = []
     scheme = run_summary.get("scheme_writer_output") or {}

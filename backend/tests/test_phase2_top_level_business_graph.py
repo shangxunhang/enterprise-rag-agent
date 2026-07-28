@@ -200,17 +200,23 @@ def test_technical_failure_route_bypasses_business_artifact_nodes() -> None:
     ]
 
 
-def test_section_execution_remains_one_sequential_stage() -> None:
+def test_section_execution_defaults_to_one_and_uses_safe_langgraph_fanout() -> None:
     stage_module = _stage_module()
     source = inspect.getsource(stage_module.SchemeGenerationStageService.execute_sections)
 
-    assert "for section_plan in document_plan.sections" in source
-    assert '"previous_sections": list(sections)' in source
+    assert "self.section_max_concurrency > 1" in source
+    assert "item.can_run_in_parallel" in source
+    assert "not item.requires_global_context" in source
+    assert "not item.depends_on" in source
+    assert "set(item.depends_on) <= completed_ids" in source
+    assert "section_parallel_execution_graph.execute_batch" in source
+    assert "previous_sections=completed_sections()" in source
     assert "SectionGraphExecutionRequestSchema" in source
     assert "SectionExecutionCoordinator" in inspect.getsource(
         stage_module.SchemeGenerationStageService
     )
-    assert "Send(" not in source
+    assert "asyncio" not in source
+    assert "ThreadPoolExecutor" not in source
 
 
 def test_document_gate_has_one_independent_stage_owner() -> None:

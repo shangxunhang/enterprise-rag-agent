@@ -1,18 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_safe_str、_safe_nullable_int、_safe_list、build_retrieval_result、build_retrieval_result_v2。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag/schema/Retrieval_Result_Schema.py
-============================================
+"""兼容检索结果字典的标准构造层。
 
-Retrieval result schema 构造层。
-
-职责：
-1. 保留 Mini-RAG / flat chunk 的 retrieval_result_v1 构造函数。
-2. 增加父子块检索结果 retrieval_result_v2：child 命中，parent 回填。
-3. 不负责向量检索、rerank、parent store 查询，只负责标准 dict 构造。
+``retrieval_result_v1`` 服务 Mini-RAG 平面 Chunk；``v2`` 表达父子检索：子块承担命中与
+评分，父块承担默认生成上下文。该模块只规范字段，不执行向量召回、重排或 Parent Store
+查询。
 """
 
 from copy import deepcopy
@@ -28,20 +19,8 @@ from rag.configs.SchemaConfig import (
 )
 
 
-# 阅读注释（函数）：处理 safe str 相关逻辑。
 def _safe_str(value: Any, default: str = "") -> str:
-    """处理 safe str 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：isinstance, str。
-    """
+    """把可选标量规范为字符串，``None`` 使用显式默认值。"""
     if value is None:
         return default
     if isinstance(value, str):
@@ -49,19 +28,8 @@ def _safe_str(value: Any, default: str = "") -> str:
     return str(value)
 
 
-# 阅读注释（函数）：处理 safe nullable int 相关逻辑。
 def _safe_nullable_int(value: Any) -> Optional[int]:
-    """处理 safe nullable int 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Optional[int]
-
-    阅读提示:
-        主要直接调用：int。
-    """
+    """尽力转换页码或位置索引；空值和非法值都保留为 ``None``。"""
     if value is None or value == "":
         return None
     try:
@@ -70,19 +38,8 @@ def _safe_nullable_int(value: Any) -> Optional[int]:
         return None
 
 
-# 阅读注释（函数）：处理 safe 列表 相关逻辑。
 def _safe_list(value: Any) -> list:
-    """处理 safe 列表 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        list
-
-    阅读提示:
-        主要直接调用：isinstance, list。
-    """
+    """把空值、元组或单个值统一为列表，便于来源 ID 序列化。"""
     if value is None:
         return []
     if isinstance(value, list):
@@ -92,14 +49,13 @@ def _safe_list(value: Any) -> list:
     return [value]
 
 
-# 阅读注释（函数）：构建 检索 结果。
 def build_retrieval_result(
     chunk: Dict[str, Any],
     rank: int,
     score: float,
     rerank_score: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Build retrieval_result_v1 for flat chunk retrieval."""
+    """从一个平面 Chunk 构造 Mini-RAG ``retrieval_result_v1``。"""
     result = deepcopy(RETRIEVAL_RESULT_TEMPLATE)
     result["rank"] = rank
     result["score"] = score
@@ -111,7 +67,6 @@ def build_retrieval_result(
     return result
 
 
-# 阅读注释（函数）：构建 检索 结果 v2。
 def build_retrieval_result_v2(
     *,
     child_chunk: Dict[str, Any],
@@ -127,12 +82,11 @@ def build_retrieval_result_v2(
     metadata: Optional[Dict[str, Any]] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build retrieval_result_v2 for parent-child RAG.
+    """构造父子 RAG ``retrieval_result_v2``。
 
-    约定：
-    - 向量检索命中的粒度是 child。
-    - prompt 默认使用 parent_text；如果 parent_chunk 缺失，则回退到 child_text。
-    - chunk_id 必须等于 child_chunk_id，便于兼容通用向量库主键。
+    ``chunk_id`` 固定等于实际命中的 ``child_chunk_id``，用于兼容向量库主键和评测命中；
+    ``text`` 则按 ``context_granularity`` 优先使用父块正文，父块缺失时回退到子块。评分和
+    embedding/index 血缘保持命中侧语义，不因上下文回填而改变。
     """
     parent_chunk = parent_chunk or {}
     child_chunk_id = _safe_str(child_chunk.get("chunk_id") or child_chunk.get("child_chunk_id"))

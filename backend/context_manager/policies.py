@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：上下文管理模块，用于组织证据、历史状态和 Token 预算。
-# 主要定义：SectionGenerationContextPolicy。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Context policies for enterprise document generation."""
+"""把章节生成所需的业务事实转换为有优先级的上下文候选块。
+
+本模块不负责真正执行预算裁剪；它定义“哪些内容应进入候选集、哪些必须保留、哪些可
+截断”，随后由 ``LLMContextManager`` 完成统一选择和渲染。阅读时重点关注项目事实、
+引用目录、RAG 证据和历史章节如何被分层，而不是把它们误认为已经拼接好的最终 Prompt。
+"""
 
 from __future__ import annotations
 
@@ -16,9 +17,8 @@ from schemas.context import ContextBuildRequestSchema, ContextItemSchema
 from schemas.rag import RAGContextSchema, RAGEvidenceContractSchema
 
 
-# 阅读注释（类）：封装 章节 生成 上下文 策略，集中封装相关状态、依赖和行为。
 class SectionGenerationContextPolicy:
-    """Build candidates for the initial generation of one document section."""
+    """为单个方案章节构造上下文候选集和预算参数。"""
 
     policy_id = "section_generation_context_policy_v2"
 
@@ -28,7 +28,6 @@ class SectionGenerationContextPolicy:
         "标注‘待补充’或‘需项目方确认’。引用知识库事实时只能使用提供的citation_id。"
     )
 
-    # 阅读注释（函数）：构建 请求。
     def build_request(
         self,
         *,
@@ -44,26 +43,12 @@ class SectionGenerationContextPolicy:
         citations: List[CitationSchema],
         previous_sections: List[SchemeSectionSchema],
     ) -> ContextBuildRequestSchema:
-        """构建 请求。
+        """构造一次章节生成的完整上下文选择请求。
 
-        参数:
-            task_id: 任务唯一标识。
-            run_id: 本次运行唯一标识。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            section_contract: 章节 contract，具体约束请结合类型标注和调用方确认。
-            target_section_chars: target 章节 chars，具体约束请结合类型标注和调用方确认。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ContextBuildRequestSchema
-
-        阅读提示:
-            主要直接调用：self._evidence_contract, contract.lineage.model_dump, dict, get, strip, str, bool, max。
+        必需块包括系统事实约束、当前章节任务和项目核心输入；引用目录是否必需由章节名
+        是否出现在 ``citation_required_sections`` 中决定。RAG 证据、历史章节摘要和项目
+        补充信息作为可裁剪候选块加入。最后把项目级字符预算、模型输入 Token 容量、输出
+        预留量和安全余量一起交给上下文管理器。
         """
         contract = self._evidence_contract(rag_context)
         lineage = (
@@ -222,20 +207,9 @@ class SectionGenerationContextPolicy:
             },
         )
 
-    # 阅读注释（函数）：处理 项目 core 相关逻辑。
     @staticmethod
     def _project_core(project_input: ProjectInputSchema) -> dict:
-        """处理 项目 core 相关逻辑。
-
-        参数:
-            project_input: 规范化后的项目输入。
-
-        返回:
-            dict
-
-        阅读提示:
-            主要直接调用：list, item.model_dump, project_input.output_schema.model_dump。
-        """
+        """提取不得因预算不足而静默丢失的项目核心事实和生成约束。"""
         return {
             "task_id": project_input.task_id,
             "tenant_id": project_input.tenant_id,
@@ -265,20 +239,9 @@ class SectionGenerationContextPolicy:
             },
         }
 
-    # 阅读注释（函数）：处理 supplemental 项目 上下文 相关逻辑。
     @staticmethod
     def _supplemental_project_context(project_input: ProjectInputSchema) -> dict:
-        """处理 supplemental 项目 上下文 相关逻辑。
-
-        参数:
-            project_input: 规范化后的项目输入。
-
-        返回:
-            dict
-
-        阅读提示:
-            主要直接调用：item.model_dump, list, dict, result.items。
-        """
+        """收集可按预算降级的部门、硬件、材料、目标模板和扩展信息。"""
         result = {
             "department_groups": [item.model_dump() for item in project_input.department_groups],
             "hardware_resources": [item.model_dump() for item in project_input.hardware_resources],
@@ -289,21 +252,9 @@ class SectionGenerationContextPolicy:
         }
         return {key: value for key, value in result.items() if value}
 
-    # 阅读注释（函数）：处理 compact 文本 相关逻辑。
     @staticmethod
     def _compact_text(value: object, *, max_chars: int) -> str:
-        """处理 compact 文本 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-            max_chars: max chars，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：join, split, str, len, rstrip, max, prefix.rfind, prefix.rstrip。
-        """
+        """压缩空白并在句界附近截断短摘要，避免目录字段无限增长。"""
         text = " ".join(str(value or "").split())
         if len(text) <= max_chars:
             return text
@@ -313,7 +264,6 @@ class SectionGenerationContextPolicy:
             prefix = prefix[: cut + 1].rstrip()
         return prefix.rstrip("，,；;。.") + "…"
 
-    # 阅读注释（函数）：处理 引用 catalog 相关逻辑。
     @classmethod
     def _citation_catalog(
         cls,
@@ -322,18 +272,10 @@ class SectionGenerationContextPolicy:
         max_items: int,
         max_quote_chars: int,
     ) -> tuple[str, list[str], dict]:
-        """处理 引用 catalog 相关逻辑。
+        """把引用对象投影为紧凑的逐行目录，并返回实际暴露的 citation_id。
 
-        参数:
-            citations: 引用信息集合。
-            max_items: max 数据项集合，具体约束请结合类型标注和调用方确认。
-            max_quote_chars: max quote chars，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            tuple[str, list[str], dict]
-
-        阅读提示:
-            主要直接调用：list, max, int, strip, str, cls._compact_text, parts.append, rows.append。
+        目录只提供模型可使用的引用标识、来源位置和短摘要；原始引用对象仍保留在结构化
+        契约中。返回的元数据记录省略数量，便于审计预算压缩是否影响引用覆盖。
         """
         source_items = list(citations)
         selected_items = source_items[: max(0, int(max_items))]
@@ -368,20 +310,9 @@ class SectionGenerationContextPolicy:
             },
         )
 
-    # 阅读注释（函数）：处理 history summary 相关逻辑。
     @staticmethod
     def _history_summary(previous_sections: List[SchemeSectionSchema]) -> str:
-        """处理 history summary 相关逻辑。
-
-        参数:
-            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：strip, str, get, item.content.strip, rows.append, join。
-        """
+        """生成前文一致性摘要；优先使用已保存摘要，否则截取章节正文前缀。"""
         rows: list[str] = []
         for item in previous_sections:
             summary = str((item.extra or {}).get("context_summary") or "").strip()
@@ -391,20 +322,9 @@ class SectionGenerationContextPolicy:
                 rows.append(f"- {item.section_title}: {summary}")
         return "\n".join(rows)
 
-    # 阅读注释（函数）：处理 证据 contract 相关逻辑。
     @staticmethod
     def _evidence_contract(rag_context: RAGContextSchema) -> RAGEvidenceContractSchema | None:
-        """处理 证据 contract 相关逻辑。
-
-        参数:
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            RAGEvidenceContractSchema | None
-
-        阅读提示:
-            主要直接调用：get, isinstance, RAGEvidenceContractSchema.model_validate。
-        """
+        """从兼容字段恢复并严格校验结构化证据契约；无效数据不冒充可信证据。"""
         raw = (rag_context.extra or {}).get("evidence_contract")
         if not isinstance(raw, dict):
             return None
@@ -413,24 +333,16 @@ class SectionGenerationContextPolicy:
         except Exception:
             return None
 
-    # 阅读注释（函数）：处理 证据 数据项集合 相关逻辑。
     @classmethod
     def _evidence_items(
         cls,
         contract: RAGEvidenceContractSchema | None,
         rag_context: RAGContextSchema,
     ) -> list[ContextItemSchema]:
-        """处理 证据 数据项集合 相关逻辑。
+        """把已选证据逐条转换为上下文块，并保留引用和检索血缘。
 
-        参数:
-            contract: contract，具体约束请结合类型标注和调用方确认。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            list[ContextItemSchema]
-
-        阅读提示:
-            主要直接调用：rag_context.context_text.strip, ContextItemSchema, enumerate, result.append, max, list。
+        存在结构化契约时只遍历 ``selected_evidence_ids``，不会把已丢弃证据重新带入模型；
+        只有旧调用缺少契约时才使用整个 ``context_text`` 兼容投影。
         """
         if contract is None:
             if not rag_context.context_text.strip():

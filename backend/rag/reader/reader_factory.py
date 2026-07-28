@@ -1,87 +1,87 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：get_reader、load_documents。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/rag_template/reader/reader_factory.py
-========================================
-
-Reader 工厂模块。
-
-职责：
-1. 根据文件后缀选择对应 Reader
-2. 扫描原始数据目录
-3. 统一返回 Document Schema 列表
-"""
+"""根据文件扩展名选择 Reader，并批量加载原始数据目录。"""
 
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 from rag.configs.ReaderFactoryConfig import READER_MAP
 from rag.reader.base_reader import BaseReader
 
 
-
-
-
-
-# 阅读注释（函数）：获取 reader。
 def get_reader(file_path: Path) -> BaseReader:
-    """
-    根据文件后缀获取 reader。
+    """为一个文件创建对应格式的 Reader。
 
     Args:
-        file_path: 文件路径
+        file_path: 用扩展名选择 Reader 的文件路径。
 
     Returns:
-        reader 实例
+        ``READER_MAP`` 中注册的 Reader 新实例。
+
+    Raises:
+        ValueError: 文件扩展名未注册时抛出。
     """
+
+    # 第一步：统一扩展名大小写，避免 .JSON 与 .json 被视为不同格式。
     suffix = file_path.suffix.lower()
 
+    # 第二步：从静态映射中查找 Reader 类。
     reader_cls = READER_MAP.get(suffix)
-
     if reader_cls is None:
-        raise ValueError(f"暂不支持的文件类型: {suffix}, file={file_path}")
+        raise ValueError(
+            f"暂不支持的文件类型: {suffix}, file={file_path}"
+        )
 
+    # 第三步：每次读取创建独立实例，当前 Reader 均为无状态对象。
     return reader_cls()
 
 
-# 阅读注释（函数）：加载 documents。
 def load_documents(raw_data_dir: Path) -> List[Dict]:
-    """
-    扫描 raw_data_dir 下所有支持的文件，并读取为统一 Document Schema。
+    """递归扫描目录并读取所有已注册格式的文件。
 
     Args:
-        raw_data_dir: 原始数据目录
+        raw_data_dir: 原始数据根目录。
 
     Returns:
-        documents: 标准 Document Schema 列表
+        按排序后文件路径依次拼接的标准 Document 字典列表。
+
+    Raises:
+        FileNotFoundError: 原始数据目录不存在时抛出。
+
+    单个文件读取失败会打印错误并跳过，保证批量导入可继续；因此调用方需要结合日志
+    和最终文档数判断是否存在数据缺失。
     """
+
+    # 第一步：拒绝不存在的根目录，避免把路径错误误认为空数据集。
     if not raw_data_dir.exists():
-        raise FileNotFoundError(f"原始数据目录不存在: {raw_data_dir}")
+        raise FileNotFoundError(
+            f"原始数据目录不存在: {raw_data_dir}"
+        )
 
-    documents = []
-
+    documents: List[Dict] = []
     supported_suffixes = set(READER_MAP.keys())
 
+    # 第二步：递归筛选已注册扩展名的普通文件，并排序保证执行顺序稳定。
     files = sorted(
         [
-            p for p in raw_data_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in supported_suffixes
+            path
+            for path in raw_data_dir.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in supported_suffixes
         ]
     )
-
     print(f"[ReaderFactory] 支持文件数量: {len(files)}")
 
+    # 第三步：逐文件选择 Reader 并读取；单文件异常不终止整批任务。
     for file_path in files:
         reader = get_reader(file_path)
-
         try:
-            docs = reader.read(file_path)
-        except Exception as e:
-            print(f"[ReaderFactory] 读取失败: {file_path}, error={e}")
+            file_documents = reader.read(file_path)
+        except Exception as exc:
+            print(
+                f"[ReaderFactory] 读取失败: {file_path}, error={exc}"
+            )
             continue
 
-        documents.extend(docs)
+        # 第四步：保持 Reader 返回顺序追加到总文档集合。
+        documents.extend(file_documents)
 
     return documents

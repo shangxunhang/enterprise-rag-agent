@@ -1,16 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：chunk_documents。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/rag_template/chunker/chunk.py
-=================================核心 chunk_documents 入口。
+"""历史 ``chunk_documents`` 批量切分入口。
 
-保留旧入口：
-    from rag_template.chunker.chunk import chunk_documents
-
-内部通过 CHUNK_STRATEGY 选择不同 Chunker：
-    fixed / recursive / heading / heading_recursive
+未显式传入策略时读取旧 ``RAGConfig.CHUNK_STRATEGY``，配置不可用则保守回退 fixed。
+具体对象由 ``chunk_factory`` 构造；``created_at/updated_at`` 仅为旧调用签名兼容参数，
+当前 Chunk Schema 的时间来源不在此入口控制。
 """
 
 from typing import Dict, List, Optional
@@ -18,7 +10,6 @@ from typing import Dict, List, Optional
 from rag.chunker.chunk_factory import build_chunker
 
 
-# 阅读注释（函数）：处理 文本块 documents 相关逻辑。
 def chunk_documents(
     documents: List[Dict],
     chunk_size: int,
@@ -27,16 +18,10 @@ def chunk_documents(
     created_at: str = None,
     updated_at: str = None,
 ) -> List[Dict]:
-    """
-    批量切分 documents，生成统一 Chunk Schema。
+    """按指定策略批量切分标准 Document，并返回平铺的 Chunk 列表。
 
-    Args:
-        documents: 标准 Document Schema 列表
-        chunk_size: chunk 最大 token 数，Recursive/Heading 按 token 控制
-        chunk_overlap: 相邻 chunk 重叠 token 数，Recursive/Heading 按 token 控制
-        chunk_strategy: fixed / recursive / heading / heading_recursive；不传则读取 RAGConfig.CHUNK_STRATEGY
-        created_at: 兼容旧参数，当前不再直接使用
-        updated_at: 兼容旧参数，当前不再直接使用
+    Fixed 的大小沿用字符窗实现；Recursive/Heading 以 tokenizer 估算 Token 预算。调用方
+    不应仅凭参数名假设所有策略使用相同单位。
     """
     if chunk_strategy is None:
         try:

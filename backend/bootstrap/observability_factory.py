@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：依赖装配与运行时构建模块。
-# 主要定义：ObservabilityFactory。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Build concrete trace and capture adapters."""
+"""根据应用配置装配具体轨迹与数据采集适配器。
+
+工厂只决定是否创建 JSONL 实现以及输出目录，不参与事件构造或样本治理。关闭某项能力
+时返回 ``None``，上层服务通过可选端口继续运行而不产生对应持久化副作用。
+"""
 
 from __future__ import annotations
 
@@ -13,32 +13,39 @@ from data_capture.data_capture_recorder import JsonlDataCaptureRecorder
 from data_capture.run_trace_recorder import JsonlRunTraceRecorder
 
 
-# 阅读注释（类）：封装 observability 工厂，负责根据配置装配并返回运行实例。
 class ObservabilityFactory:
-    """封装 observability 工厂，负责根据配置装配并返回运行实例。"""
-    # 阅读注释（函数）：构建 ObservabilityFactory。
-    def build(self, settings: AppSettings, runs_dir: Path, captures_dir: Path):
-        """构建 ObservabilityFactory。
+    """构造当前运行使用的 Trace 和数据采集输出适配器。"""
 
-        参数:
-            settings: settings，具体约束请结合类型标注和调用方确认。
-            runs_dir: runs dir，具体约束请结合类型标注和调用方确认。
-            captures_dir: captures dir，具体约束请结合类型标注和调用方确认。
+    def build(
+        self,
+        settings: AppSettings,
+        runs_dir: Path,
+        captures_dir: Path,
+    ):
+        """按功能开关创建 JSONL 轨迹与采集器。
 
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
+        Args:
+            settings: 当前不可变应用配置快照。
+            runs_dir: 运行轨迹与运行级聚合产物目录。
+            captures_dir: 原始交互、SFT 候选和评测样本采集目录。
 
-        阅读提示:
-            主要直接调用：JsonlRunTraceRecorder, JsonlDataCaptureRecorder。
+        Returns:
+            ``(trace_recorder, capture_recorder)`` 二元组；被配置关闭的能力对应 ``None``。
         """
+
+        # 第一步：启用 Trace 时创建运行级 JSONL 记录器，否则显式关闭该副作用。
         trace = (
             JsonlRunTraceRecorder(output_dir=runs_dir)
             if settings.trace_enabled
             else None
         )
+
+        # 第二步：启用数据采集时创建采集记录器，否则不生成训练/评测候选文件。
         capture = (
             JsonlDataCaptureRecorder(output_dir=captures_dir)
             if settings.data_capture_enabled
             else None
         )
+
+        # 第三步：把两个可选端口交给上层装配，不在工厂内缓存或管理运行生命周期。
         return trace, capture

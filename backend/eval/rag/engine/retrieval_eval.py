@@ -1,158 +1,112 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：_get_top_k_results、_get_retrieved_doc_ids、compute_hit_at_k、compute_recall_at_k、compute_mrr、compute_context_keyword_hit、evaluate_retrieval。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-retrieval_eval.py
-=================
+"""计算旧版 RAG 检索链的文档级轻量指标。
 
-RAG 检索结果评估模块。
-
-本文件负责评估 retriever 返回的 chunks 是否命中目标文档或目标内容，
-主要用于衡量 RAG 系统的检索质量。
-
-第一版重点实现轻量级检索指标：
-1. hit@k：top-k 检索结果中是否命中目标文档
-2. recall@k：目标文档中有多少被 top-k 检索结果召回
-3. MRR：第一个正确结果的倒数排名
-4. context_keyword_hit：检索到的上下文中是否包含期望关键词
-
-本文件只评估“检索是否正确”，不评估 LLM 最终生成答案的质量。
-生成答案的评估逻辑应放在 generation_eval.py 中。
-"""
-
-"""
-retrieval_eval.py
-=================
-
-RAG 检索结果评估模块。
-
-本文件负责评估 retriever 返回的 chunks 是否命中目标文档或目标内容，
-主要用于衡量 RAG 系统的检索质量。
-
-第一版重点实现轻量级检索指标：
-1. hit@k：top-k 检索结果中是否命中目标文档
-2. recall@k：目标文档中有多少被 top-k 检索结果召回
-3. MRR：第一个正确结果的倒数排名
-4. context_keyword_hit：检索到的上下文中是否包含期望关键词
-
-本文件只评估“检索是否正确”，不评估 LLM 最终生成答案的质量。
-生成答案的评估逻辑应放在 generation_eval.py 中。
+本模块只判断 top-k 结果是否命中黄金 doc_id，以及检索文本是否覆盖黄金关键词。
+它不评估父子块粒度、语义相关性或最终生成答案；更完整的策略评测位于
+``eval.rag.strategy``。
 """
 
 from typing import List, Set
 
-from rag.schema.eval_schema import EvalSample, RetrievalEvalResult, RetrievalResult
+from rag.schema.eval_schema import (
+    EvalSample,
+    RetrievalEvalResult,
+    RetrievalResult,
+)
 
 
-# 阅读注释（函数）：获取 top k 结果集合。
 def _get_top_k_results(
-        retrieved_results: List[RetrievalResult],
-        top_k: int,
+    retrieved_results: List[RetrievalResult],
+    top_k: int,
 ) -> List[RetrievalResult]:
-    """
-    截取 top-k 检索结果。
+    """按原始排序截取参与评测的前 k 条结果。
 
-    参数:
-        retrieved_results: retriever 返回的标准化检索结果列表
-        top_k: 参与评估的前 k 条结果
+    Args:
+        retrieved_results: Retriever 返回的标准化有序结果。
+        top_k: 参与指标计算的最大结果数。
 
-    返回:
-        top_k_results: 前 k 条检索结果
+    Returns:
+        ``top_k <= 0`` 时返回空列表，否则返回前 k 条结果的切片。
     """
+
+    # 非正 top_k 没有有效评测窗口，按原协议返回空集合。
     if top_k <= 0:
         return []
-
     return retrieved_results[:top_k]
 
 
-# 阅读注释（函数）：获取 retrieved doc 标识集合。
 def _get_retrieved_doc_ids(
-        retrieved_results: List[RetrievalResult],
+    retrieved_results: List[RetrievalResult],
 ) -> List[str]:
-    """
-    从检索结果中提取 doc_id 列表。
+    """提取结果中的非空文档标识并保持排名顺序。"""
 
-    参数:
-        retrieved_results: 检索结果列表
-
-    返回:
-        retrieved_doc_ids: 检索到的 doc_id 列表
-    """
-    return [result.doc_id for result in retrieved_results if result.doc_id]
+    # 不去重，MRR 等顺序指标仍需保留原排名；集合化由具体指标自行处理。
+    return [
+        result.doc_id
+        for result in retrieved_results
+        if result.doc_id
+    ]
 
 
-# 阅读注释（函数）：计算 hit at k。
 def compute_hit_at_k(
-        expected_doc_ids: List[str],
-        retrieved_results: List[RetrievalResult],
-        top_k: int,
+    expected_doc_ids: List[str],
+    retrieved_results: List[RetrievalResult],
+    top_k: int,
 ) -> float:
-    """
-    计算 hit@k。
+    """计算 top-k 是否至少命中一个黄金文档。
 
-    hit@k 表示 top-k 检索结果中是否命中任意一个目标文档。
-    只要命中 expected_doc_ids 中的任意一个 doc_id，就返回 1.0；
-    否则返回 0.0。
+    Returns:
+        top-k 文档集合与黄金集合有交集时返回 ``1.0``，否则返回 ``0.0``。
     """
+
+    # 没有黄金文档时无法定义命中，旧版协议返回零。
     if not expected_doc_ids:
         return 0.0
 
-    top_k_results = _get_top_k_results(retrieved_results, top_k)
-    retrieved_doc_ids = set(_get_retrieved_doc_ids(top_k_results))
+    # 截断后集合化，重复召回不会多次影响二值指标。
+    top_results = _get_top_k_results(retrieved_results, top_k)
+    retrieved_doc_ids = set(_get_retrieved_doc_ids(top_results))
     expected_doc_id_set = set(expected_doc_ids)
-
     return 1.0 if retrieved_doc_ids & expected_doc_id_set else 0.0
 
 
-# 阅读注释（函数）：计算 recall at k。
 def compute_recall_at_k(
-        expected_doc_ids: List[str],
-        retrieved_results: List[RetrievalResult],
-        top_k: int,
+    expected_doc_ids: List[str],
+    retrieved_results: List[RetrievalResult],
+    top_k: int,
 ) -> float:
-    """
-    计算 recall@k。
+    """计算 top-k 对黄金文档集合的去重召回率。"""
 
-    recall@k = top-k 中命中的目标文档数量 / 目标文档总数量
-    """
     if not expected_doc_ids:
         return 0.0
 
-    top_k_results = _get_top_k_results(retrieved_results, top_k)
-    retrieved_doc_ids: Set[str] = set(_get_retrieved_doc_ids(top_k_results))
+    # 第一步：提取 top-k 文档集合和黄金文档集合。
+    top_results = _get_top_k_results(retrieved_results, top_k)
+    retrieved_doc_ids: Set[str] = set(
+        _get_retrieved_doc_ids(top_results)
+    )
     expected_doc_id_set: Set[str] = set(expected_doc_ids)
 
+    # 第二步：交集大小除以黄金集合大小，重复结果不会重复计数。
     hit_doc_ids = retrieved_doc_ids & expected_doc_id_set
-
     return len(hit_doc_ids) / len(expected_doc_id_set)
 
 
-# 阅读注释（函数）：计算 mrr。
 def compute_mrr(
-        expected_doc_ids: List[str],
-        retrieved_results: List[RetrievalResult],
-        top_k: int,
+    expected_doc_ids: List[str],
+    retrieved_results: List[RetrievalResult],
+    top_k: int,
 ) -> float:
-    """
-    计算 MRR。
+    """计算单条样本第一个黄金文档排名的倒数。"""
 
-    MRR = Mean Reciprocal Rank。
-    对单条样本来说，就是第一个命中目标文档的排名倒数。
-
-    例如：
-        rank 1 命中 -> 1 / 1 = 1.0
-        rank 2 命中 -> 1 / 2 = 0.5
-        rank 3 命中 -> 1 / 3 = 0.333
-        top-k 内没有命中 -> 0.0
-    """
     if not expected_doc_ids:
         return 0.0
 
+    # 第一步：建立黄金集合并截断结果窗口。
     expected_doc_id_set = set(expected_doc_ids)
-    top_k_results = _get_top_k_results(retrieved_results, top_k)
+    top_results = _get_top_k_results(retrieved_results, top_k)
 
-    for index, result in enumerate(top_k_results):
+    # 第二步：从排名 1 开始查找第一个命中项。
+    for index, result in enumerate(top_results):
         rank = index + 1
         if result.doc_id in expected_doc_id_set:
             return 1.0 / rank
@@ -160,28 +114,25 @@ def compute_mrr(
     return 0.0
 
 
-# 阅读注释（函数）：计算 上下文 keyword hit。
 def compute_context_keyword_hit(
-        expected_keywords: List[str],
-        retrieved_results: List[RetrievalResult],
-        top_k: int,
+    expected_keywords: List[str],
+    retrieved_results: List[RetrievalResult],
+    top_k: int,
 ) -> float:
-    """
-    计算 context_keyword_hit。
+    """计算黄金关键词在 top-k 检索文本中的字面覆盖比例。"""
 
-    该指标用于判断 top-k 检索到的上下文中，是否包含期望关键词。
-
-    context_keyword_hit = 命中的关键词数量 / 期望关键词总数量
-    """
     if not expected_keywords:
         return 0.0
 
-    top_k_results = _get_top_k_results(retrieved_results, top_k)
-
+    # 第一步：按排名截断并拼接所有非空文本。
+    top_results = _get_top_k_results(retrieved_results, top_k)
     context_text = "\n".join(
-        result.text for result in top_k_results if result.text
+        result.text
+        for result in top_results
+        if result.text
     )
 
+    # 第二步：使用大小写敏感的直接子串匹配统计命中数。
     hit_count = 0
     for keyword in expected_keywords:
         if keyword in context_text:
@@ -190,41 +141,44 @@ def compute_context_keyword_hit(
     return hit_count / len(expected_keywords)
 
 
-# 阅读注释（函数）：评估 检索。
 def evaluate_retrieval(
-        sample: EvalSample,
-        retrieved_results: List[RetrievalResult],
-        top_k: int,
+    sample: EvalSample,
+    retrieved_results: List[RetrievalResult],
+    top_k: int,
 ) -> RetrievalEvalResult:
-    """
-    对单条 EvalSample 的检索结果进行评估。
+    """对一条样本的检索结果计算全部旧版文档级指标。
 
-    参数:
-        sample: 单条评估样本
-        retrieved_results: retriever 返回的标准化检索结果
-        top_k: 参与评估的前 k 条结果
+    Args:
+        sample: 提供 expected_doc_ids 和 expected_keywords 的黄金样本。
+        retrieved_results: Retriever 返回的标准化结果。
+        top_k: 参与计算的结果窗口。
 
-    返回:
-        RetrievalEvalResult: 单条样本的检索评估结果
+    Returns:
+        包含 hit@k、recall@k、MRR 和关键词覆盖的结果对象。
     """
+
+    # 第一步：计算至少一次命中的二值指标。
     hit_at_k = compute_hit_at_k(
         expected_doc_ids=sample.expected_doc_ids,
         retrieved_results=retrieved_results,
         top_k=top_k,
     )
 
+    # 第二步：计算黄金文档集合的去重召回率。
     recall_at_k = compute_recall_at_k(
         expected_doc_ids=sample.expected_doc_ids,
         retrieved_results=retrieved_results,
         top_k=top_k,
     )
 
+    # 第三步：计算首个正确结果的排名质量。
     mrr = compute_mrr(
         expected_doc_ids=sample.expected_doc_ids,
         retrieved_results=retrieved_results,
         top_k=top_k,
     )
 
+    # 第四步：检查检索文本对黄金关键词的字面覆盖。
     context_keyword_hit = compute_context_keyword_hit(
         expected_keywords=sample.expected_keywords,
         retrieved_results=retrieved_results,

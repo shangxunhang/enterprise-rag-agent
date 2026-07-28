@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent.agent_registry import AgentRegistry
-from agent.runtime.sqlite_checkpoint_saver import SQLiteCheckpointSaver
+from agent.runtime.official_checkpoint_saver import (
+    create_sqlite_checkpoint_resource,
+)
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema
 from agent.supervisor_agent import SupervisorAgent
 from apps.enterprise_document.agents.project_input_normalizer_agent import (
@@ -141,11 +143,12 @@ class SupervisorFactory:
             repair_strategy=agent_quality.repair_strategy,
             generation_quality_metadata=agent_quality.metadata,
             retrieval_access_scope=retrieval_access_scope,
+            section_max_concurrency=options.section_max_concurrency,
         )
         side_effect_commit_store = JsonlSideEffectCommitStore(
             runs_dir / "side_effect_commits.jsonl"
         )
-        checkpoint_saver = SQLiteCheckpointSaver(
+        checkpoint_resource = create_sqlite_checkpoint_resource(
             runs_dir / "langgraph_checkpoints.sqlite3"
         )
         return SupervisorAgent(
@@ -160,9 +163,13 @@ class SupervisorFactory:
                 stage_service=scheme_writer.stage_service,
                 run_trace_recorder=trace,
                 side_effect_commit_store=side_effect_commit_store,
-                checkpointer=checkpoint_saver,
+                checkpointer=checkpoint_resource.saver,
             ),
-            # Resources are listed in creation/dependency order. Supervisor
-            # closes them in reverse: RAG first, then its ModelGateway.
-            owned_resources=(model_gateway, rag_service),
+            # Resources are listed in dependency order. Supervisor closes them
+            # in reverse after workers are idle: checkpoint, RAG, ModelGateway.
+            owned_resources=(
+                model_gateway,
+                rag_service,
+                checkpoint_resource,
+            ),
         )

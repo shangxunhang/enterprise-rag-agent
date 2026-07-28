@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：FakeLLMClient。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Deterministic LLM client for smoke and recovery tests."""
+"""用于冒烟、恢复和门禁测试的确定性模型客户端。
+
+它不模拟自然语言质量，而是按 ``call_purpose`` 与环境场景稳定地产生特定输出，专门
+验证路由、补充检索、引用修复、Self-RAG 和文档硬门禁等控制路径。
+"""
 
 from __future__ import annotations
 
@@ -14,12 +14,10 @@ from contracts.base_client import BaseLLMClient
 from schemas.model import ModelRequestSchema, ModelResponseSchema, TokenUsageSchema
 
 
-# 阅读注释（类）：封装 fake llmclient，集中封装相关状态、依赖和行为。
 class FakeLLMClient(BaseLLMClient):
-    """封装 fake llmclient，集中封装相关状态、依赖和行为。"""
+    """根据测试场景生成可预测响应，并返回近似 Token 用量。"""
     model_name = "fake_llm"
 
-    # 阅读注释（函数）：处理 force unbound 输出 相关逻辑。
     @staticmethod
     def _force_unbound_output(request: ModelRequestSchema, scenario: str) -> bool:
         """Return whether this call must omit all citation markers.
@@ -44,20 +42,9 @@ class FakeLLMClient(BaseLLMClient):
             return "_attempt_2" not in str(request.model_call_id)
         return False
 
-    # 阅读注释（函数）：处理 quote from 提示词 相关逻辑。
     @staticmethod
     def _quote_from_prompt(prompt: str) -> str:
-        """处理 quote from 提示词 相关逻辑。
-
-        参数:
-            prompt: 提示词，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：re.search, strip, str, json.loads, match.group。
-        """
+        """从 Prompt 中提取一条真实 ``quote_text``，让测试输出满足同一证据契约。"""
         match = re.search(r'"quote_text"\s*:\s*("(?:\\.|[^"\\])*")', prompt)
         if not match:
             return ""
@@ -66,18 +53,12 @@ class FakeLLMClient(BaseLLMClient):
         except Exception:
             return ""
 
-    # 阅读注释（函数）：生成 FakeLLMClient。
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
-        """生成 FakeLLMClient。
+        """按调用目的和场景选择确定性输出分支。
 
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：request.extra.get, lower, strip, str, os.getenv, self._force_unbound_output, self._quote_from_prompt, join。
+        路由和语义门禁返回固定 JSON；Self-RAG 场景可让首次检查要求补检索；引用相关
+        场景可故意生成无标记章节或复用 Prompt 中真实证据。这样测试的是生产控制逻辑，
+        而不是依赖随机模型行为碰巧触发某个分支。
         """
         purpose = request.extra.get("call_purpose")
         scenario = str(os.getenv("FAKE_LLM_SCENARIO", "default")).strip().lower()

@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：RAGEvidenceContractBuilder、RAGEvidenceContractReader。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Build and consume the Step 12 canonical RAG evidence contract."""
+"""构造并读取跨越 RAG/Agent 边界的 canonical Evidence Contract。
+
+Builder 统一引用编号、区分选中与丢弃证据、渲染上下文投影并记录索引/模型血缘；Reader
+再从结构化契约恢复旧调用方需要的 Context、Chunk 和 Citation 视图。检索结果“存在”
+只表示 evidence_available，绝不自动升级为语义充分。
+"""
 
 from __future__ import annotations
 
@@ -22,39 +23,19 @@ from schemas.rag import (
 )
 
 
-# 阅读注释（类）：封装 ragevidence contract builder，集中封装相关状态、依赖和行为。
 class RAGEvidenceContractBuilder:
-    """Normalize retrieval evidence and render its prompt projection."""
+    """规范化检索证据并生成受预算约束的 Prompt 上下文投影。"""
 
-    # 阅读注释（函数）：处理 stable unique 相关逻辑。
     @staticmethod
     def _stable_unique(values: Iterable[str | None]) -> List[str]:
-        """处理 stable unique 相关逻辑。
-
-        参数:
-            values: values，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：list, dict.fromkeys, str, strip。
-        """
+        """按首次出现顺序去重非空标识。"""
         return list(dict.fromkeys(str(value) for value in values if str(value or "").strip()))
 
-    # 阅读注释（函数）：规范化 citations。
     @staticmethod
     def _normalize_citations(citations: Sequence[CitationSchema]) -> List[CitationSchema]:
-        """规范化 citations。
+        """按来源文档、子块和引文去重，并重编号为契约局部 ``C1/C2/...``。
 
-        参数:
-            citations: 引用信息集合。
-
-        返回:
-            List[CitationSchema]
-
-        阅读提示:
-            主要直接调用：set, str, seen_sources.add, citation.model_dump, strip, dict, data.get, extra.setdefault。
+        原调用方 citation_id 保存在 ``extra.source_citation_id``，供文档级注册表再次 remap。
         """
         normalized: List[CitationSchema] = []
         seen_sources: set[tuple[str, str, str]] = set()
@@ -77,24 +58,12 @@ class RAGEvidenceContractBuilder:
             normalized.append(CitationSchema.model_validate(data))
         return normalized
 
-    # 阅读注释（函数）：处理 引用 标识集合 for 文本块 相关逻辑。
     @staticmethod
     def _citation_ids_for_chunk(
         chunk: RetrievedChunkSchema,
         citations: Sequence[CitationSchema],
     ) -> List[str]:
-        """处理 引用 标识集合 for 文本块 相关逻辑。
-
-        参数:
-            chunk: 文本块，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：bool, ids.append, list, dict.fromkeys。
-        """
+        """依据父块或子块身份把引用绑定到一个检索 Chunk。"""
         ids: List[str] = []
         for citation in citations:
             same_parent = bool(
@@ -111,20 +80,9 @@ class RAGEvidenceContractBuilder:
                 ids.append(citation.citation_id)
         return list(dict.fromkeys(ids))
 
-    # 阅读注释（函数）：处理 lineage 相关逻辑。
     @staticmethod
     def _lineage(trace: RAGTraceSchema | None) -> RAGEvidenceLineageSchema:
-        """处理 lineage 相关逻辑。
-
-        参数:
-            trace: Trace，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            RAGEvidenceLineageSchema
-
-        阅读提示:
-            主要直接调用：RAGEvidenceLineageSchema, dict, extra.get, isinstance, result_metadata.get, offline_index.get, static_spec.get。
-        """
+        """从运行 Trace 提取离线索引、Embedding、Reranker 和静态检索规范血缘。"""
         if trace is None:
             return RAGEvidenceLineageSchema()
         extra = dict(trace.extra or {})
@@ -154,7 +112,6 @@ class RAGEvidenceContractBuilder:
             },
         )
 
-    # 阅读注释（函数）：处理 数据项 相关逻辑。
     @classmethod
     def _item(
         cls,
@@ -164,20 +121,7 @@ class RAGEvidenceContractBuilder:
         disposition: EvidenceDisposition,
         citations: Sequence[CitationSchema],
     ) -> RAGEvidenceItemSchema:
-        """处理 数据项 相关逻辑。
-
-        参数:
-            evidence_id: 证据 标识，具体约束请结合类型标注和调用方确认。
-            chunk: 文本块，具体约束请结合类型标注和调用方确认。
-            disposition: disposition，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-
-        返回:
-            RAGEvidenceItemSchema
-
-        阅读提示:
-            主要直接调用：dict, metadata.get, int, cls._citation_ids_for_chunk, RAGEvidenceItemSchema, list, str。
-        """
+        """把检索 Chunk 转换为结构化 Evidence Item，并保留 pre-context 排名和丢弃原因。"""
         metadata = dict(chunk.metadata or {})
         pre_context_rank = metadata.get("pre_output_rank", metadata.get("pre_context_rank"))
         try:
@@ -221,7 +165,6 @@ class RAGEvidenceContractBuilder:
             },
         )
 
-    # 阅读注释（函数）：渲染 上下文。
     @staticmethod
     def _render_context(
         items: Sequence[RAGEvidenceItemSchema],
@@ -233,17 +176,10 @@ class RAGEvidenceContractBuilder:
         truncated_item_ids: Sequence[str] | None = None,
         packing_strategy: str | None = None,
     ) -> RAGContextSchema:
-        """渲染 上下文。
+        """将选中 Evidence Item 渲染为 Markdown 上下文并校验声明预算。
 
-        参数:
-            items: 待处理的数据项集合。
-            max_context_chars: max 上下文 chars，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            RAGContextSchema
-
-        阅读提示:
-            主要直接调用：join, parts.append, strip, RAGContextSchema, RAGEvidenceContractBuilder._stable_unique, len。
+        若 Context Packer 已给出 ``rendered_text``，这里不再重新选择，只验证字符上限并
+        记录 Token 预算、截断项和 packing 策略。
         """
         parts: List[str] = []
         for item in items:
@@ -278,7 +214,6 @@ class RAGEvidenceContractBuilder:
             },
         )
 
-    # 阅读注释（函数）：构建 RAGEvidenceContractBuilder。
     @classmethod
     def build(
         cls,
@@ -293,23 +228,11 @@ class RAGEvidenceContractBuilder:
         context_pack: Dict[str, Any] | None = None,
         extra: Dict[str, Any] | None = None,
     ) -> RAGEvidenceContractSchema:
-        """构建 RAGEvidenceContractBuilder。
+        """构建一次 RAG 调用的完整证据契约。
 
-        参数:
-            query: 当前检索或生成查询。
-            rewritten_queries: rewritten 查询集合，具体约束请结合类型标注和调用方确认。
-            selected_chunks: selected chunks，具体约束请结合类型标注和调用方确认。
-            dropped_chunks: dropped chunks，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            trace: Trace，具体约束请结合类型标注和调用方确认。
-            max_context_chars: max 上下文 chars，具体约束请结合类型标注和调用方确认。
-            extra: extra，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            RAGEvidenceContractSchema
-
-        阅读提示:
-            主要直接调用：cls._normalize_citations, len, items.append, cls._item, selected_ids.append, dropped_ids.append, set, cls._render_context。
+        先规范引用并编号 Evidence，再排除与选中项重复的 dropped Chunk，最后渲染 Context
+        和血缘。初始 Assessment 固定为 ``NOT_ASSESSED``；没有选中证据或没有 grounding
+        引用只写 reason_code，不在 Builder 内猜测业务充分性。
         """
         normalized_citations = cls._normalize_citations(citations)
         items: List[RAGEvidenceItemSchema] = []
@@ -394,26 +317,14 @@ class RAGEvidenceContractBuilder:
         )
 
 
-# 阅读注释（类）：封装 ragevidence contract reader，集中封装相关状态、依赖和行为。
 class RAGEvidenceContractReader:
-    """Read Step 12 contracts, with a compatibility fallback for old payloads."""
+    """从结构化契约恢复兼容 Context、RetrievedChunk 和 Citation 投影。"""
 
-    # 阅读注释（函数）：处理 projections 相关逻辑。
     @staticmethod
     def projections(
         contract: RAGEvidenceContractSchema,
     ) -> Tuple[RAGContextSchema, List[RetrievedChunkSchema], List[CitationSchema]]:
-        """处理 projections 相关逻辑。
-
-        参数:
-            contract: contract，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Tuple[RAGContextSchema, List[RetrievedChunkSchema], List[CitationSchema]]
-
-        阅读提示:
-            主要直接调用：chunks.append, RetrievedChunkSchema, str, item.extra.get, list, dict。
-        """
+        """仅投影 ``selected_evidence_ids``，不会让 dropped Evidence 重新进入生成链。"""
         item_by_id = {item.evidence_id: item for item in contract.items}
         chunks: List[RetrievedChunkSchema] = []
         for evidence_id in contract.selected_evidence_ids:

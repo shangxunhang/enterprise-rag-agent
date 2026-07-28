@@ -19,6 +19,7 @@ from agent.runtime.langgraph_state import (
     LangGraphRuntimeStateCodec,
     WorkflowNamespaceCheckpointSaver,
 )
+from agent.runtime.workflow_stream_context import emit_workflow_custom_event
 from agent.runtime.state_access import SharedStateWriter
 from apps.enterprise_document.quality.budget import (
     WorkflowBudget,
@@ -195,6 +196,8 @@ class SectionExecutionGraph:
             document_tool_call_ids=list(payload.document_tool_call_ids),
             section_retrieval_enabled=payload.section_retrieval_enabled,
             corrective_retrieval_enabled=payload.corrective_retrieval_enabled,
+            parallel_isolated=payload.parallel_isolated,
+            budget_policy_override=dict(payload.budget_policy_override),
         )
 
     def _prepare_section(
@@ -214,16 +217,20 @@ class SectionExecutionGraph:
         citation_required = bool(
             plan.citation_required or plan.section_title in citation_required_titles
         )
-        self.state_writer.set_current_section(
-            shared_state,
-            section_id=section_id,
-            section_title=plan.section_title,
-        )
+        if not payload.parallel_isolated:
+            self.state_writer.set_current_section(
+                shared_state,
+                section_id=section_id,
+                section_title=plan.section_title,
+            )
         registry = DocumentCitationRegistry.from_citations(
             payload.citation_registry or payload.document_citations
         )
         budget = WorkflowBudget.from_policy_metadata(
-            self.generation_quality_metadata
+            {
+                **self.generation_quality_metadata,
+                **dict(payload.budget_policy_override),
+            }
         )
         updated = payload.model_copy(
             update={
@@ -262,6 +269,22 @@ class SectionExecutionGraph:
             f"{plan.section_title}",
             flush=True,
         )
+        emit_workflow_custom_event(
+            "section_started",
+            node_name="prepare_section",
+            section_id=section_id,
+            status=ExecutionStatus.RUNNING.value,
+            progress=(
+                plan.section_order / len(required)
+                if required
+                else None
+            ),
+            payload={
+                "section_title": plan.section_title,
+                "section_order": plan.section_order,
+                "total_sections": len(required),
+            },
+        )
         route = (
             "retrieve"
             if payload.section_retrieval_enabled and citation_required
@@ -292,6 +315,12 @@ class SectionExecutionGraph:
             f"query={query[:100]!r}",
             flush=True,
         )
+        emit_workflow_custom_event(
+            "retrieval_started",
+            node_name="retrieve_section_evidence",
+            section_id=section_id,
+            payload={"scope": "section", "query": query},
+        )
         result = self.evidence_service.retrieve(
             shared_state,
             payload.project_input,
@@ -300,6 +329,17 @@ class SectionExecutionGraph:
             section_id=section_id,
             section_title=title,
             call_suffix=f"section_{order:03d}",
+        )
+        emit_workflow_custom_event(
+            "retrieval_completed",
+            node_name="retrieve_section_evidence",
+            section_id=section_id,
+            status=(
+                ExecutionStatus.SUCCESS.value
+                if result is not None and result.success
+                else ExecutionStatus.FAILED.value
+            ),
+            payload={"scope": "section", "query": query},
         )
         tool_call_ids = list(payload.tool_call_ids)
         metadata = dict(payload.retrieval_metadata)
@@ -467,6 +507,17 @@ class SectionExecutionGraph:
             exhaustion_resource = exc.resource
             exhaustion_limit = exc.limit
         generation_check = dict((section.extra or {}).get("generation_check") or {})
+        emit_workflow_custom_event(
+            "section_generated",
+            node_name="generate_section",
+            section_id=str(payload.section_id),
+            status=section.status.value,
+            payload={
+                "section_title": payload.section_title,
+                "section_order": payload.section_order,
+                "generation_attempt": payload.generation_attempt,
+            },
+        )
         updated = payload.model_copy(
             update={
                 "shared_state_payload": self.codec.dump_graph_state(shared_state),
@@ -804,13 +855,29 @@ class SectionExecutionGraph:
         self,
         state: SectionExecutionGraphState,
     ) -> dict[str, Any]:
-        return self._retrieve_recovery(state, corrective=False)
+        payload, _ = self._restore(state)
+        update = self._retrieve_recovery(state, corrective=False)
+        emit_workflow_custom_event(
+            "section_repaired",
+            node_name="retrieve_more",
+            section_id=str(payload.section_id),
+            payload={"repair_type": "self_rag_retrieval"},
+        )
+        return update
 
     def _corrective_retrieval(
         self,
         state: SectionExecutionGraphState,
     ) -> dict[str, Any]:
-        return self._retrieve_recovery(state, corrective=True)
+        payload, _ = self._restore(state)
+        update = self._retrieve_recovery(state, corrective=True)
+        emit_workflow_custom_event(
+            "section_repaired",
+            node_name="corrective_retrieval",
+            section_id=str(payload.section_id),
+            payload={"repair_type": "corrective_retrieval"},
+        )
+        return update
 
     def _finalize_section(
         self,
@@ -897,6 +964,7 @@ class SectionExecutionGraph:
             evidence=evidence,
             retrieved_chunks=list(payload.retrieved_chunks),
             rag_outputs=list(payload.rag_outputs),
+            citation_registry=list(payload.citation_registry),
             budget_usage=budget_usage,
             need_human_review=bool(
                 payload.budget_exhaustion_resource is not None
@@ -913,6 +981,22 @@ class SectionExecutionGraph:
             f"citations={len(section.citation_bindings)} "
             f"evidence_scope={payload.active_scope}",
             flush=True,
+        )
+        emit_workflow_custom_event(
+            "section_completed",
+            node_name="finalize_section",
+            section_id=section.section_id,
+            status=section.status.value,
+            progress=(
+                float(payload.section_order) / float(payload.total_sections)
+                if payload.section_order and payload.total_sections
+                else None
+            ),
+            payload={
+                "section_title": payload.section_title,
+                "section_order": payload.section_order,
+                "citation_count": len(section.citation_bindings),
+            },
         )
         updated = payload.model_copy(
             update={
@@ -1012,6 +1096,8 @@ class SectionExecutionGraph:
             document_tool_call_ids=list(request.document_tool_call_ids),
             section_retrieval_enabled=request.section_retrieval_enabled,
             corrective_retrieval_enabled=request.corrective_retrieval_enabled,
+            parallel_isolated=request.parallel_isolated,
+            budget_policy_override=dict(request.budget_policy_override),
             citation_registry=citation_registry.all(),
         )
         state = self.codec.build_initial_state(initial)

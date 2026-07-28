@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：build_default_component_registry。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Built-in plugin registration for the current RAG runtime."""
+"""当前 RAG 运行时的内置插件注册清单。
+
+该模块只声明默认可用的 ``category/name@version`` 与 Builder 映射，不选择实际策略；
+静态检索配置决定一次运行启用哪些组件及其参数。
+"""
 
 from __future__ import annotations
 
@@ -40,16 +40,8 @@ from rag.plugins.rerankers import (
 from rag.registry.component_registry import ComponentRegistry
 
 
-# 阅读注释（函数）：构建 default component 注册表。
 def build_default_component_registry() -> ComponentRegistry[object]:
-    """构建 default component 注册表。
-
-    返回:
-        ComponentRegistry[object]
-
-    阅读提示:
-        主要直接调用：ComponentRegistry, registry.register。
-    """
+    """注册内置分块、Query 变换、召回、融合、补全、重排、纠错和上下文打包插件。"""
     registry: ComponentRegistry[object] = ComponentRegistry()
 
     registry.register(

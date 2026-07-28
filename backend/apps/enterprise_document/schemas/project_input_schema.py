@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：DepartmentGroupSchema、HardwareResourceSchema、SourceMaterialSchema、ManualBoundarySchema、GenerationRequirementsSchema、OutputSchemaDefinition、ProjectInputSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Normalized project input contract for enterprise-document workflows."""
+"""企业文档主链唯一允许进入的规范化项目输入契约。
+
+该文件把项目事实、材料索引、人工边界、生成要求和输出结构放在一个严格对象中。生产
+入口不得在缺失 ProjectInput 时由 Agent 自行编造；demo 所需的可缺省字段由文件末尾的
+独立 Seed Schema 承担，避免污染正式业务契约。
+"""
 
 from __future__ import annotations
 
@@ -14,9 +15,8 @@ from pydantic.fields import PydanticUndefined
 from schemas.common import SchemaBase
 
 
-# 阅读注释（类）：封装 department group Schema，定义跨模块传递的数据结构与字段约束。
 class DepartmentGroupSchema(SchemaBase):
-    """封装 department group Schema，定义跨模块传递的数据结构与字段约束。"""
+    """一类部门的数量和人员规模事实，用于描述组织结构而非逐部门建模。"""
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     group_name: str
@@ -26,9 +26,8 @@ class DepartmentGroupSchema(SchemaBase):
     description: Optional[str] = None
 
 
-# 阅读注释（类）：封装 hardware resource Schema，定义跨模块传递的数据结构与字段约束。
 class HardwareResourceSchema(SchemaBase):
-    """封装 hardware resource Schema，定义跨模块传递的数据结构与字段约束。"""
+    """已确认硬件资源及其访问方式；未知配置应留空而不是由生成模型推断。"""
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     resource_type: str
@@ -41,9 +40,8 @@ class HardwareResourceSchema(SchemaBase):
     description: Optional[str] = None
 
 
-# 阅读注释（类）：封装 source material Schema，定义跨模块传递的数据结构与字段约束。
 class SourceMaterialSchema(SchemaBase):
-    """封装 source material Schema，定义跨模块传递的数据结构与字段约束。"""
+    """业务材料描述及其文件、文档和知识库定位元数据。"""
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     material_type: str
@@ -55,9 +53,8 @@ class SourceMaterialSchema(SchemaBase):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 manual boundary Schema，定义跨模块传递的数据结构与字段约束。
 class ManualBoundarySchema(SchemaBase):
-    """封装 manual boundary Schema，定义跨模块传递的数据结构与字段约束。"""
+    """明确必须由人工或外部专业工具处理、不能交给文本模型推断的事项。"""
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     item: str
@@ -65,9 +62,8 @@ class ManualBoundarySchema(SchemaBase):
     description: Optional[str] = None
 
 
-# 阅读注释（类）：封装 生成 requirements Schema，定义跨模块传递的数据结构与字段约束。
 class GenerationRequirementsSchema(SchemaBase):
-    """封装 生成 requirements Schema，定义跨模块传递的数据结构与字段约束。"""
+    """控制章节集合、引用要求、重试次数、上下文预算和语言风格。"""
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     required_sections: List[str] = Field(default_factory=list)
@@ -84,9 +80,8 @@ class GenerationRequirementsSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 输出 Schema definition，集中封装相关状态、依赖和行为。
 class OutputSchemaDefinition(SchemaBase):
-    """封装 输出 Schema definition，集中封装相关状态、依赖和行为。"""
+    """定义最终文档标题、格式、章节和必备字段，不包含具体正文。"""
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
 
     document_title: Optional[str] = None
@@ -97,7 +92,6 @@ class OutputSchemaDefinition(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 项目 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class ProjectInputSchema(SchemaBase):
     """Single business input object entering the main workflow.
 
@@ -144,16 +138,13 @@ class ProjectInputSchema(SchemaBase):
     conflicting_information: List[str] = Field(default_factory=list)
     extra: Dict[str, Any] = Field(default_factory=dict)
 
-    # 阅读注释（函数）：处理 align 生成 and 输出 sections 相关逻辑。
     @model_validator(mode="after")
     def align_generation_and_output_sections(self) -> "ProjectInputSchema":
-        """处理 align 生成 and 输出 sections 相关逻辑。
+        """对齐生成章节与输出章节，并补齐安全的派生默认值。
 
-        返回:
-            'ProjectInputSchema'
-
-        阅读提示:
-            主要直接调用：strip, str, len, set, ValueError, list, join, model_validator。
+        两处章节声明同时存在时必须顺序完全一致；只提供一处时可单向复制。引用必需章节
+        必须是总体章节集合的子集。这里只补业务目标和文档标题等可确定派生值，不补人员、
+        硬件、预算或客户现状等事实字段。
         """
         generation_sections = [
             str(item).strip()

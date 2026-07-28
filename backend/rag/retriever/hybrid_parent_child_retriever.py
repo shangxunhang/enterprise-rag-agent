@@ -1,18 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_safe_float、HybridParentChildRetriever。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/retriever/hybrid_parent_child_retriever.py
-======================================================
+"""P2 混合父子检索：dense 子块 + BM25 子块 + RRF + 父块回填。
 
-P2 hybrid parent-child retriever:
-Dense Milvus child retrieval + BM25 child retrieval + RRF fusion + parent backfill.
-
-职责边界：
-- P2 做 hybrid retrieval，不做 rerank，不做 prompt context packing，不做 LLM。
-- 最终仍输出 retrieval_result_v2，方便 P3 接 reranker/context_packer。
+该层允许仅启用一种来源，也允许在 RRF 后按父块聚合多个命中子块。输出仍是
+``retrieval_result_v2``，保留实际子块证据、来源排名和融合贡献，供 P3 重排、引用和
+Context Packer 使用；本层不调用 LLM。
 """
 
 from __future__ import annotations
@@ -27,20 +18,8 @@ from rag.retriever.milvus_child_retriever import MilvusChildRetriever
 from rag.retriever.bm25_child_retriever import BM25ChildRetriever
 
 
-# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """处理 safe float 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float。
-    """
+    """安全转换融合和来源分数。"""
     try:
         if value is None:
             return default
@@ -49,11 +28,9 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-# 阅读注释（类）：封装 hybrid 父块 子块 retriever，集中封装相关状态、依赖和行为。
 class HybridParentChildRetriever:
     """Dense + keyword hybrid retrieval over child chunks, with parent backfill."""
 
-    # 阅读注释（函数）：初始化 HybridParentChildRetriever，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -64,22 +41,7 @@ class HybridParentChildRetriever:
         rrf_k: int = 60,
         dedup_parent: bool = True,
     ):
-        """初始化 HybridParentChildRetriever，保存运行所需的依赖、配置或状态。
-
-        参数:
-            dense_retriever: dense retriever，具体约束请结合类型标注和调用方确认。
-            keyword_retriever: keyword retriever，具体约束请结合类型标注和调用方确认。
-            parent_store: 父块 store，具体约束请结合类型标注和调用方确认。
-            context_granularity: 上下文 granularity，具体约束请结合类型标注和调用方确认。
-            rrf_k: rrf k，具体约束请结合类型标注和调用方确认。
-            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：ValueError, int, bool。
-        """
+        """注入至少一种召回来源、父块存储和 RRF/父级去重策略。"""
         if dense_retriever is None and keyword_retriever is None:
             raise ValueError("At least one retriever is required")
         if context_granularity not in {"parent", "child"}:
@@ -91,14 +53,12 @@ class HybridParentChildRetriever:
         self.rrf_k = int(rrf_k)
         self.dedup_parent = bool(dedup_parent)
 
-    # 阅读注释（函数）：处理 group by 父块 相关逻辑。
     @staticmethod
     def _group_by_parent(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Deduplicate fused child candidates by parent_chunk_id.
+        """按父块聚合融合候选，以最高分子块代表排序并保留全部实际命中子块。
 
-        Keep the best fused child candidate as representative and attach all matched child ids
-        under the same parent into metadata-like fields. This keeps retrieval_result_v2 compact
-        while preserving evidence for later citation/rerank.
+        ``matched_child_chunks`` 保存每个参与父级候选的子块正文和位置，引用构造必须使用
+        这些命中证据，而不是随意截取更大的父块开头。
         """
         groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         missing_counter = 0
@@ -173,7 +133,6 @@ class HybridParentChildRetriever:
             candidate["score"] = _safe_float(candidate.get("fusion_score") or candidate.get("score"))
         return deduped
 
-    # 阅读注释（函数）：检索 HybridParentChildRetriever。
     def retrieve(
         self,
         query: str,
@@ -188,25 +147,11 @@ class HybridParentChildRetriever:
         use_keyword: bool = True,
         dedup_parent: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
-        """检索 HybridParentChildRetriever。
+        """执行启用来源的子块召回、RRF、可选父级聚合和 Parent Store 回填。
 
-        参数:
-            query: 当前检索或生成查询。
-            final_top_k: final top k，具体约束请结合类型标注和调用方确认。
-            dense_top_k: dense top k，具体约束请结合类型标注和调用方确认。
-            keyword_top_k: keyword top k，具体约束请结合类型标注和调用方确认。
-            filter_expr: filter expr，具体约束请结合类型标注和调用方确认。
-            keyword_doc_id: keyword doc 标识，具体约束请结合类型标注和调用方确认。
-            keyword_doc_ids: keyword doc 标识集合，具体约束请结合类型标注和调用方确认。
-            use_dense: use dense，具体约束请结合类型标注和调用方确认。
-            use_keyword: use keyword，具体约束请结合类型标注和调用方确认。
-            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：strip, str, ValueError, self.dense_retriever.search, int, self.keyword_retriever.search, rrf_fuse, bool。
+        dense 使用 Milvus ``filter_expr``，keyword 使用结构化 ``doc_id/doc_ids`` 范围；调用方
+        应在更外层保证两者均来自同一授权范围。输出 metadata 记录各阶段候选数量、来源
+        排名、融合贡献、父块命中和全部匹配子块。
         """
         if not query or not str(query).strip():
             raise ValueError("query cannot be empty")

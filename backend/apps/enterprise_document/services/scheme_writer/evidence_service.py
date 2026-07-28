@@ -1,9 +1,9 @@
-# =============================================================================
-# 中文阅读说明：方案生成中的证据服务。
-# 只负责构造 RAG 请求、调用 RAGService，并把当前结果投影为标准 Evidence 视图。
-# Query 构造、文档级引用注册/remap、旧 ToolResult 兼容分别由独立协作者负责。
-# =============================================================================
-"""Evidence retrieval and canonical evidence projection for scheme generation."""
+"""方案生成中的 RAG 调用与标准证据投影边界。
+
+本服务只构造 ``RAGToolInputSchema``、调用 ``RAGServicePort`` 并返回 canonical
+``EvidenceBundleSchema``。章节 Query、文档级引用注册与 remap、旧 ToolResult 升级均由
+独立协作者负责，防止检索、授权和兼容逻辑重新聚合成巨型服务。
+"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from .legacy_evidence_adapter import LegacyEvidenceAdapter
 
 
 class SchemeEvidenceService:
-    """Invoke RAG and expose one canonical evidence projection to callers."""
+    """执行一次受授权范围约束的检索，并向调用方暴露统一证据契约。"""
 
     def __init__(
         self,
@@ -41,6 +41,11 @@ class SchemeEvidenceService:
         model_gateway: Any | None = None,
         retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
     ) -> None:
+        """注入 RAG 端口、调用 Agent 名称、模型能力查询和可信检索授权范围。
+
+        ``retrieval_access_scope`` 必须来自认证后的应用/安全边界；ProjectInput 只能提供
+        缩小范围的材料和 KB 请求，不能被提升为授权事实。
+        """
         self.rag_service = rag_service
         self.agent_name = agent_name
         self.model_gateway = model_gateway
@@ -60,7 +65,12 @@ class SchemeEvidenceService:
         section_title: Optional[str] = None,
         call_suffix: Optional[str] = None,
     ) -> Optional[EvidenceBundleSchema]:
-        """Build one RAG request and execute it through the configured service."""
+        """构造并执行一次文档、章节或恢复范围的 RAG 请求。
+
+        方法汇总 ProjectInput 的文件、文档和知识库定位信息，校验租户与可信授权范围一致，
+        再结合目标模型安全上下文窗口计算证据预算。``model_gateway`` 缺失时使用显式保守
+        默认值，而不是虚构模型能力。未配置 RAG 服务时返回 ``None``，由上层决定降级策略。
+        """
 
         if self.rag_service is None:
             return None

@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SectionEvidenceBundleSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Section-scoped evidence records for long-document generation."""
+"""长文档生成中按章节隔离的证据记录。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -14,7 +10,6 @@ from schemas.common import SchemaBase
 from schemas.rag import RAGContextSchema, RetrievedChunkSchema
 
 
-# 阅读注释（类）：封装 章节 证据 bundle Schema，定义跨模块传递的数据结构与字段约束。
 class SectionEvidenceBundleSchema(SchemaBase):
     """Evidence actually used for one generated section.
 

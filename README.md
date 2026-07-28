@@ -6,6 +6,49 @@
 
 ```text
 stage1-mainline-stability-v7.9.0-20260718
+```
+
+## 受控架构运行基线（2026-07-26）
+
+- Python 固定为 3.10.x；`pyproject.toml` 是唯一人工维护的依赖声明，
+  `uv.lock` 冻结完整传递依赖。
+- LangGraph checkpoint 使用官方 `langgraph-checkpoint-sqlite`；旧自定义
+  SQLite 文件必须先运行 `scripts/migrate_legacy_checkpoints.py`。项目只
+  显式持有和关闭 connection，不复制官方 checkpoint 协议。
+- 人工审阅使用统一的 required/recommended/status/request/decision 协议，
+  应用层支持 inspect、同步/流式 resume、reject 和 cancel。
+- 首次执行与跨实例恢复都输出 `workflow_stream_event_v1`。每次会话具有
+  独立 `stream_session_id`，并携带 `resume_count`、`stream_kind`；
+  event ID 可跨 initial/resume/cancel 安全去重。
+- 章节并发默认 `SECTION_MAX_CONCURRENCY=1`；只有显式声明无依赖、
+  `can_run_in_parallel=true` 且 `requires_global_context=false` 的章节才会
+  通过 LangGraph 并发调度。分支只返回声明过的 additive state delta，
+  主线程按 `section_order, section_id` 确定性合并。
+- LangChain `stream/astream` 是 canonical 最终领域对象兼容接口，不是
+  Provider 原生 token stream；异步接口也不代表原生异步 Provider I/O。
+
+推荐安装命令：
+
+```powershell
+conda activate enterprise-rag-agent
+uv sync --frozen --extra test --extra providers
+uv run --frozen --no-sync python scripts/check_environment.py
+```
+
+人工审阅与流式命令：
+
+```powershell
+python scripts/workflow_control.py inspect --task-id <task> --run-id <run> --output-root data
+python scripts/workflow_control.py resume --task-id <task> --run-id <run> --output-root data --decision approved
+python scripts/workflow_control.py cancel --task-id <task> --run-id <run> --output-root data --reason "request withdrawn"
+python scripts/workflow_control.py stream --run-id <run> --output-root data --user-input "生成企业方案" --allow-demo-defaults
+python scripts/workflow_control.py stream-resume --task-id <task> --run-id <run> --output-root data --decision approved
+python scripts/workflow_control.py stream-cancel --task-id <task> --run-id <run> --output-root data --reason "request withdrawn"
+```
+
+完整说明见
+[`docs/CONTROLLED_ARCHITECTURE_COMPLETION_20260726.md`](docs/CONTROLLED_ARCHITECTURE_COMPLETION_20260726.md)。
+
 当前能力
 ProjectInput 标准化
 Supervisor Agent 与 Workflow 路由
@@ -40,7 +83,8 @@ data/examples/         示例输入
 docs/                  阶段设计和验收文档
 环境准备
 conda activate enterprise-rag-agent
-pip install -r requirements-step-11-2.txt
+uv sync --frozen --extra test --extra providers
+uv run --frozen --no-sync python scripts/check_environment.py
 
 复制环境变量示例：
 
@@ -67,7 +111,8 @@ Data Capture 运行产物
 .env 和真实密钥
 当前阶段
 
-原生 Agent-RAG 主链已经完成稳定性验收。下一阶段先进行完整架构、Schema、状态流、错误传播和历史代码梳理，再决定 LangGraph 迁移。
+Agent-RAG 主链已使用 LangGraph 作为顶层业务图、durable checkpoint 与
+章节子图运行时；领域协议、质量门禁和产物生命周期仍由应用代码拥有。
 
 架构治理约束
 

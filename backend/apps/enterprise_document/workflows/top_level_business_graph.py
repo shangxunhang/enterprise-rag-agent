@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
+from uuid import uuid4
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -44,6 +45,7 @@ from apps.enterprise_document.services.scheme_writer.stage_service import (
     SchemeGenerationStageService,
 )
 from contracts.observability import TraceSink
+from contracts.workflow_engine import WorkflowEngineCapabilities
 from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.side_effects import (
     InMemorySideEffectCommitStore,
@@ -60,7 +62,13 @@ from schemas.graph import (
     WorkflowEngineResultSchema,
     stable_graph_hash,
 )
-from schemas.status import ExecutionStatus
+from schemas.human_review import (
+    HumanReviewDecisionSchema,
+    HumanReviewRequestSchema,
+    HumanReviewStatus,
+)
+from schemas.status import ExecutionStatus, is_failure
+from schemas.workflow_stream import WorkflowStreamEventSchema
 
 
 PHASE2_BUSINESS_NODE_NAMES = (
@@ -303,6 +311,10 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
                 "review_requested_at",
                 "review_resumed_at",
                 "resume_count",
+                "human_review_required",
+                "human_review_recommended",
+                "human_review_status",
+                "human_review_decision",
                 "artifact_route",
                 "output_status",
                 "output_error",
@@ -348,6 +360,13 @@ class EnterpriseDocumentWorkflowEngine:
 
     engine_name = "enterprise_document_langgraph_engine"
     engine_version = "phase5-langgraph-langchain-takeover-v1"
+    capabilities = WorkflowEngineCapabilities(
+        resume=True,
+        inspect=True,
+        cancel=True,
+        stream_events=True,
+        async_stream_events=False,
+    )
 
     def __init__(
         self,
@@ -1168,19 +1187,20 @@ class EnterpriseDocumentWorkflowEngine:
         workflow: WorkflowDefinitionSchema,
     ) -> dict[str, Any]:
         graph_state, payload = self._restore(runtime_state, workflow)
-        review_request = {
-            "schema_version": "human_review_request_v1",
-            "task_id": graph_state.task_id,
-            "run_id": graph_state.run_id,
-            "workflow_id": workflow.workflow_id,
-            "workflow_version": workflow.workflow_version,
-            "document_id": payload.document_id,
-            "hard_gate_passed": bool(payload.hard_gate and payload.hard_gate.passed),
-            "artifact_route": payload.artifact_route,
-            "warnings": [item.model_dump(mode="json") for item in payload.output_warnings],
-            "requested_at": self.stage_service.runtime_support.now_iso(),
-        }
-        response = interrupt(review_request)
+        review_request = HumanReviewRequestSchema(
+            task_id=graph_state.task_id,
+            run_id=graph_state.run_id,
+            workflow_id=workflow.workflow_id,
+            workflow_version=workflow.workflow_version,
+            document_id=payload.document_id,
+            hard_gate_passed=bool(payload.hard_gate and payload.hard_gate.passed),
+            artifact_route=payload.artifact_route,
+            warnings=[
+                item.model_dump(mode="json") for item in payload.output_warnings
+            ],
+            requested_at=self.stage_service.runtime_support.now_iso(),
+        )
+        response = interrupt(review_request.model_dump(mode="json"))
         return {
             "human_review_response": response,
             "current_business_node": "human_review_interrupt",
@@ -1200,22 +1220,64 @@ class EnterpriseDocumentWorkflowEngine:
             or ("rejected" if raw.get("approved") is False else "")
         ).strip().lower()
         approved = raw_decision in {"approve", "approved", "accept", "accepted"}
-        decision = "approved" if approved else "rejected"
+        cancelled = raw_decision in {"cancel", "cancelled", "canceled"}
+        decision = (
+            "approved"
+            if approved
+            else ("cancelled" if cancelled else "rejected")
+        )
         feedback = str(raw.get("feedback") or raw.get("comment") or "").strip() or None
+        decided_at = self.stage_service.runtime_support.now_iso()
+        review_decision = HumanReviewDecisionSchema(
+            decision=(
+                HumanReviewStatus.APPROVED
+                if approved
+                else (
+                    HumanReviewStatus.CANCELLED
+                    if cancelled
+                    else HumanReviewStatus.REJECTED
+                )
+            ),
+            feedback=feedback,
+            decided_at=decided_at,
+            reviewer_id=str(raw.get("reviewer_id") or "").strip() or None,
+            metadata=dict(raw.get("metadata") or {}),
+        )
         artifact_route = payload.artifact_route
         output_status = payload.output_status
         output_error = payload.output_error
         if not approved:
             artifact_route = "rejected"
-            output_status = ExecutionStatus.FAILED
+            output_status = (
+                ExecutionStatus.CANCELLED
+                if cancelled
+                else ExecutionStatus.FAILED
+            )
             output_error = self.stage_service.runtime_support.error(
-                "HUMAN_REVIEW_REJECTED",
-                feedback or "human reviewer rejected the generated draft",
+                (
+                    "WORKFLOW_CANCELLED"
+                    if cancelled
+                    else "HUMAN_REVIEW_REJECTED"
+                ),
+                feedback
+                or (
+                    "workflow cancelled during human review"
+                    if cancelled
+                    else "human reviewer rejected the generated draft"
+                ),
                 node="apply_human_review",
                 retryable=False,
-                failure_category=FailureCategory.BUSINESS_QUALITY,
-                requires_human=True,
-                user_message="人工审核未通过，当前草稿不能作为正式交付物。",
+                failure_category=(
+                    FailureCategory.CANCELLED
+                    if cancelled
+                    else FailureCategory.BUSINESS_QUALITY
+                ),
+                requires_human=not cancelled,
+                user_message=(
+                    "工作流已在人工审核阶段取消。"
+                    if cancelled
+                    else "人工审核未通过，当前草稿不能作为正式交付物。"
+                ),
             )
         return payload.model_copy(
             update={
@@ -1226,8 +1288,12 @@ class EnterpriseDocumentWorkflowEngine:
                     payload.review_requested_at
                     or self.stage_service.runtime_support.now_iso()
                 ),
-                "review_resumed_at": self.stage_service.runtime_support.now_iso(),
+                "review_resumed_at": decided_at,
                 "resume_count": payload.resume_count + 1,
+                "human_review_required": False,
+                "human_review_recommended": False,
+                "human_review_status": review_decision.decision,
+                "human_review_decision": review_decision,
                 "artifact_route": artifact_route,
                 "output_status": output_status,
                 "output_error": output_error,
@@ -1290,6 +1356,7 @@ class EnterpriseDocumentWorkflowEngine:
                 "evaluate_document_gate", self.stage_service.evaluate_document_gate
             ),
         )
+        # 人工审核节点
         builder.add_node(
             "human_review_interrupt",
             lambda state: self._human_review_interrupt(
@@ -1297,6 +1364,7 @@ class EnterpriseDocumentWorkflowEngine:
                 workflow=workflow,
             ),
         )
+        #  人工审核节点
         builder.add_node(
             "apply_human_review",
             lambda state: self._run_stage(
@@ -1515,6 +1583,30 @@ class EnterpriseDocumentWorkflowEngine:
                     else final_runtime.get("terminal_reason")
                 ),
                 "interrupts": interrupts,
+                "human_review_required": paused,
+                "human_review_recommended": (
+                    False
+                    if paused or final_payload.human_review_decision is not None
+                    else bool(
+                        final_payload.output_status
+                        == ExecutionStatus.PARTIAL_SUCCESS
+                        or (
+                            final_payload.output_error is not None
+                            and final_payload.output_error.requires_human
+                        )
+                    )
+                ),
+                "human_review_status": (
+                    HumanReviewStatus.PENDING.value
+                    if paused
+                    else final_payload.human_review_status.value
+                ),
+                "human_review_request": interrupts[0] if interrupts else None,
+                "human_review_decision": (
+                    final_payload.human_review_decision.model_dump(mode="json")
+                    if final_payload.human_review_decision is not None
+                    else None
+                ),
                 "resumed": resumed,
                 "resume_count": final_payload.resume_count,
                 "phase2_top_level_graph": True,
@@ -1534,7 +1626,15 @@ class EnterpriseDocumentWorkflowEngine:
                 "checkpoint_business_nodes": checkpoint_business_nodes,
                 "workflow_definition_topology_ignored": True,
                 "section_subgraph_enabled": True,
-                "section_parallelism_enabled": False,
+                "section_parallelism_enabled": bool(
+                    self.stage_service.section_max_concurrency > 1
+                ),
+                "section_max_concurrency": (
+                    self.stage_service.section_max_concurrency
+                ),
+                "section_parallelism_scheduler": (
+                    "langgraph_safe_independent_batch_v1"
+                ),
                 "active_background_workers": self.active_worker_count,
                 "timeout_guard": "shared_worker_deadline_v1",
                 "write_contract": "phase2_graph_and_payload_declared_paths_v1",
@@ -1650,6 +1750,20 @@ class EnterpriseDocumentWorkflowEngine:
         next_nodes = list(snapshot.next)
         if interrupts and not next_nodes:
             next_nodes = ["human_review_interrupt"]
+        runtime_values = dict(snapshot.values or {})
+        restored_graph_state = (
+            self.runtime_state_codec.restore_graph_state(
+                runtime_values,
+                workflow=workflow,
+            )
+            if runtime_values.get("graph_state_payload")
+            else None
+        )
+        restored_payload = (
+            self.business_state_codec.restore_payload(runtime_values)
+            if runtime_values.get("scheme_generation_payload")
+            else None
+        )
         return {
             "run_id": run_id,
             "workflow_id": workflow.workflow_id,
@@ -1657,11 +1771,338 @@ class EnterpriseDocumentWorkflowEngine:
             "checkpoint_config": dict(snapshot.config),
             "next_nodes": next_nodes,
             "interrupts": interrupts,
+            "graph_state": (
+                restored_graph_state.model_dump(mode="json")
+                if restored_graph_state is not None
+                else None
+            ),
+            "human_review_required": bool(interrupts),
+            "human_review_status": (
+                HumanReviewStatus.PENDING.value
+                if interrupts
+                else HumanReviewStatus.NOT_REQUIRED.value
+            ),
             "created_at": snapshot.created_at,
             "metadata": dict(snapshot.metadata or {}),
+            "resume_count": (
+                restored_payload.resume_count
+                if restored_payload is not None
+                else 0
+            ),
         }
 
-    def cancel(self, reason: str = "workflow_cancelled") -> int:
-        """Cancel currently active node workers; durable state remains inspectable."""
+    def _merged_invoke_config(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        *,
+        run_id: str,
+        runnable_config: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        base = self._invoke_config(workflow, run_id=run_id)
+        if not runnable_config:
+            return base
+        supplied = dict(runnable_config)
+        merged = {
+            **supplied,
+            **base,
+            "configurable": {
+                **dict(supplied.get("configurable", {})),
+                **dict(base.get("configurable", {})),
+            },
+            "metadata": {
+                **dict(supplied.get("metadata", {})),
+                **dict(base.get("metadata", {})),
+            },
+        }
+        if supplied.get("tags"):
+            merged["tags"] = list(supplied["tags"])
+        if supplied.get("callbacks") is not None:
+            merged["callbacks"] = supplied["callbacks"]
+        return merged
 
-        return self.cancel_active_workers(reason)
+    def cancel(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        reason: str = "workflow_cancelled",
+    ) -> WorkflowEngineResultSchema:
+        """Persist cancellation through the same interrupted graph path."""
+
+        self.cancel_active_workers(reason)
+        return self.resume(
+            workflow,
+            graph_state,
+            {
+                "decision": HumanReviewStatus.CANCELLED.value,
+                "feedback": reason,
+            },
+        )
+
+    def stream_events(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        resume_value: dict[str, Any] | None = None,
+        runnable_config: dict[str, Any] | None = None,
+    ) -> Iterable[WorkflowStreamEventSchema]:
+        """Map LangGraph stream modes to the stable application event schema."""
+
+        initial_revision = graph_state.graph_revision
+        graph = self.build_graph(workflow)
+        config = self._merged_invoke_config(
+            workflow,
+            run_id=graph_state.run_id,
+            runnable_config=runnable_config,
+        )
+        if resume_value is None:
+            graph_state.workflow_engine_name = self.engine_name
+            graph_state.workflow_engine_version = self.engine_version
+            initial_state = graph_state.model_copy(deep=True)
+            initial_state.status = ExecutionStatus.RUNNING
+            runtime = self.runtime_state_codec.build_initial_state(
+                workflow,
+                initial_state,
+            )
+            payload = SchemeGenerationGraphPayloadSchema(
+                task_id=graph_state.task_id,
+                run_id=graph_state.run_id,
+                workflow_namespace=self.runtime_state_codec.workflow_namespace(
+                    workflow
+                ),
+                started_at=self.stage_service.runtime_support.now_iso(),
+            )
+            runtime.update(self.business_state_codec.build_initial_update(payload))
+            stream_input: Any = runtime
+            initial_event_type = "workflow_started"
+        else:
+            stream_input = Command(resume=dict(resume_value))
+            initial_event_type = "workflow_resumed"
+
+        stream_session_id = uuid4().hex
+        if resume_value is None:
+            resume_count = 0
+            stream_kind = "initial"
+        else:
+            inspection = self.inspect(workflow, run_id=graph_state.run_id)
+            resume_count = int(inspection.get("resume_count", 0)) + 1
+            decision = str(resume_value.get("decision") or "").strip().lower()
+            stream_kind = (
+                "cancel"
+                if decision == HumanReviewStatus.CANCELLED.value
+                else "resume"
+            )
+        sequence = 0
+
+        def event(
+            event_type: str,
+            *,
+            status: ExecutionStatus,
+            node_name: str | None = None,
+            section_id: str | None = None,
+            progress: float | None = None,
+            payload: dict[str, Any] | None = None,
+            error: ErrorSchema | None = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> WorkflowStreamEventSchema:
+            nonlocal sequence
+            sequence += 1
+            return WorkflowStreamEventSchema(
+                event_id=(
+                    f"{graph_state.run_id}:{resume_count}:"
+                    f"{stream_session_id}:{sequence:08d}:{event_type}"
+                ),
+                sequence=sequence,
+                stream_session_id=stream_session_id,
+                resume_count=resume_count,
+                stream_kind=stream_kind,
+                timestamp=self.stage_service.runtime_support.now_iso(),
+                task_id=graph_state.task_id,
+                run_id=graph_state.run_id,
+                workflow_id=workflow.workflow_id,
+                workflow_version=workflow.workflow_version,
+                node_name=node_name,
+                section_id=section_id,
+                event_type=event_type,
+                status=status,
+                progress=progress,
+                payload=dict(payload or {}),
+                error=error,
+                metadata={
+                    **dict(metadata or {}),
+                    "stream_session_id": stream_session_id,
+                    "resume_count": resume_count,
+                    "stream_kind": stream_kind,
+                },
+            )
+
+        yield event(
+            initial_event_type,
+            status=ExecutionStatus.RUNNING,
+            payload={
+                "resumed": resume_value is not None,
+                "review_decision": (
+                    resume_value.get("decision")
+                    if resume_value is not None
+                    else None
+                ),
+            },
+        )
+        if resume_value is not None:
+            yield event(
+                "human_review_resumed",
+                status=ExecutionStatus.RUNNING,
+                node_name="human_review_interrupt",
+                payload={
+                    "decision": resume_value.get("decision"),
+                    "feedback_present": bool(resume_value.get("feedback")),
+                },
+            )
+
+        final_runtime: dict[str, Any] = {}
+        interrupt_values: list[Any] = []
+        for raw_event in graph.stream(
+            stream_input,
+            config=config,
+            stream_mode=["tasks", "updates", "checkpoints", "custom"],
+            subgraphs=True,
+            version="v2",
+        ):
+            raw_type = str(raw_event.get("type") or "")
+            data = raw_event.get("data")
+            if raw_type == "checkpoints" and isinstance(data, dict):
+                values = data.get("values")
+                if isinstance(values, dict):
+                    final_runtime = dict(values)
+                configurable = (
+                    data.get("config", {}).get("configurable", {})
+                    if isinstance(data.get("config"), dict)
+                    else {}
+                )
+                yield event(
+                    "checkpoint_created",
+                    status=ExecutionStatus.RUNNING,
+                    payload={
+                        "checkpoint_id": configurable.get("checkpoint_id"),
+                        "step": (
+                            data.get("metadata", {}).get("step")
+                            if isinstance(data.get("metadata"), dict)
+                            else None
+                        ),
+                    },
+                )
+                continue
+            if raw_type == "updates" and isinstance(data, dict):
+                raw_interrupts = data.get("__interrupt__")
+                if raw_interrupts:
+                    interrupt_values.extend(list(raw_interrupts))
+                continue
+            if raw_type == "custom" and isinstance(data, dict):
+                custom_status = ExecutionStatus(
+                    data.get("status", ExecutionStatus.RUNNING.value)
+                )
+                yield event(
+                    str(data["event_type"]),
+                    status=custom_status,
+                    node_name=data.get("node_name"),
+                    section_id=data.get("section_id"),
+                    progress=data.get("progress"),
+                    payload=data.get("payload"),
+                )
+                continue
+            if raw_type != "tasks" or not isinstance(data, dict):
+                continue
+            node_name = str(data.get("name") or "")
+            if not node_name or node_name.startswith("__"):
+                continue
+            task_started = "input" in data and "result" not in data
+            task_error = data.get("error")
+            if task_started:
+                yield event(
+                    "node_started",
+                    status=ExecutionStatus.RUNNING,
+                    node_name=node_name,
+                )
+                if node_name == "retrieve_document_evidence":
+                    yield event(
+                        "retrieval_started",
+                        status=ExecutionStatus.RUNNING,
+                        node_name=node_name,
+                    )
+                continue
+            node_event_type = (
+                "node_failed" if task_error is not None else "node_completed"
+            )
+            node_status = (
+                ExecutionStatus.FAILED
+                if task_error is not None
+                else ExecutionStatus.SUCCESS
+            )
+            yield event(
+                node_event_type,
+                status=node_status,
+                node_name=node_name,
+                payload={
+                    "interrupt_count": len(data.get("interrupts") or []),
+                },
+            )
+            if node_name == "retrieve_document_evidence":
+                yield event(
+                    "retrieval_completed",
+                    status=node_status,
+                    node_name=node_name,
+                )
+            if node_name in {"persist_deliverable", "persist_rejected"}:
+                yield event(
+                    "artifact_persisted",
+                    status=node_status,
+                    node_name=node_name,
+                    payload={
+                        "artifact_route": (
+                            "deliverable"
+                            if node_name == "persist_deliverable"
+                            else "rejected"
+                        )
+                    },
+                )
+
+        if interrupt_values:
+            final_runtime["__interrupt__"] = interrupt_values
+        if not final_runtime:
+            raise RuntimeError("LangGraph stream completed without durable state")
+        result = self._result_from_runtime(
+            workflow=workflow,
+            graph_state=graph_state,
+            final_runtime=final_runtime,
+            initial_revision=initial_revision,
+            resumed=resume_value is not None,
+        )
+        result_payload = result.model_dump(mode="json")
+        if result.status == ExecutionStatus.PAUSED:
+            yield event(
+                "human_review_required",
+                status=result.status,
+                node_name="human_review_interrupt",
+                payload={"result": result_payload},
+            )
+        elif result.status == ExecutionStatus.CANCELLED:
+            yield event(
+                "workflow_cancelled",
+                status=result.status,
+                payload={"result": result_payload},
+                error=result.error,
+            )
+        elif is_failure(result.status):
+            yield event(
+                "workflow_failed",
+                status=result.status,
+                payload={"result": result_payload},
+                error=result.error,
+            )
+        else:
+            yield event(
+                "workflow_completed",
+                status=result.status,
+                payload={"result": result_payload},
+            )

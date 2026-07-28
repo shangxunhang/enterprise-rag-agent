@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 import traceback
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -26,6 +26,10 @@ from agent.runtime.workflow_observer import WorkflowObserver
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from agent.runtime.workflow_state import WorkflowStateController
 from contracts.observability import TraceSink
+from contracts.workflow_engine import (
+    UnsupportedWorkflowCapabilityError,
+    WorkflowEngineCapabilities,
+)
 from core.error_factory import ErrorFactory
 from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.clock import Clock, SystemClock
@@ -61,6 +65,7 @@ class LangGraphWorkflowEngine:
 
     engine_name = "langgraph_workflow_engine"
     engine_version = "v1"
+    capabilities = WorkflowEngineCapabilities()
     _END_ROUTE = "__workflow_end__"
 
     def __init__(
@@ -140,6 +145,49 @@ class LangGraphWorkflowEngine:
         """
 
         return self.node_execution_runner.defer_until_idle(callback)
+
+    def resume(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        resume_value: dict[str, Any],
+    ) -> WorkflowEngineResultSchema:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support durable resume"
+        )
+
+    def inspect(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        *,
+        run_id: str,
+    ) -> dict[str, Any]:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support checkpoint inspection"
+        )
+
+    def cancel(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        reason: str = "workflow_cancelled",
+    ) -> WorkflowEngineResultSchema:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support durable workflow cancellation"
+        )
+
+    def stream_events(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        resume_value: dict[str, Any] | None = None,
+        runnable_config: dict[str, Any] | None = None,
+    ) -> Iterable[Any]:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support workflow event streaming"
+        )
 
     def execute(
         self,

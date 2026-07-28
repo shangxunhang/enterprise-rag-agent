@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.error import HTTPError
 
+from core.runtime.execution_control import WorkflowExecutionCancelled
 from schemas.failure import FailureCategory
 
 
@@ -25,25 +26,50 @@ _AUTH_MARKERS = (
 )
 
 
-def classify_failure(exc: Exception) -> FailureCategory:
+def _http_failure_category(status: int) -> FailureCategory | None:
+    if status in {401, 403}:
+        return FailureCategory.CONFIGURATION
+    if status in {400, 404, 405, 422}:
+        return FailureCategory.VALIDATION
+    if status == 408:
+        return FailureCategory.TIMEOUT
+    if status in {409, 425, 429}:
+        return FailureCategory.TRANSIENT
+    if status >= 500:
+        return FailureCategory.AVAILABILITY
+    return None
+
+
+def classify_failure(exc: BaseException) -> FailureCategory:
     """Classify an exception without making retry or fallback decisions."""
 
+    declared_category = getattr(exc, "failure_category", None)
+    if declared_category is not None:
+        try:
+            return FailureCategory(declared_category)
+        except ValueError:
+            pass
     message = str(exc or "").lower()
+
+    if isinstance(exc, WorkflowExecutionCancelled):
+        return FailureCategory.CANCELLED
+
+    status = int(getattr(exc, "status_code", 0) or 0)
+    response = getattr(exc, "response", None)
+    if not status and response is not None:
+        status = int(getattr(response, "status_code", 0) or 0)
+    status_category = _http_failure_category(status)
+    if status_category is not None:
+        return status_category
 
     # HTTPError is also an OSError. Handle protocol status first so auth/config
     # failures can never fall through to the generic availability branch.
     if isinstance(exc, HTTPError):
-        status = int(getattr(exc, "code", 0) or 0)
-        if status in {401, 403}:
-            return FailureCategory.CONFIGURATION
-        if status in {400, 404, 405, 422}:
-            return FailureCategory.VALIDATION
-        if status == 408:
-            return FailureCategory.TIMEOUT
-        if status in {409, 425, 429}:
-            return FailureCategory.TRANSIENT
-        if status >= 500:
-            return FailureCategory.AVAILABILITY
+        status_category = _http_failure_category(
+            int(getattr(exc, "code", 0) or 0)
+        )
+        if status_category is not None:
+            return status_category
 
     if any(marker in message for marker in _AUTH_MARKERS):
         return FailureCategory.CONFIGURATION
@@ -51,7 +77,7 @@ def classify_failure(exc: Exception) -> FailureCategory:
         return FailureCategory.CONFIGURATION
     if isinstance(exc, (FileNotFoundError, KeyError)):
         return FailureCategory.CONFIGURATION
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, TimeoutError) or "timeout" in exc.__class__.__name__.lower():
         return FailureCategory.TIMEOUT
     if isinstance(exc, MemoryError) or "out of memory" in message:
         return FailureCategory.RESOURCE_EXHAUSTED

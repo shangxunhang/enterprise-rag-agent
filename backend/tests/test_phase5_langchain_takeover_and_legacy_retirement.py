@@ -124,7 +124,7 @@ def test_composition_root_installs_langchain_facades() -> None:
     assert "LangChainModelGatewayFacade" in source
     assert "build_rag_runnable" in source
     assert "LangChainRAGServiceFacade" in source
-    assert "SQLiteCheckpointSaver" in source
+    assert "create_sqlite_checkpoint_resource" in source
 
 
 def test_production_mainline_uses_runnables_and_retires_legacy_paths(tmp_path) -> None:
@@ -155,14 +155,26 @@ def test_production_mainline_uses_runnables_and_retires_legacy_paths(tmp_path) -
 def test_runnable_facades_preserve_canonical_ports() -> None:
     assert hasattr(LangChainModelGatewayFacade, "generate")
     assert hasattr(LangChainRAGServiceFacade, "retrieve")
-    model_source = inspect.getsource(LangChainModelGatewayFacade.generate)
-    rag_source = inspect.getsource(LangChainRAGServiceFacade.retrieve)
+    model_source = inspect.getsource(LangChainModelGatewayFacade.invoke)
+    rag_source = inspect.getsource(LangChainRAGServiceFacade.invoke)
     assert ".runnable.invoke(" in model_source
     assert ".runnable.invoke(" in rag_source
     assert "ModelRequestSchema" in inspect.getsource(
         LangChainModelGatewayFacade
     )
     assert "RAGToolInputSchema" in inspect.getsource(LangChainRAGServiceFacade)
+    for facade in (
+        LangChainModelGatewayFacade,
+        LangChainRAGServiceFacade,
+    ):
+        assert facade.capabilities.invoke is True
+        assert facade.capabilities.ainvoke is True
+        assert facade.capabilities.batch is True
+        assert facade.capabilities.stream_final_response is True
+        assert facade.capabilities.token_streaming is False
+        assert facade.capabilities.native_async_provider is False
+        assert facade.supports_token_streaming is False
+        assert facade.supports_native_async is False
 
 
 def test_production_graph_no_longer_depends_on_legacy_topology_interpreter() -> None:

@@ -37,6 +37,7 @@ class SchemeGenerationUseCase:
         agent_type: str,
         rag_service_name: str,
         enable_semantic_gate: bool,
+        section_max_concurrency: int = 1,
         stage_service: SchemeGenerationStageService | None = None,
     ) -> None:
         # Keep the stable public seams used by compatibility tests and callers.
@@ -63,6 +64,7 @@ class SchemeGenerationUseCase:
             agent_type=agent_type,
             rag_service_name=rag_service_name,
             enable_semantic_gate=enable_semantic_gate,
+            section_max_concurrency=section_max_concurrency,
         )
 
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:

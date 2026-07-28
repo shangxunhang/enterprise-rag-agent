@@ -1,12 +1,8 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：ProjectInputNormalizerAgent。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Agent adapter for project-input normalization.
+"""ProjectInput 规范化用例的 Agent 协议适配器。
 
-All business transformations live in
-``services.project_input_normalization``.  The agent only adapts the workflow
-protocol to the application use case and maps failures to AgentResultSchema.
+业务转换全部位于 ``services.project_input_normalization``；本类只负责把共享状态交给用例，
+再将成功输出或结构化失败映射为 ``AgentResultSchema``。因此阅读数据清洗规则时应继续进入
+Use Case 和各个领域服务，而不是在 Agent 层寻找规则实现。
 """
 
 from __future__ import annotations
@@ -24,13 +20,11 @@ from schemas.agent import AgentResultSchema
 from schemas.status import ExecutionStatus
 
 
-# 阅读注释（类）：封装 项目 输入 normalizer Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。
 class ProjectInputNormalizerAgent(BaseAgent):
-    """封装 项目 输入 normalizer Agent，负责接收状态、调用工具或服务并返回统一 Agent 结果。"""
+    """把原始项目输入规范化为后续检索与文档生成可依赖的统一事实结构。"""
     agent_name = "ProjectInputNormalizerAgent"
     agent_type = "sub_agent"
 
-    # 阅读注释（函数）：初始化 ProjectInputNormalizerAgent，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         use_case: ProjectInputNormalizationUseCase | None = None,
@@ -39,48 +33,22 @@ class ProjectInputNormalizerAgent(BaseAgent):
         error_factory: ErrorFactory | None = None,
         retry_policy: RetryDecisionPolicy | None = None,
     ) -> None:
-        """初始化 ProjectInputNormalizerAgent，保存运行所需的依赖、配置或状态。
-
-        参数:
-            use_case: use case，具体约束请结合类型标注和调用方确认。
-            clock: clock，具体约束请结合类型标注和调用方确认。
-            error_factory: 错误 工厂，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：SystemClock, ProjectInputNormalizationUseCase, ErrorFactory。
-        """
+        """注入规范化用例、统一时钟、错误工厂和失败重试策略。"""
         self.clock = clock or SystemClock()
         self.use_case = use_case or ProjectInputNormalizationUseCase(clock=self.clock)
         self.error_factory = error_factory or ErrorFactory(self.clock)
         self.retry_policy = retry_policy or RetryDecisionPolicy()
 
-    # 阅读注释（函数）：处理 now iso 相关逻辑。
     def _now_iso(self) -> str:
-        """处理 now iso 相关逻辑。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self.clock.now_iso。
-        """
+        """兼容旧调用的统一时间入口。"""
         return self.clock.now_iso()
 
-    # 阅读注释（函数）：执行 ProjectInputNormalizerAgent 的主流程。
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:
-        """执行 ProjectInputNormalizerAgent 的主流程。
+        """执行规范化用例并返回统一 Agent 结果。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            AgentResultSchema
-
-        阅读提示:
-            主要直接调用：self.use_case.execute, AgentResultSchema, project_input.model_dump, output.model_dump, output.table_analysis.model_dump, fact.model_dump, bool, self.error_factory.create。
+        成功结果同时暴露规范化 ProjectInput、表格分析和结构化事实，供现有工作流兼容读取；
+        缺失信息只触发人工复核建议，不把成功状态改成失败。异常则在最近事实源分类，写入
+        共享状态错误列表，并根据类别返回可重试失败或终止失败。
         """
         try:
             output = self.use_case.execute(shared_state)

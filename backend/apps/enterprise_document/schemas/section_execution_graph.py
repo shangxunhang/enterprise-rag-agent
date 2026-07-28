@@ -43,6 +43,8 @@ class SectionGraphExecutionRequestSchema(SchemaBase):
     document_tool_call_ids: list[str] = Field(default_factory=list)
     section_retrieval_enabled: bool = True
     corrective_retrieval_enabled: bool = True
+    parallel_isolated: bool = False
+    budget_policy_override: dict[str, Any] = Field(default_factory=dict)
 
 
 class SectionExecutionGraphPayloadSchema(SchemaBase):
@@ -72,6 +74,8 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
     document_tool_call_ids: list[str] = Field(default_factory=list)
     section_retrieval_enabled: bool = True
     corrective_retrieval_enabled: bool = True
+    parallel_isolated: bool = False
+    budget_policy_override: dict[str, Any] = Field(default_factory=dict)
 
     section_id: str | None = None
     section_title: str | None = None

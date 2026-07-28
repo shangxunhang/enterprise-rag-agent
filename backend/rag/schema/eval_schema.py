@@ -1,39 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：EvalSample、RetrievalResult、RetrievalEvalResult、GenerationEvalResult、EvalResult、EvalReport。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag/schema/eval_schema.py
-==============
+"""旧 RAG Engine 评测层使用的兼容数据协议。
 
-RAG 评估模块的数据协议层。
-
-本文件只负责定义评估过程中使用的标准数据结构，包括：
-1. 单条评估样本 EvalSample 的字段规范
-2. 检索结果 RetrievalResult 的字段规范
-3. 单条样本评估结果 EvalResult 的字段规范
-4. 最终评估报告 EvalReport 的字段规范
-
-它不负责真正执行检索、生成或指标计算。
-retrieval_eval.py、generation_eval.py 和 eval_runner.py 都应基于这里定义的 schema 进行数据读写，
-从而保证整个评估模块的数据格式统一、可扩展、可维护。
-"""
-
-"""
-eval_schema.py
-==============
-
-RAG 评估模块的数据协议层。
-
-本文件只负责定义评估过程中使用的标准数据结构，包括：
-1. 单条评估样本 EvalSample 的字段规范
-2. 检索结果 RetrievalResult 的字段规范
-3. 单条样本评估结果 EvalResult 的字段规范
-4. 最终评估报告 EvalReport 的字段规范
-
-它不负责真正执行检索、生成或指标计算。
-retrieval_eval.py、generation_eval.py 和 eval_runner.py 都应基于这里定义的 schema 进行数据读写，
-从而保证整个评估模块的数据格式统一、可扩展、可维护。
+黄金样本已统一复用 ``schemas.eval_schema.RAGEvalSampleSchema``；本文件保留检索结果、
+单样本指标和汇总报告的 dataclass 形状，供早期 eval runner 使用。这里只定义数据，不
+执行检索、生成或指标计算。
 """
 
 from dataclasses import dataclass, field
@@ -47,7 +16,6 @@ from schemas.eval_schema import RAGEvalSampleSchema
 EvalSample = RAGEvalSampleSchema
 
 
-# 阅读注释（类）：封装 检索 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class RetrievalResult:
     """
@@ -66,7 +34,6 @@ class RetrievalResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 检索 评测 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class RetrievalEvalResult:
     """
@@ -79,7 +46,6 @@ class RetrievalEvalResult:
     context_keyword_hit: float
 
 
-# 阅读注释（类）：封装 生成 评测 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class GenerationEvalResult:
     """
@@ -92,7 +58,6 @@ class GenerationEvalResult:
     # 来源追踪正确性
     citation_hit: float
 
-# 阅读注释（类）：封装 评测 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class EvalResult:
     """
@@ -108,7 +73,6 @@ class EvalResult:
     retrieved_results: List[RetrievalResult] = field(default_factory=list)
 
 
-# 阅读注释（类）：封装 评测 report，集中封装相关状态、依赖和行为。
 @dataclass
 class EvalReport:
     """

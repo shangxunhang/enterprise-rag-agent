@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SectionModelService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""章节生成及修复操作的统一模型调用服务。
+
+所有正常生成、续写、压缩、截断重试和定向改写都经过同一 ``ModelCallBoundary``，从而
+共享模型角色路由、能力上限、预算预留、Trace 和用量记录。该服务不判断内容是否合格；
+它只构造受约束调用并返回标准模型响应。
+"""
 
 
 import json
@@ -24,9 +25,8 @@ from .prompt_service import SectionPromptService
 from .runtime_support import SchemeWriterRuntimeSupport
 
 
-# 阅读注释（类）：封装 章节 模型 服务，封装一组可复用的业务能力。
 class SectionModelService:
-    """封装 章节 模型 服务，封装一组可复用的业务能力。"""
+    """集中管理章节相关模型调用及输出长度恢复策略。"""
 
     def __init__(
         self,
@@ -44,7 +44,6 @@ class SectionModelService:
         self.context_manager = context_manager
         self.prompt_service = prompt_service
         self.runtime_support = runtime_support
-    # 阅读注释（函数）：处理 call 模型 相关逻辑。
     def call_model(
         self,
         shared_state: SharedStateSchema,
@@ -61,27 +60,12 @@ class SectionModelService:
         prompt_id: Optional[str] = None,
         prompt_version: Optional[str] = None,
     ) -> ModelResponseSchema:
-        """处理 call 模型 相关逻辑。
+        """通过角色感知的统一边界执行一次模型调用。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            prompt: 提示词，具体约束请结合类型标注和调用方确认。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            available_citation_ids: available 引用 标识集合，具体约束请结合类型标注和调用方确认。
-            purpose: purpose，具体约束请结合类型标注和调用方确认。
-            suffix: suffix，具体约束请结合类型标注和调用方确认。
-            max_tokens_override: max tokens override，具体约束请结合类型标注和调用方确认。
-            context_package: 上下文 package，具体约束请结合类型标注和调用方确认。
-            prompt_id: 提示词 标识，具体约束请结合类型标注和调用方确认。
-            prompt_version: 提示词 版本，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：RuntimeError, self.context_manager.build_passthrough, int, project_input.generation_requirements.extra.get, passthrough.model_dump, ModelRequestSchema, self.runtime_support.now_iso, self._context_package_summary。
+        ``purpose`` 决定模型角色；输出上限先受 ProjectInput 控制，再受目标模型安全能力
+        收紧。调用方未提供结构化上下文包时，现有辅助 Prompt 会被包装为 passthrough 包，
+        确保所有模型调用都有一致的上下文血缘。响应同时写入 ``generated_outputs``，供
+        Checkpoint、Trace 和 DataCapture 引用。
         """
         if self.model_gateway is None:
             raise RuntimeError("ModelGateway is not configured")
@@ -175,22 +159,11 @@ class SectionModelService:
         shared_state.generated_outputs[call_id] = response.model_dump()
         return response
 
-    # 阅读注释（函数）：处理 上下文 package summary 相关逻辑。
     @staticmethod
     def _context_package_summary(
         package: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """处理 上下文 package summary 相关逻辑。
-
-        参数:
-            package: package，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：dict, package.get, list, len, item.get, sum, budget.get。
-        """
+        """提取适合 Trace 的有界上下文摘要，不复制正文内容。"""
         if not package:
             return {"managed": False}
         budget = dict(package.get("budget") or {})
@@ -220,7 +193,6 @@ class SectionModelService:
             "lineage": dict(package.get("lineage") or {}),
         }
 
-    # 阅读注释（函数）：处理 continue truncated 章节 相关逻辑。
     def _continue_truncated_section(
         self,
         shared_state: SharedStateSchema,
@@ -232,22 +204,10 @@ class SectionModelService:
         citations: List[CitationSchema],
         rag_context: RAGContextSchema,
     ) -> ModelResponseSchema:
-        """处理 continue truncated 章节 相关逻辑。
+        """请求模型只续写未完成尾部，并使用缩短证据上下文控制再次膨胀。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            original_content: original content，具体约束请结合类型标注和调用方确认。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            citations: 引用信息集合。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：max, self.prompt_service.target_section_chars, len, self.prompt_service.citation_catalog, self.call_model, min。
+        此方法保留为兼容恢复策略；当前主恢复路径更偏向从头生成紧凑短稿，因为小模型
+        续写常再次触达 Token 上限。
         """
         reduced_context = rag_context.context_text[: max(1000, rag_context.max_context_chars // 2)]
         remaining_chars = max(
@@ -275,7 +235,6 @@ class SectionModelService:
             max_tokens_override=min(256, project_input.generation_requirements.max_tokens_per_section),
         )
 
-    # 阅读注释（函数）：重试 truncated 章节。
     def retry_truncated_section(
         self,
         shared_state: SharedStateSchema,
@@ -287,12 +246,10 @@ class SectionModelService:
         rag_context: RAGContextSchema,
         retry_index: int,
     ) -> ModelResponseSchema:
-        """Regenerate one complete compact section after a token-limit stop.
+        """输出达到 Token 上限后，从头生成一版完整且显著缩短的章节。
 
-        Continuation proved unstable with small local models: the model often
-        keeps expanding, consumes another token budget and is truncated again.
-        Recovery therefore starts a fresh generation with a much smaller
-        writing target and a reduced evidence context.
+        小型本地模型续写容易继续扩展并再次截断，因此恢复时按重试次数缩小证据上下文，
+        将目标压到 4–6 个要点，并明确禁止接续旧稿和跨章节展开。
         """
 
         divisor = max(2, retry_index + 1)
@@ -328,7 +285,6 @@ class SectionModelService:
             ),
         )
 
-    # 阅读注释（函数）：恢复 complete prefix。
     @staticmethod
     def recover_complete_prefix(
         content: str,
@@ -336,12 +292,10 @@ class SectionModelService:
         min_chars: int,
         max_chars: int,
     ) -> Optional[str]:
-        """Return a safe complete prefix from a token-limited response.
+        """从被截断输出中恢复满足最小长度且结束于完整句界的安全前缀。
 
-        This is a deterministic recovery, not silent raw truncation.  The
-        method only accepts text ending at a sentence/list-item boundary and
-        only when enough complete content remains to form a usable section.
-        The caller records the recovery strategy in section metadata.
+        这是显式确定性恢复，不是静默按字符硬切；找不到完整结束点或有效内容过短时返回
+        ``None``，由调用方继续重试或判定失败。
         """
 
         normalized = (content or "").strip()
@@ -362,7 +316,6 @@ class SectionModelService:
             return None
         return candidate
 
-    # 阅读注释（函数）：处理 compress overlong 章节 相关逻辑。
     def compress_overlong_section(
         self,
         shared_state: SharedStateSchema,
@@ -373,7 +326,7 @@ class SectionModelService:
         project_input: ProjectInputSchema,
         citations: List[CitationSchema],
     ) -> ModelResponseSchema:
-        """Compress a complete but overlong section instead of free regeneration."""
+        """压缩内容完整但超长的章节，禁止自由重生成或增加新事实。"""
 
         target_chars = self.prompt_service.target_section_chars(project_input)
         hard_limit = int(target_chars * 1.5)
@@ -407,7 +360,6 @@ class SectionModelService:
             ),
         )
 
-    # 阅读注释（函数）：改写 invalid 章节。
     def _rewrite_invalid_section(
         self,
         shared_state: SharedStateSchema,
@@ -419,7 +371,7 @@ class SectionModelService:
         citations: List[CitationSchema],
         semantic_issues: List[Dict[str, Any]],
     ) -> ModelResponseSchema:
-        """Apply one issue-directed rewrite based on semantic gate output."""
+        """依据语义门禁问题清单做一次定向修订，不允许无约束扩写。"""
 
         target_chars = self.prompt_service.target_section_chars(project_input)
         contract = self.prompt_service.section_generation_contract(

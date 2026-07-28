@@ -1,21 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：QueryExpansionResult、QueryExpander。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/query/query_expander.py
-====================================
+"""RAG-Fusion 查询改写与 HyDE 假想文档生成服务。
 
-RAG query expansion helpers.
-
-This module owns the retrieval-time LLM query generation layer:
-- RAG-Fusion: generate multiple semantically different retrieval queries.
-- HyDE: generate a hypothetical answer/document and use it as an additional
-  retrieval query.
-
-The public output contract is intentionally stable because downstream retrieval,
-RRF fusion, rerank, context packing, and data capture depend on it.
+``QueryExpansionResult`` 是下游召回、RRF 融合、重排、Context Packer 和 DataCapture 共用
+的稳定契约。LLM 可用时通过受预算边界生成改写/HyDE；失败时按配置使用确定性 fallback，
+并记录方法、延迟、原始输出和回退原因。工作流取消与模型预算耗尽不会被吞掉。
 """
 
 from __future__ import annotations
@@ -30,10 +18,9 @@ from model_gateway.call_boundary import ModelCallBudgetExceeded
 from rag.ports.generation import TextGenerator
 
 
-# 阅读注释（类）：封装 查询 expansion 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class QueryExpansionResult:
-    """Expanded query set for downstream retrieval."""
+    """原 Query、改写 Query、HyDE Query 与运行血缘的统一扩展结果。"""
 
     original_query: str
     strategy: str = "hybrid"
@@ -44,13 +31,8 @@ class QueryExpansionResult:
     # Internal execution lineage only; intentionally excluded from to_dict().
     runtime_context: Dict[str, Any] = field(default_factory=dict)
 
-    # 阅读注释（函数）：把 QueryExpansionResult 转换为 字典。
     def to_dict(self) -> Dict[str, Any]:
-        """把 QueryExpansionResult 转换为 字典。
-
-        返回:
-            Dict[str, Any]
-        """
+        """导出持久化契约；内部 ``runtime_context`` 有意不进入业务结果。"""
         return {
             "original_query": self.original_query,
             "strategy": self.strategy,
@@ -61,7 +43,6 @@ class QueryExpansionResult:
         }
 
 
-# 阅读注释（类）：封装 查询 expander，集中封装相关状态、依赖和行为。
 class QueryExpander:
     """LLM-backed query expansion for RAG-Fusion and HyDE.
 
@@ -74,7 +55,6 @@ class QueryExpander:
         generation_params: Default generation parameters for query expansion.
     """
 
-    # 阅读注释（函数）：初始化 QueryExpander，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -84,41 +64,16 @@ class QueryExpander:
         fallback_to_deterministic: bool = True,
         timer: Timer | None = None,
     ):
-        """初始化 QueryExpander，保存运行所需的依赖、配置或状态。
-
-        参数:
-            llm_generator: LLM generator，具体约束请结合类型标注和调用方确认。
-            use_llm: use LLM，具体约束请结合类型标注和调用方确认。
-            generation_params: 生成 params，具体约束请结合类型标注和调用方确认。
-            fallback_to_deterministic: fallback to deterministic，具体约束请结合类型标注和调用方确认。
-            timer: timer，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：bool, dict, MonotonicTimer。
-        """
+        """注入文本生成端口、启用/回退策略、生成参数和单调计时器。"""
         self.llm_generator = llm_generator
         self.use_llm = bool(use_llm)
         self.generation_params = dict(generation_params or {})
         self.fallback_to_deterministic = bool(fallback_to_deterministic)
         self.timer = timer or MonotonicTimer()
 
-    # 阅读注释（函数）：处理 dedup keep order 相关逻辑。
     @staticmethod
     def _dedup_keep_order(items: List[str]) -> List[str]:
-        """处理 dedup keep order 相关逻辑。
-
-        参数:
-            items: 待处理的数据项集合。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：set, strip, str, text.lower, seen.add, output.append。
-        """
+        """按大小写不敏感键去重非空 Query，并保留首次出现顺序。"""
         seen = set()
         output: List[str] = []
         for item in items:
@@ -133,13 +88,11 @@ class QueryExpander:
         return output
 
 
-    # 阅读注释（函数）：处理 dedup keep order 相关逻辑。
     @staticmethod
     def dedup_keep_order(items: List[str]) -> List[str]:
         """Public compatibility helper used by query-transformer plugins."""
         return QueryExpander._dedup_keep_order(items)
 
-    # 阅读注释（函数）：改写 查询集合。
     def rewrite_queries(
         self,
         *,
@@ -154,7 +107,6 @@ class QueryExpander:
             runtime_context=runtime_context,
         )
 
-    # 阅读注释（函数）：构建 hypothetical 文档。
     def build_hypothetical_document(
         self,
         *,
@@ -167,19 +119,10 @@ class QueryExpander:
             runtime_context=runtime_context,
         )
 
-    # 阅读注释（函数）：处理 LLM available 相关逻辑。
     def _llm_available(self) -> bool:
-        """处理 LLM available 相关逻辑。
-
-        返回:
-            bool
-
-        阅读提示:
-            主要直接调用：bool。
-        """
+        """只有显式启用且注入生成器时才使用 LLM 路径。"""
         return bool(self.use_llm and self.llm_generator is not None)
 
-    # 阅读注释（函数）：处理 call LLM 相关逻辑。
     def _call_llm(
         self,
         prompt: str,
@@ -192,21 +135,9 @@ class QueryExpander:
         call_purpose: str = "rag_query_transform",
         runtime_context: Dict[str, Any] | None = None,
     ) -> str:
-        """处理 call LLM 相关逻辑。
+        """调用统一生成端口，并过滤仅用于 QueryExpander 内部路由的参数。
 
-        参数:
-            prompt: 提示词，具体约束请结合类型标注和调用方确认。
-            system_prompt: system 提示词，具体约束请结合类型标注和调用方确认。
-            max_new_tokens: max new tokens，具体约束请结合类型标注和调用方确认。
-            temperature: temperature，具体约束请结合类型标注和调用方确认。
-            top_p: top p，具体约束请结合类型标注和调用方确认。
-            do_sample: do sample，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：RuntimeError, dict, params.pop, params.setdefault, self.llm_generator.generate, isinstance, str, text.strip。
+        对只接受简单 Prompt 的测试生成器保留兼容 fallback；返回值统一为去首尾空白文本。
         """
         if self.llm_generator is None:
             raise RuntimeError("llm_generator is not configured")
@@ -236,41 +167,17 @@ class QueryExpander:
             text = str(text)
         return text.strip()
 
-    # 阅读注释（函数）：处理 clean line 相关逻辑。
     @staticmethod
     def _clean_line(text: str) -> str:
-        """处理 clean line 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：strip, str, re.sub, text.strip。
-        """
+        """移除列表编号、项目符号和包裹标点，得到一条候选 Query。"""
         text = str(text or "").strip()
         text = re.sub(r"^\s*[-*•]+\s*", "", text)
         text = re.sub(r"^\s*\d+[).、：:]\s*", "", text)
         text = text.strip(" \t\r\n'\"`，。；;")
         return text.strip()
 
-    # 阅读注释（函数）：解析 改写 输出。
     def _parse_rewrite_output(self, raw_text: str, *, original_query: str, num_rewrites: int) -> List[str]:
-        """解析 改写 输出。
-
-        参数:
-            raw_text: raw 文本，具体约束请结合类型标注和调用方确认。
-            original_query: original 查询，具体约束请结合类型标注和调用方确认。
-            num_rewrites: num rewrites，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：splitlines, str, self._clean_line, line.startswith, line.endswith, line.strip, any, len。
-        """
+        """解析多行或单行分隔输出，去除说明文字、原 Query 和重复项。"""
         lines = []
         for raw_line in str(raw_text or "").splitlines():
             line = self._clean_line(raw_line)
@@ -296,24 +203,16 @@ class QueryExpander:
             candidates.append(line)
         return self._dedup_keep_order(candidates)[: max(0, int(num_rewrites))]
 
-    # 阅读注释（函数）：改写 查询集合。
     def _rewrite_queries(
         self,
         query: str,
         num_rewrites: int,
         runtime_context: Dict[str, Any] | None = None,
     ) -> tuple[List[str], Dict[str, Any]]:
-        """改写 查询集合。
+        """生成指定数量的多视角检索 Query，并返回完整方法/回退 metadata。
 
-        参数:
-            query: 当前检索或生成查询。
-            num_rewrites: num rewrites，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            tuple[List[str], Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：self._llm_available, max, int, self.timer.now, self._call_llm, self.generation_params.get, elapsed_ms, self._parse_rewrite_output。
+        模型预算耗尽和工作流取消原样上抛；普通生成或解析失败只有在显式允许时才转入
+        确定性模板改写。
         """
         meta: Dict[str, Any] = {
             "method": "llm" if self._llm_available() else "deterministic_fallback",
@@ -369,22 +268,14 @@ class QueryExpander:
         meta["parsed_count"] = len(rewrites)
         return rewrites, meta
 
-    # 阅读注释（函数）：构建 hypothetical 文档。
     def _build_hypothetical_document(
         self,
         query: str,
         runtime_context: Dict[str, Any] | None = None,
     ) -> tuple[Optional[str], Dict[str, Any]]:
-        """构建 hypothetical 文档。
+        """生成一条 HyDE 假想文档，并保留生成/回退血缘。
 
-        参数:
-            query: 当前检索或生成查询。
-
-        返回:
-            tuple[Optional[str], Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：self._llm_available, self.timer.now, self._call_llm, int, self.generation_params.get, elapsed_ms, self._clean_hyde_output, len。
+        HyDE 只作为额外检索 Query，不会被当作事实证据或最终答案。
         """
         meta: Dict[str, Any] = {
             "method": "llm" if self._llm_available() else "deterministic_fallback",
@@ -438,39 +329,16 @@ class QueryExpander:
         meta["char_count"] = len(hyde)
         return hyde, meta
 
-    # 阅读注释（函数）：处理 clean hyde 输出 相关逻辑。
     @staticmethod
     def _clean_hyde_output(raw_text: str) -> str:
-        """处理 clean hyde 输出 相关逻辑。
-
-        参数:
-            raw_text: raw 文本，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：strip, str, re.sub, text.strip。
-        """
+        """移除模型可能添加的 HyDE 标题和外层引号。"""
         text = str(raw_text or "").strip()
         text = re.sub(r"^\s*(HyDE|假想文档|假设文档|正文)\s*[:：]\s*", "", text, flags=re.IGNORECASE)
         text = text.strip(" \t\r\n'\"`")
         return text
 
-    # 阅读注释（函数）：处理 deterministic 改写 查询集合 相关逻辑。
     def _deterministic_rewrite_queries(self, query: str, num_rewrites: int) -> List[str]:
-        """处理 deterministic 改写 查询集合 相关逻辑。
-
-        参数:
-            query: 当前检索或生成查询。
-            num_rewrites: num rewrites，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：tpl.format, self._dedup_keep_order, max, int。
-        """
+        """使用固定业务、架构、实施、证据和运维视角模板生成回退 Query。"""
         templates = [
             "{q} 的背景、目标、范围、约束、输入输出和验收要求",
             "{q} 涉及的关键概念、组成部分、处理流程、依赖关系和边界条件",
@@ -481,17 +349,9 @@ class QueryExpander:
         rewrites = [tpl.format(q=query) for tpl in templates]
         return self._dedup_keep_order(rewrites[: max(0, int(num_rewrites))])
 
-    # 阅读注释（函数）：处理 deterministic hypothetical 文档 相关逻辑。
     @staticmethod
     def _deterministic_hypothetical_document(query: str) -> str:
-        """处理 deterministic hypothetical 文档 相关逻辑。
-
-        参数:
-            query: 当前检索或生成查询。
-
-        返回:
-            str
-        """
+        """构造不声称具体项目事实的固定 HyDE 回退文本。"""
         return (
             f"这是一段与问题《{query}》高度相关的知识资料。"
             f"资料可能包含背景、目标、范围、约束、关键概念、组成部分、处理流程、"

@@ -1,19 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：HashTextEmbedder。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/embedder.py
-===============
+"""提供不依赖模型的确定性哈希向量器，用于 Mini-RAG 烟测。
 
-Embedding 编码模块。
-
-第一版为了不依赖网络下载模型，先使用本地哈希向量化方案。
-
-注意：
-1. 这个版本不是高质量语义 embedding。
-2. 它只是为了先跑通 Mini-RAG 工程闭环。
-3. 后续可以替换为 sentence-transformers / BGE / text2vec 等真实 embedding 模型。
+该实现把中文单字和英文/数字连续词映射到固定维度并统计频次，再做 L2 归一化。
+它只能验证分块、索引、检索和评测链是否闭环，不具备可靠语义表示能力，不能作为
+生产 Embedding 或质量结论的依据。
 """
 
 import hashlib
@@ -23,135 +12,110 @@ from typing import List
 import numpy as np
 
 
-# 阅读注释（类）：封装 hash 文本 embedder，集中封装相关状态、依赖和行为。
 class HashTextEmbedder:
-    """
-    本地哈希文本向量化器。
+    """把 Token 通过稳定 MD5 哈希投影到固定维度向量。
 
-    核心思想：
-    1. 把文本切成 token
-    2. 每个 token 通过 hash 映射到固定维度向量中的某一维
-    3. 统计 token 出现次数
-    4. 对最终向量做 L2 归一化
-
-    优点：
-    - 不需要联网
-    - 不需要下载模型
-    - 不依赖 torch
-    - 可以先跑通 RAG 闭环
-
-    缺点：
-    - 不是真正的语义 embedding
-    - 对同义词、复杂语义理解能力很弱
+    Attributes:
+        embedding_dim: 输出向量维度。所有文档和查询必须使用同一维度才能比较。
     """
 
-    # 阅读注释（函数）：初始化 HashTextEmbedder，保存运行所需的依赖、配置或状态。
-    def __init__(self, embedding_dim: int = 384):
-        """
-        初始化哈希向量化器。
+    def __init__(self, embedding_dim: int = 384) -> None:
+        """保存哈希向量维度。
 
         Args:
-            embedding_dim: 向量维度
+            embedding_dim: 输出维度；调用方应传入正整数。
+
+        当前历史实现不额外校验维度，非法值会在 NumPy 分配或取模时自然报错。
         """
+
         self.embedding_dim = embedding_dim
 
-    # 阅读注释（函数）：处理 tokenize 相关逻辑。
     def _tokenize(self, text: str) -> List[str]:
-        """
-        简单分词。
-
-        对中文：
-        - 按单字切分
-
-        对英文/数字：
-        - 按连续单词切分
+        """把文本切分为中文单字和英文/数字连续词。
 
         Args:
-            text: 输入文本
+            text: 输入文本。
 
         Returns:
-            token 列表
+            转小写后的 Token 列表；空文本返回空列表。
+
+        标点和空白被忽略，因此该实现不表达词序、句法或标点关系。
         """
+
         if not text:
             return []
 
-        # 提取英文单词、数字、中文字符
-        tokens = re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]", text.lower())
+        # 英文和数字按连续片段，中文按单个字符提取。
+        return re.findall(
+            r"[a-zA-Z0-9]+|[\u4e00-\u9fff]",
+            text.lower(),
+        )
 
-        return tokens
-
-    # 阅读注释（函数）：处理 hash Token 相关逻辑。
     def _hash_token(self, token: str) -> int:
+        """把 Token 稳定映射到向量下标。
+
+        使用 MD5 而不是 Python 内置 ``hash``，因为内置哈希默认包含进程级随机盐，
+        会导致相同文本跨运行产生不同向量。
         """
-        将 token 映射到向量下标。
 
-        使用 md5 是为了保证每次运行结果稳定。
-        Python 内置 hash() 每次进程可能不同，不适合这里。
+        # 第一步：计算 UTF-8 Token 的十六进制 MD5。
+        hash_value = hashlib.md5(
+            token.encode("utf-8")
+        ).hexdigest()
 
-        Args:
-            token: 文本 token
-
-        Returns:
-            向量维度下标
-        """
-        hash_value = hashlib.md5(token.encode("utf-8")).hexdigest()
+        # 第二步：转换为整数并对向量维度取模。
         hash_int = int(hash_value, 16)
-
         return hash_int % self.embedding_dim
 
-    # 阅读注释（函数）：处理 encode one 相关逻辑。
     def _encode_one(self, text: str) -> np.ndarray:
-        """
-        编码单条文本。
+        """编码单条文本为 L2 归一化一维向量。
 
         Args:
-            text: 输入文本
+            text: 输入文本。
 
         Returns:
-            shape = (embedding_dim,) 的向量
+            形状为 ``(embedding_dim,)`` 的 ``float32`` 向量。没有 Token 时为全零。
         """
-        vector = np.zeros(self.embedding_dim, dtype=np.float32)
 
-        tokens = self._tokenize(text)
+        # 第一步：创建全零频次向量。
+        vector = np.zeros(
+            self.embedding_dim,
+            dtype=np.float32,
+        )
 
-        for token in tokens:
-            idx = self._hash_token(token)
-            vector[idx] += 1.0
+        # 第二步：每个 Token 在其哈希槽位累加一次；碰撞会合并频次。
+        for token in self._tokenize(text):
+            index = self._hash_token(token)
+            vector[index] += 1.0
 
-        # L2 归一化
+        # 第三步：非零向量做 L2 归一化，使点积可近似余弦相似度。
         norm = np.linalg.norm(vector)
-
         if norm > 0:
             vector = vector / norm
 
         return vector.astype("float32")
 
-    # 阅读注释（函数）：处理 encode texts 相关逻辑。
     def encode_texts(self, texts: List[str]) -> np.ndarray:
-        """
-        批量编码文本。
+        """批量编码文本列表。
 
         Args:
-            texts: 文本列表
+            texts: 文本列表。
 
         Returns:
-            embeddings: shape = (num_texts, embedding_dim)
-        """
-        embeddings = [self._encode_one(text) for text in texts]
+            形状为 ``(num_texts, embedding_dim)`` 的 ``float32`` 矩阵。
 
+        空列表会由 ``np.vstack`` 抛出异常，和真实 TextEmbedder 的空批次拒绝语义一致。
+        """
+
+        embeddings = [self._encode_one(text) for text in texts]
         return np.vstack(embeddings).astype("float32")
 
-    # 阅读注释（函数）：处理 encode 查询 相关逻辑。
     def encode_query(self, query: str) -> np.ndarray:
-        """
-        编码用户 query。
-
-        Args:
-            query: 用户问题
+        """编码单个查询并保持二维查询矩阵协议。
 
         Returns:
-            query_embedding: shape = (1, embedding_dim)
+            形状为 ``(1, embedding_dim)`` 的 ``float32`` 数组。
         """
-        embedding = self._encode_one(query)
 
+        embedding = self._encode_one(query)
         return embedding.reshape(1, -1).astype("float32")

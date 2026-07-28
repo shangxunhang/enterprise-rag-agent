@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.10.20"
+          enable-cache: true
+      - name: Validate dependency lock
+        run: uv lock --check
+      - name: Install locked dependencies
+        # The full suite includes one real Milvus Lite scope test. Windows
+        # hardening remains lightweight and does not install this extra.
+        run: uv sync --frozen --extra test --extra providers --extra local-rag
+      - name: Validate imports and versions
+        run: uv run --frozen --no-sync python scripts/check_environment.py
+      - name: Core architecture tests
+        run: >-
+          uv run --frozen --no-sync python -m pytest -q
+          backend/tests/test_phase4_durable_resume_hitl.py
+          backend/tests/test_phase5_langchain_takeover_and_legacy_retirement.py
+          backend/tests/test_langchain_model_gateway_integration.py
+          backend/tests/test_langchain_rag_integration.py
+      - name: Full tests
+        run: uv run --frozen --no-sync python -m pytest -q
+
+  windows-hardening:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.10.20"
+          enable-cache: true
+      - name: Validate dependency lock
+        run: uv lock --check
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra test --extra providers
+      - name: Validate imports and versions
+        run: uv run --frozen --no-sync python scripts/check_environment.py
+      - name: Windows lifecycle and SQLite hardening
+        run: >-
+          uv run --frozen --no-sync python -m pytest -q
+          backend/tests/test_architecture_hardening.py::test_checkpoint_resource_close_is_idempotent_and_releases_windows_file
+          backend/tests/test_architecture_hardening.py::test_checkpoint_resource_close_failure_remains_retryable
+          backend/tests/test_architecture_hardening.py::test_supervisor_resource_close_failure_is_observable_and_continues
+          backend/tests/test_architecture_hardening.py::test_repeated_cross_instance_inspect_closes_every_checkpoint_connection
+          backend/tests/test_architecture_hardening.py::test_stream_resume_cross_instance_has_unique_ids_and_no_business_replay
+          backend/tests/test_architecture_hardening.py::test_stream_engine_exception_after_mark_running_reconciles_to_pause
+          backend/tests/test_architecture_hardening.py::test_invalid_terminal_payload_reconciles_durable_terminal_state
+          backend/tests/test_architecture_hardening.py::test_partial_stream_consumption_close_restores_durable_pause
+          backend/tests/test_architecture_hardening.py::test_initial_stream_exception_does_not_leave_task_running
+          backend/tests/test_architecture_hardening.py::test_stream_reject_and_cancel_preserve_artifact_and_lifecycle

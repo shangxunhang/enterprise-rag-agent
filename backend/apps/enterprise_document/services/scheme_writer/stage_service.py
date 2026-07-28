@@ -9,10 +9,15 @@ terminal result construction.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NoReturn, TYPE_CHECKING
+from typing import Any, NoReturn, TYPE_CHECKING
 
+from agent.runtime.graph_state_ops import (
+    GraphStateDiffer,
+    StateWriteContractViolation,
+)
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.state_access import SharedStateWriter
+from agent.runtime.workflow_stream_context import emit_workflow_custom_event
 from apps.enterprise_document.quality.budget import (
     WorkflowBudget,
     activate_workflow_budget,
@@ -26,11 +31,19 @@ from apps.enterprise_document.schemas.section_execution_graph import (
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     DeliverableFinalResultSchema,
     DocumentAssemblyRequestSchema,
+    ParallelSectionExecutionEnvelopeSchema,
+    ParallelSectionStateDeltaSchema,
     RejectedDraftArtifactSchema,
     SchemeGenerationOptionsSchema,
     SchemeWriterInputSchema,
     SchemeWriterOutputSchema,
     SectionExecutionRequestSchema,
+    SectionExecutionResultSchema,
+    SectionPlanSchema,
+)
+from apps.enterprise_document.workflows.section_parallel_execution_graph import (
+    ParallelSectionBudgetAllocator,
+    SectionParallelExecutionGraph,
 )
 from apps.enterprise_document.services.document_gate import evaluate_scheme_draft
 from core.retry_policy import RetryDecisionPolicy, classify_failure
@@ -41,6 +54,7 @@ from schemas.failure import FailureCategory
 from schemas.status import ExecutionStatus
 
 from .capture_service import SchemeCaptureService
+from .citation_service import CitationService
 from .document_assembler import DocumentAssembler
 from .document_citation_registry import DocumentCitationRegistry
 from .document_planning_service import DocumentPlanningService
@@ -82,6 +96,7 @@ class SchemeGenerationStageService:
         agent_type: str,
         rag_service_name: str,
         enable_semantic_gate: bool,
+        section_max_concurrency: int = 1,
     ) -> None:
         self.input_service = input_service
         self.evidence_service = evidence_service
@@ -94,8 +109,12 @@ class SchemeGenerationStageService:
         self.agent_type = agent_type
         self.rag_service_name = rag_service_name
         self.enable_semantic_gate = enable_semantic_gate
+        if not 1 <= int(section_max_concurrency) <= 32:
+            raise ValueError("section_max_concurrency must be between 1 and 32")
+        self.section_max_concurrency = int(section_max_concurrency)
         self.state_writer = SharedStateWriter()
         self.section_execution_graph: SectionExecutionGraph | None = None
+        self.section_parallel_execution_graph = SectionParallelExecutionGraph()
 
     def attach_section_execution_graph(
         self,
@@ -193,6 +212,7 @@ class SchemeGenerationStageService:
         )
         document_id = f"document_{shared_state.run_id}"
         started_at = payload.started_at or self.runtime_support.now_iso()
+        # 生成文档级计划
         document_plan = self.document_planning_service.build_document_plan(
             run_id=shared_state.run_id,
             document_id=document_id,
@@ -400,12 +420,372 @@ class SchemeGenerationStageService:
             deep=True,
         )
 
+    @classmethod
+    def _remap_citation_payload(
+        cls,
+        value: Any,
+        *,
+        id_map: dict[str, str],
+        registry: DocumentCitationRegistry,
+    ) -> Any:
+        """Remap diagnostic RAG payloads during deterministic ordered fan-in."""
+
+        if isinstance(value, list):
+            return [
+                cls._remap_citation_payload(
+                    item,
+                    id_map=id_map,
+                    registry=registry,
+                )
+                for item in value
+            ]
+        if not isinstance(value, dict):
+            return value
+        remapped: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "citation_id" and isinstance(item, str):
+                remapped[key] = id_map.get(item, item)
+            elif key == "citation_ids" and isinstance(item, list):
+                remapped[key] = [
+                    id_map.get(str(citation_id), str(citation_id))
+                    for citation_id in item
+                ]
+            elif key in {
+                "content",
+                "context_text",
+                "model_output",
+                "prompt",
+            } and isinstance(item, str):
+                remapped[key] = registry.replace_markers(item, id_map)
+            else:
+                remapped[key] = cls._remap_citation_payload(
+                    item,
+                    id_map=id_map,
+                    registry=registry,
+                )
+        return remapped
+
+    def _merge_parallel_section_result(
+        self,
+        result: SectionExecutionResultSchema,
+        *,
+        document_id: str,
+        citation_registry: DocumentCitationRegistry,
+    ) -> SectionExecutionResultSchema:
+        """Merge an isolated section result in deterministic document order."""
+
+        local_citations = list(
+            result.citation_registry or result.evidence.citations
+        )
+        canonical_citations, id_map = citation_registry.register(
+            local_citations,
+            scope=f"section:{result.section.section_id}",
+            query=result.evidence.query,
+        )
+        # ``register`` preserves input order, so this also maps citations that
+        # are diagnostic-only and not present in the active evidence bundle.
+        id_map.update(
+            {
+                source.citation_id: target.citation_id
+                for source, target in zip(
+                    local_citations,
+                    canonical_citations,
+                )
+            }
+        )
+        context, chunks, evidence_citations, _normalized = (
+            citation_registry.remap_bundle(
+                context=result.evidence.rag_context,
+                chunks=list(result.evidence.retrieved_chunks),
+                citations=list(result.evidence.citations),
+                normalized={},
+                scope=result.evidence.retrieval_scope,
+                query=result.evidence.query,
+            )
+        )
+        content = citation_registry.replace_markers(
+            result.section.content,
+            id_map,
+        )
+        model_output = citation_registry.replace_markers(
+            result.section.model_output,
+            id_map,
+        )
+        prompt = citation_registry.replace_markers(
+            result.section.prompt,
+            id_map,
+        )
+        rebuilt_bindings = CitationService.bind_citations(
+            document_id,
+            result.section.section_id,
+            content,
+            citation_registry.all(),
+        )
+        original_by_index = {
+            binding.target_marker_index: binding
+            for binding in result.section.citation_bindings
+            if binding.target_marker_index is not None
+        }
+        rebuilt_bindings = [
+            binding.model_copy(
+                update={
+                    "metadata": dict(
+                        original_by_index.get(
+                            binding.target_marker_index,
+                            binding,
+                        ).metadata
+                    )
+                }
+            )
+            for binding in rebuilt_bindings
+        ]
+        section = result.section.model_copy(
+            update={
+                "content": content,
+                "model_output": model_output,
+                "prompt": prompt,
+                "citation_ids": list(
+                    dict.fromkeys(
+                        binding.citation_id for binding in rebuilt_bindings
+                    )
+                ),
+                "citation_bindings": rebuilt_bindings,
+                "extra": {
+                    **dict(result.section.extra),
+                    "parallel_execution": True,
+                    "citation_fan_in_order": result.section.section_order,
+                },
+            },
+            deep=True,
+        )
+        evidence = result.evidence.model_copy(
+            update={
+                "rag_context": context,
+                "retrieved_chunks": chunks,
+                "citations": evidence_citations,
+                "evidence_contract_sha256": (
+                    context.extra.get("evidence_contract_sha256")
+                    or result.evidence.evidence_contract_sha256
+                ),
+                "metadata": {
+                    **dict(result.evidence.metadata),
+                    "parallel_execution": True,
+                    "citation_id_map": id_map,
+                },
+            },
+            deep=True,
+        )
+        rag_outputs = [
+            self._remap_citation_payload(
+                item,
+                id_map=id_map,
+                registry=citation_registry,
+            )
+            for item in result.rag_outputs
+        ]
+        return result.model_copy(
+            update={
+                "section": section,
+                "evidence": evidence,
+                "rag_outputs": rag_outputs,
+                "citation_registry": citation_registry.all(),
+            },
+            deep=True,
+        )
+
+    @staticmethod
+    def _parallel_state_delta(
+        before: SharedStateSchema,
+        after: SharedStateSchema,
+        *,
+        section_id: str,
+    ) -> ParallelSectionStateDeltaSchema:
+        """Extract only additive, section-scoped writes from one branch."""
+
+        def appended(before_items: list, after_items: list, path: str) -> list:
+            if after_items[: len(before_items)] != before_items:
+                raise StateWriteContractViolation(
+                    changed_paths=[path],
+                    allowed_paths=[f"{path} (append-only)"],
+                )
+            return list(after_items[len(before_items) :])
+
+        generated_ids = appended(
+            before.context_bundle.generation.generated_section_ids,
+            after.context_bundle.generation.generated_section_ids,
+            "context_bundle.generation.generated_section_ids",
+        )
+        warnings = appended(before.warnings, after.warnings, "warnings")
+        errors = appended(before.errors, after.errors, "errors")
+        runtime_errors = appended(
+            before.context_bundle.runtime.errors,
+            after.context_bundle.runtime.errors,
+            "context_bundle.runtime.errors",
+        )
+
+        generated_outputs: dict[str, Any] = {}
+        for key, value in before.generated_outputs.items():
+            if (
+                key not in after.generated_outputs
+                or after.generated_outputs[key] != value
+            ):
+                raise StateWriteContractViolation(
+                    changed_paths=[f"generated_outputs.{key}"],
+                    allowed_paths=["generated_outputs.<new-section-call-id>"],
+                )
+        for key, value in after.generated_outputs.items():
+            if key not in before.generated_outputs:
+                generated_outputs[key] = value
+
+        metadata_updates: dict[str, dict[str, Any]] = {}
+        for scope, before_metadata, after_metadata in (
+            (
+                "generation",
+                before.context_bundle.generation.metadata,
+                after.context_bundle.generation.metadata,
+            ),
+            (
+                "runtime",
+                before.context_bundle.runtime.metadata,
+                after.context_bundle.runtime.metadata,
+            ),
+        ):
+            for key, value in before_metadata.items():
+                if key not in after_metadata or after_metadata[key] != value:
+                    raise StateWriteContractViolation(
+                        changed_paths=[
+                            f"context_bundle.{scope}.metadata.{key}"
+                        ],
+                        allowed_paths=[
+                            f"context_bundle.{scope}.metadata.{section_id}"
+                        ],
+                    )
+            new_values = {
+                key: value
+                for key, value in after_metadata.items()
+                if key not in before_metadata
+            }
+            invalid = [
+                key
+                for key in new_values
+                if key != section_id and not key.startswith(f"{section_id}:")
+            ]
+            if invalid:
+                raise StateWriteContractViolation(
+                    changed_paths=[
+                        f"context_bundle.{scope}.metadata.{key}"
+                        for key in invalid
+                    ],
+                    allowed_paths=[
+                        f"context_bundle.{scope}.metadata.{section_id}"
+                    ],
+                )
+            if new_values:
+                metadata_updates[scope] = new_values
+
+        retry_delta = (
+            after.context_bundle.runtime.retry_count
+            - before.context_bundle.runtime.retry_count
+        )
+        if retry_delta < 0:
+            raise StateWriteContractViolation(
+                changed_paths=["context_bundle.runtime.retry_count"],
+                allowed_paths=["context_bundle.runtime.retry_count (+delta)"],
+            )
+
+        delta = ParallelSectionStateDeltaSchema(
+            generated_section_ids=generated_ids,
+            generated_outputs=generated_outputs,
+            warnings=warnings,
+            errors=errors,
+            runtime_errors=runtime_errors,
+            metadata_updates=metadata_updates,
+            retry_count_delta=retry_delta,
+        )
+        expected = before.model_copy(deep=True)
+        expected.context_bundle.generation.generated_section_ids.extend(
+            delta.generated_section_ids
+        )
+        expected.generated_outputs.update(delta.generated_outputs)
+        expected.warnings.extend(delta.warnings)
+        expected.errors.extend(delta.errors)
+        expected.context_bundle.runtime.errors.extend(delta.runtime_errors)
+        expected.context_bundle.runtime.retry_count += delta.retry_count_delta
+        expected.context_bundle.generation.metadata.update(
+            delta.metadata_updates.get("generation", {})
+        )
+        expected.context_bundle.runtime.metadata.update(
+            delta.metadata_updates.get("runtime", {})
+        )
+        if expected.model_dump(mode="python") != after.model_dump(mode="python"):
+            changed_paths = GraphStateDiffer().changed_paths(
+                expected.model_dump(mode="python"),
+                after.model_dump(mode="python"),
+            )
+            raise StateWriteContractViolation(
+                changed_paths=changed_paths,
+                allowed_paths=[
+                    "context_bundle.generation.generated_section_ids",
+                    "generated_outputs.<new-section-call-id>",
+                    "warnings",
+                    "errors",
+                    "context_bundle.runtime.errors",
+                    "context_bundle.generation.metadata.<section-id>",
+                    "context_bundle.runtime.metadata.<section-id>",
+                    "context_bundle.runtime.retry_count",
+                ],
+            )
+        return delta
+
+    @staticmethod
+    def _apply_parallel_state_delta(
+        shared_state: SharedStateSchema,
+        delta: ParallelSectionStateDeltaSchema,
+    ) -> None:
+        """Commit one validated delta in deterministic fan-in order."""
+
+        generated_ids = (
+            shared_state.context_bundle.generation.generated_section_ids
+        )
+        for section_id in delta.generated_section_ids:
+            if section_id not in generated_ids:
+                generated_ids.append(section_id)
+        for key, value in delta.generated_outputs.items():
+            if (
+                key in shared_state.generated_outputs
+                and shared_state.generated_outputs[key] != value
+            ):
+                raise StateWriteContractViolation(
+                    changed_paths=[f"generated_outputs.{key}"],
+                    allowed_paths=["generated_outputs.<unique-section-call-id>"],
+                )
+            shared_state.generated_outputs[key] = value
+        shared_state.warnings.extend(delta.warnings)
+        shared_state.errors.extend(delta.errors)
+        shared_state.context_bundle.runtime.errors.extend(delta.runtime_errors)
+        shared_state.context_bundle.runtime.retry_count += delta.retry_count_delta
+        for scope, updates in delta.metadata_updates.items():
+            target = (
+                shared_state.context_bundle.generation.metadata
+                if scope == "generation"
+                else shared_state.context_bundle.runtime.metadata
+            )
+            for key, value in updates.items():
+                if key in target and target[key] != value:
+                    raise StateWriteContractViolation(
+                        changed_paths=[
+                            f"context_bundle.{scope}.metadata.{key}"
+                        ],
+                        allowed_paths=["conflict-free section metadata"],
+                    )
+                target[key] = value
+
     def execute_sections(
         self,
         shared_state: SharedStateSchema,
         payload: SchemeGenerationGraphPayloadSchema,
     ) -> SchemeGenerationGraphPayloadSchema:
-        """Execute all sections sequentially through the one existing coordinator."""
+        """Execute sections serially or through declared safe parallel batches."""
 
         project_input = self._require(
             payload.project_input,
@@ -441,13 +821,103 @@ class SchemeGenerationStageService:
             f"[SchemeWriter] 开始逐章节生成，共 {len(document_plan.sections)} 章",
             flush=True,
         )
-        for section_plan in document_plan.sections:
+        ordered_plans = sorted(
+            document_plan.sections,
+            key=lambda item: (item.section_order, item.section_id),
+        )
+        section_count = len(ordered_plans)
+        base_section_budget = WorkflowBudget.from_policy_metadata(
+            self.section_execution_coordinator.generation_quality_metadata
+        )
+        parallel_budget_config = dict(
+            project_input.generation_requirements.extra.get(
+                "parallel_section_budget",
+                {},
+            )
+            or {}
+        )
+        parallel_llm_slice = max(
+            1,
+            int(
+                parallel_budget_config.get(
+                    "llm_calls_per_section",
+                    base_section_budget.max_total_llm_calls,
+                )
+            ),
+        )
+        parallel_token_slice = max(
+            256,
+            int(
+                parallel_budget_config.get(
+                    "tokens_per_section",
+                    base_section_budget.max_total_tokens,
+                )
+            ),
+        )
+        parallel_budget = ParallelSectionBudgetAllocator(
+            max_total_llm_calls=max(
+                1,
+                int(
+                    parallel_budget_config.get(
+                        "max_total_llm_calls",
+                        parallel_llm_slice * max(section_count, 1),
+                    )
+                ),
+            ),
+            max_total_tokens=max(
+                256,
+                int(
+                    parallel_budget_config.get(
+                        "max_total_tokens",
+                        parallel_token_slice * max(section_count, 1),
+                    )
+                ),
+            ),
+        )
+        section_position = {
+            item.section_id: index
+            for index, item in enumerate(ordered_plans, start=1)
+        }
+        completed_ids: set[str] = set()
+        results_by_id: dict[str, SectionExecutionResultSchema] = {}
+        remaining = {item.section_id: item for item in ordered_plans}
+
+        def completed_sections() -> list:
+            return [
+                results_by_id[item.section_id].section
+                for item in ordered_plans
+                if item.section_id in results_by_id
+            ]
+
+        def run_one(
+            section_plan: SectionPlanSchema,
+            *,
+            state: SharedStateSchema,
+            registry: DocumentCitationRegistry,
+            previous_sections: list,
+            emit_events: bool,
+            parallel_isolated: bool,
+            budget_policy_override: dict[str, Any],
+        ) -> SectionExecutionResultSchema:
+            section_index = section_position[section_plan.section_id]
+            if emit_events:
+                emit_workflow_custom_event(
+                    "section_started",
+                    node_name="execute_sections",
+                    section_id=section_plan.section_id,
+                    progress=(section_index - 1) / max(section_count, 1),
+                    payload={
+                        "section_title": section_plan.section_title,
+                        "section_index": section_index,
+                        "section_count": section_count,
+                    },
+                )
             request_data = {
                 "document_id": document_id,
                 "project_input": project_input,
                 "section_plan": section_plan,
                 "structured_facts": list(payload.structured_facts),
-                "previous_sections": list(sections),
+                "previous_sections": list(previous_sections),
                 "document_rag_context": rag_context,
                 "document_retrieved_chunks": list(
                     payload.document_retrieved_chunks
@@ -461,26 +931,231 @@ class SchemeGenerationStageService:
                 "corrective_retrieval_enabled": (
                     payload.corrective_retrieval_enabled
                 ),
+                "parallel_isolated": parallel_isolated,
+                "budget_policy_override": dict(budget_policy_override),
             }
             if self.section_execution_graph is not None:
                 section_result = self.section_execution_graph.execute(
                     SectionGraphExecutionRequestSchema(**request_data),
-                    shared_state=shared_state,
-                    citation_registry=citation_registry,
+                    shared_state=state,
+                    citation_registry=registry,
                     workflow_namespace=payload.workflow_namespace,
                 )
             else:
                 section_result = self.section_execution_coordinator.execute(
                     SectionExecutionRequestSchema(
-                        shared_state=shared_state,
+                        shared_state=state,
                         **request_data,
                     ),
-                    citation_registry=citation_registry,
+                    citation_registry=registry,
                 )
+            if emit_events:
+                emit_workflow_custom_event(
+                    "section_generated",
+                    node_name="execute_sections",
+                    section_id=section_plan.section_id,
+                    status=section_result.section.status.value,
+                    progress=section_index / max(section_count, 1),
+                    payload={
+                        "section_title": section_plan.section_title,
+                        "content_chars": len(section_result.section.content),
+                    },
+                )
+                emit_workflow_custom_event(
+                    "section_completed",
+                    node_name="execute_sections",
+                    section_id=section_plan.section_id,
+                    status=section_result.section.status.value,
+                    progress=section_index / max(section_count, 1),
+                    payload={
+                        "section_title": section_plan.section_title,
+                        "section_index": section_index,
+                        "section_count": section_count,
+                    },
+                )
+            return section_result
+
+        while remaining:
+            ready = [
+                item
+                for item in ordered_plans
+                if item.section_id in remaining
+                and set(item.depends_on) <= completed_ids
+            ]
+            if not ready:
+                raise ValueError(
+                    "no section is ready; dependency graph is inconsistent"
+                )
+            first = ready[0]
+            parallel_safe = (
+                self.section_max_concurrency > 1
+                and first.can_run_in_parallel
+                and not first.requires_global_context
+                and not first.depends_on
+            )
+            batch = [first]
+            if parallel_safe:
+                batch = [
+                    item
+                    for item in ready
+                    if item.can_run_in_parallel
+                    and not item.requires_global_context
+                    and not item.depends_on
+                    and item.execution_group == first.execution_group
+                ][: self.section_max_concurrency]
+
+            if len(batch) > 1:
+                previous = completed_sections()
+                base_citations = citation_registry.all()
+                budget_reservations = parallel_budget.reserve_batch(
+                    [item.section_id for item in batch],
+                    llm_calls_per_section=parallel_llm_slice,
+                    tokens_per_section=parallel_token_slice,
+                )
+                for section_plan in batch:
+                    emit_workflow_custom_event(
+                        "section_started",
+                        node_name="execute_sections",
+                        section_id=section_plan.section_id,
+                        progress=(
+                            (section_position[section_plan.section_id] - 1)
+                            / max(section_count, 1)
+                        ),
+                        payload={
+                            "section_title": section_plan.section_title,
+                            "section_index": section_position[
+                                section_plan.section_id
+                            ],
+                            "section_count": section_count,
+                            "parallel_batch": True,
+                        },
+                    )
+
+                def execute_isolated(
+                    section_plan: SectionPlanSchema,
+                ) -> ParallelSectionExecutionEnvelopeSchema:
+                    local_state = shared_state.model_copy(deep=True)
+                    before_state = local_state.model_copy(deep=True)
+                    local_registry = DocumentCitationRegistry.from_citations(
+                        base_citations
+                    )
+                    result = run_one(
+                        section_plan,
+                        state=local_state,
+                        registry=local_registry,
+                        previous_sections=previous,
+                        emit_events=False,
+                        parallel_isolated=True,
+                        budget_policy_override=budget_reservations[
+                            section_plan.section_id
+                        ],
+                    )
+                    return ParallelSectionExecutionEnvelopeSchema(
+                        section_id=section_plan.section_id,
+                        result=result,
+                        state_delta=self._parallel_state_delta(
+                            before_state,
+                            local_state,
+                            section_id=section_plan.section_id,
+                        ),
+                    )
+
+                try:
+                    batch_results = (
+                        self.section_parallel_execution_graph.execute_batch(
+                            batch,
+                            max_concurrency=self.section_max_concurrency,
+                            execute=execute_isolated,
+                        )
+                    )
+                except BaseException as exc:
+                    if classify_failure(exc) == FailureCategory.CANCELLED:
+                        for section_plan in batch:
+                            emit_workflow_custom_event(
+                                "section_cancelled",
+                                node_name="execute_sections",
+                                section_id=section_plan.section_id,
+                                status=ExecutionStatus.CANCELLED.value,
+                                payload={
+                                    "section_title": section_plan.section_title,
+                                    "parallel_batch": True,
+                                },
+                            )
+                    raise
+                for envelope in batch_results:
+                    merged = self._merge_parallel_section_result(
+                        envelope.result,
+                        document_id=document_id,
+                        citation_registry=citation_registry,
+                    )
+                    self._apply_parallel_state_delta(
+                        shared_state,
+                        envelope.state_delta,
+                    )
+                    results_by_id[merged.section.section_id] = merged
+                    completed_ids.add(merged.section.section_id)
+                    remaining.pop(merged.section.section_id)
+                    self.state_writer.set_current_section(
+                        shared_state,
+                        section_id=merged.section.section_id,
+                        section_title=merged.section.section_title,
+                    )
+                    emit_workflow_custom_event(
+                        "section_generated",
+                        node_name="execute_sections",
+                        section_id=merged.section.section_id,
+                        status=merged.section.status.value,
+                        progress=(
+                            section_position[merged.section.section_id]
+                            / max(section_count, 1)
+                        ),
+                        payload={
+                            "section_title": merged.section.section_title,
+                            "content_chars": len(merged.section.content),
+                            "parallel_batch": True,
+                        },
+                    )
+                    emit_workflow_custom_event(
+                        "section_completed",
+                        node_name="execute_sections",
+                        section_id=merged.section.section_id,
+                        status=merged.section.status.value,
+                        progress=(
+                            section_position[merged.section.section_id]
+                            / max(section_count, 1)
+                        ),
+                        payload={
+                            "section_title": merged.section.section_title,
+                            "section_index": section_position[
+                                merged.section.section_id
+                            ],
+                            "section_count": section_count,
+                            "parallel_batch": True,
+                        },
+                    )
+            else:
+                result = run_one(
+                    first,
+                    state=shared_state,
+                    registry=citation_registry,
+                    previous_sections=completed_sections(),
+                    emit_events=True,
+                    parallel_isolated=False,
+                    budget_policy_override={},
+                )
+                results_by_id[first.section_id] = result
+                completed_ids.add(first.section_id)
+                remaining.pop(first.section_id)
+
+        for section_plan in ordered_plans:
+            section_result = results_by_id[section_plan.section_id]
             sections.append(section_result.section)
             section_evidence_bundles.append(section_result.evidence)
             all_chunks.extend(section_result.retrieved_chunks)
             all_rag_outputs.extend(section_result.rag_outputs)
+        shared_state.context_bundle.generation.metadata[
+            "parallel_section_budget"
+        ] = parallel_budget.snapshot()
         return payload.model_copy(
             update={
                 "sections": sections,

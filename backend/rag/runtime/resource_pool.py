@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：ParentChildResourcePool。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Lazy, per-runtime resource pool for heavy retrieval dependencies."""
+"""单个检索运行时的重量级资源延迟加载池。
+
+插件选择由静态检索规范决定；资源池只按需创建并复用 Embedding、Milvus 子块召回器、
+BM25、Parent Store 和 Cross-Encoder。关闭时统一释放有 ``close`` 钩子的资源，避免每个
+插件自行管理显存和连接生命周期。
+"""
 
 from __future__ import annotations
 
@@ -10,24 +11,11 @@ from pathlib import Path
 from typing import Any
 
 
-# 阅读注释（类）：封装 父块 子块 resource pool，集中封装相关状态、依赖和行为。
 class ParentChildResourcePool:
-    """Load vector/BM25/parent resources only when selected plugins need them."""
+    """仅在启用插件需要时加载父子检索资源，并在同一运行时内缓存。"""
 
-    # 阅读注释（函数）：初始化 ParentChildResourcePool，保存运行所需的依赖、配置或状态。
     def __init__(self, *, runtime_config: Any, project_root: Path) -> None:
-        """初始化 ParentChildResourcePool，保存运行所需的依赖、配置或状态。
-
-        参数:
-            runtime_config: 运行时 配置，具体约束请结合类型标注和调用方确认。
-            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：Path。
-        """
+        """保存部署配置和项目根目录，并初始化各资源的空缓存。"""
         self.runtime_config = runtime_config
         self.project_root = Path(project_root)
         self._dense_retriever: Any | None = None
@@ -51,16 +39,8 @@ class ParentChildResourcePool:
             )
         return self._embedding_backend
 
-    # 阅读注释（函数）：获取 dense retriever。
     def get_dense_retriever(self) -> Any:
-        """获取 dense retriever。
-
-        返回:
-            Any
-
-        阅读提示:
-            主要直接调用：MilvusChildRetriever。
-        """
+        """首次请求时构造 Milvus 子块召回器，并复用同一 Embedding Backend。"""
         if self._dense_retriever is None:
             from rag.retriever.milvus_child_retriever import MilvusChildRetriever
 
@@ -78,16 +58,8 @@ class ParentChildResourcePool:
             )
         return self._dense_retriever
 
-    # 阅读注释（函数）：获取 keyword retriever。
     def get_keyword_retriever(self) -> Any:
-        """获取 keyword retriever。
-
-        返回:
-            Any
-
-        阅读提示:
-            主要直接调用：BM25ChildRetriever.from_jsonl。
-        """
+        """首次请求时从离线子块 JSONL 构建并缓存内存 BM25。"""
         if self._keyword_retriever is None:
             from rag.retriever.bm25_child_retriever import BM25ChildRetriever
 
@@ -97,7 +69,6 @@ class ParentChildResourcePool:
         return self._keyword_retriever
 
 
-    # 阅读注释（函数）：获取 父块 reranker。
     def get_parent_reranker(
         self,
         *,
@@ -107,11 +78,10 @@ class ParentChildResourcePool:
         max_length: int | None = None,
         local_files_only: bool | None = None,
     ) -> Any:
-        """Return a cached parent cross-encoder reranker resource.
+        """按模型、设备、批量、长度和本地模式组成的资源键缓存 Cross-Encoder。
 
-        The static retrieval spec selects the reranker plugin and behaviour. Model location
-        and device default to the deployment/runtime configuration, while an
-        explicit plugin parameter may override an individual resource field.
+        静态检索规范选择插件与行为；插件参数可覆盖部署默认资源字段，但不同资源配置不会
+        错误复用同一个模型实例。
         """
         cfg = self.runtime_config
         resolved_model_name = str(model_name or cfg.reranker_model)
@@ -170,16 +140,8 @@ class ParentChildResourcePool:
         self._parent_store = None
         self._parent_rerankers.clear()
 
-    # 阅读注释（函数）：获取 父块 store。
     def get_parent_store(self) -> Any:
-        """获取 父块 store。
-
-        返回:
-            Any
-
-        阅读提示:
-            主要直接调用：ParentChunkStore.from_jsonl。
-        """
+        """首次请求时加载父块 JSONL 索引，并在运行时内复用。"""
         if self._parent_store is None:
             from rag.store.parent_chunk_store import ParentChunkStore
 

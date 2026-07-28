@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：后端业务模块。
-# 主要定义：FakeRAGTool。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Fake RAG tool for deterministic mainline and recovery tests."""
+"""用于主链、补充检索和引用冲突测试的确定性 RAG 工具。
+
+它构造真实 ``EvidenceBundleSchema``，而不是只返回一段字符串，因此测试仍经过生产环境
+相同的证据、引用、上下文投影和血缘契约。
+"""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from schemas.tool import ToolCallSchema, ToolResultSchema
 from contracts.base_tool import BaseTool
 
 
-# 阅读注释（类）：封装 fake ragtool，集中封装相关状态、依赖和行为。
 class FakeRAGTool(BaseTool):
     """Deterministic RAG tool with opt-in test scenarios.
 
@@ -43,35 +42,18 @@ class FakeRAGTool(BaseTool):
     tool_name = "FakeRAGTool"
     description = "Mock RAG retrieval tool for testing."
 
-    # 阅读注释（函数）：处理 safe key 相关逻辑。
     @staticmethod
     def _safe_key(value: str) -> str:
-        """处理 safe key 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：strip, re.sub。
-        """
+        """把场景和章节信息转换为可用于模拟文档/Chunk 标识的稳定片段。"""
         text = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", value).strip("_")
         return text or "document"
 
-    # 阅读注释（函数）：执行 FakeRAGTool 的主流程。
     def run(self, tool_call: ToolCallSchema) -> ToolResultSchema:
-        """执行 FakeRAGTool 的主流程。
+        """根据测试场景构造一条可追溯证据并返回标准工具结果。
 
-        参数:
-            tool_call: 工具 call，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ToolResultSchema
-
-        阅读提示:
-            主要直接调用：str, tool_input.get, dict, extra_metadata.get, strip, lower, os.getenv, self._safe_key。
+        默认场景返回固定企业 RAG 架构材料；碰撞与恢复场景按检索范围、章节和调用 ID
+        生成不同来源，但故意复用局部 citation_id ``C1``，用于验证文档级引用注册表是否
+        正确重映射。测试语料由本工具明确声明语义充分，避免通用 Builder 对充分性做推断。
         """
         tool_input: Dict[str, Any] = tool_call.tool_input
         query = str(tool_input.get("query", ""))

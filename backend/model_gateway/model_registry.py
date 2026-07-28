@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：ModelRegistry。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Model client registry."""
+"""模型客户端注册表及其资源生命周期管理。
+
+注册表只按稳定 ``model_name`` 保存客户端实例，不参与业务角色选择。关闭后永久拒绝
+注册和读取；``release_all`` 只释放当前资源，注册表仍可继续复用。
+"""
 
 from __future__ import annotations
 
@@ -12,33 +12,16 @@ from typing import Dict
 from contracts.base_client import BaseLLMClient
 
 
-# 阅读注释（类）：封装 模型 注册表，集中封装相关状态、依赖和行为。
 class ModelRegistry:
-    """封装 模型 注册表，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 ModelRegistry，保存运行所需的依赖、配置或状态。
+    """线程安全地保存模型客户端，并统一调用可选的释放/关闭钩子。"""
     def __init__(self) -> None:
-        """初始化 ModelRegistry，保存运行所需的依赖、配置或状态。
-
-        返回:
-            None
-        """
+        """初始化空注册表和覆盖注册、读取、释放、关闭的生命周期锁。"""
         self._clients: Dict[str, BaseLLMClient] = {}
         self._lifecycle_lock = RLock()
         self._closed = False
 
-    # 阅读注释（函数）：注册 ModelRegistry。
     def register(self, client: BaseLLMClient) -> None:
-        """注册 ModelRegistry。
-
-        参数:
-            client: 下游客户端。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：ValueError。
-        """
+        """按 ``client.model_name`` 注册唯一客户端；重复名称或已关闭状态直接失败。"""
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("ModelRegistry is closed")
@@ -46,19 +29,8 @@ class ModelRegistry:
                 raise ValueError(f"Model client already registered: {client.model_name}")
             self._clients[client.model_name] = client
 
-    # 阅读注释（函数）：获取 ModelRegistry。
     def get(self, model_name: str) -> BaseLLMClient:
-        """获取 ModelRegistry。
-
-        参数:
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            BaseLLMClient
-
-        阅读提示:
-            主要直接调用：KeyError。
-        """
+        """读取已注册客户端；未注册与注册表关闭是两类不同错误。"""
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("ModelRegistry is closed")
@@ -66,16 +38,8 @@ class ModelRegistry:
                 raise KeyError(f"Model client not found: {model_name}")
             return self._clients[model_name]
 
-    # 阅读注释（函数）：处理 contains 相关逻辑。
     def contains(self, model_name: str) -> bool:
-        """处理 contains 相关逻辑。
-
-        参数:
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            bool
-        """
+        """仅在注册表仍开放且名称存在时返回真。"""
         with self._lifecycle_lock:
             return not self._closed and model_name in self._clients
 
@@ -126,15 +90,7 @@ class ModelRegistry:
                 # Shutdown remains best-effort, but all clients get a chance.
                 pass
 
-    # 阅读注释（函数）：处理 names 相关逻辑。
     def names(self) -> list[str]:
-        """处理 names 相关逻辑。
-
-        返回:
-            list[str]
-
-        阅读提示:
-            主要直接调用：list。
-        """
+        """返回当前注册名称快照，不暴露内部可变字典。"""
         with self._lifecycle_lock:
             return list(self._clients)

@@ -1,23 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_safe_str、_safe_float、ContextPack、ContextPacker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/context/context_packer.py
-======================================
+"""P3 Context Packer：把重排后的父子检索结果压入 Prompt 证据预算。
 
-P3 context packer:
-- Input: reranked retrieval_result_v2 list.
-- Output: packed context string + selected results + citation metadata.
-
-职责边界：
-- 只做上下文预算控制和格式化，不调用 LLM。
-- Token 预算是主约束，字符预算仅作为序列化安全上限。
-
-v0.2 update:
-- Add packing_strategy="lost_in_middle_aware".
-- High-value chunks are placed near the beginning and end of the packed context.
+Token 预算是主约束，字符预算仅是序列化安全上限。Packer 先按原重排顺序去重和截断候选
+集合，再可选执行 ``lost_in_middle_aware`` 重排，将高价值证据放在上下文开头和结尾；
+最后构造稳定 Citation、记录丢弃原因，并只允许首个证据在预算不足时做显式截断。
 """
 
 from __future__ import annotations
@@ -29,39 +15,15 @@ from context_manager.token_estimator import DeterministicTokenEstimator
 from rag.evidence.citation_sources import CitationSource, citation_sources
 
 
-# 阅读注释（函数）：处理 safe str 相关逻辑。
 def _safe_str(value: Any, default: str = "") -> str:
-    """处理 safe str 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：isinstance, str。
-    """
+    """把可选标量规范为字符串。"""
     if value is None:
         return default
     return value if isinstance(value, str) else str(value)
 
 
-# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """处理 safe float 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float。
-    """
+    """安全规范化召回或重排分数。"""
     try:
         if value is None:
             return default
@@ -70,10 +32,9 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-# 阅读注释（类）：封装 上下文 pack，集中封装相关状态、依赖和行为。
 @dataclass
 class ContextPack:
-    """Packed context result."""
+    """最终上下文文本、选中/丢弃证据、引用和预算使用量的运行结果。"""
 
     context: str
     selected_results: List[Dict[str, Any]] = field(default_factory=list)
@@ -94,16 +55,8 @@ class ContextPack:
     def rendered_text(self) -> str:
         return self.context
 
-    # 阅读注释（函数）：把 ContextPack 转换为 字典。
     def to_dict(self) -> Dict[str, Any]:
-        """把 ContextPack 转换为 字典。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：len。
-        """
+        """导出 Evidence Contract Builder 和运行捕获使用的兼容字典。"""
         return {
             "context": self.context,
             "selected_results": self.selected_results,
@@ -122,7 +75,6 @@ class ContextPack:
         }
 
 
-# 阅读注释（类）：封装 上下文 packer，集中封装相关状态、依赖和行为。
 class ContextPacker:
     """Pack retrieval results into prompt-ready context.
 
@@ -135,7 +87,6 @@ class ContextPacker:
           high-value evidence avoids the middle of a long prompt.
     """
 
-    # 阅读注释（函数）：初始化 ContextPacker，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -146,22 +97,7 @@ class ContextPacker:
         include_metadata: bool = True,
         packing_strategy: str = "lost_in_middle_aware",
     ):
-        """初始化 ContextPacker，保存运行所需的依赖、配置或状态。
-
-        参数:
-            max_context_chars: max 上下文 chars，具体约束请结合类型标注和调用方确认。
-            max_items: max 数据项集合，具体约束请结合类型标注和调用方确认。
-            text_field: 文本 field，具体约束请结合类型标注和调用方确认。
-            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
-            include_metadata: include 元数据，具体约束请结合类型标注和调用方确认。
-            packing_strategy: packing strategy，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：ValueError, sorted, int, bool。
-        """
+        """配置字符/条目上限、正文来源字段、父级去重和位置感知策略。"""
         if max_context_chars <= 0:
             raise ValueError("max_context_chars must be > 0")
         if max_items <= 0:
@@ -181,7 +117,6 @@ class ContextPacker:
         self.include_metadata = bool(include_metadata)
         self.packing_strategy = packing_strategy
 
-    # 阅读注释（函数）：构建 引用。
     @staticmethod
     def build_citation(
         result: Dict[str, Any],
@@ -190,18 +125,7 @@ class ContextPacker:
         citation_id: str,
         source: CitationSource,
     ) -> Dict[str, Any]:
-        """构建 引用。
-
-        参数:
-            result: 待处理的结果对象。
-            context_rank: 上下文 rank，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：result.get, meta.get。
-        """
+        """把一个实际命中子块绑定为引用来源，并附加其父级候选排名与召回血缘。"""
         meta = result.get("metadata") or {}
         return {
             "citation_id": citation_id,
@@ -251,24 +175,12 @@ class ContextPacker:
             fallback_page_end=result.get("page_end"),
         )
 
-    # 阅读注释（函数）：获取 文本。
     def _get_text(self, result: Dict[str, Any]) -> str:
-        """获取 文本。
-
-        参数:
-            result: 待处理的结果对象。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：result.get, _safe_str。
-        """
+        """按配置字段读取生成上下文，并依次回退通用、父块和子块正文。"""
         if self.text_field and result.get(self.text_field):
             return _safe_str(result.get(self.text_field))
         return _safe_str(result.get("text") or result.get("parent_text") or result.get("child_text"))
 
-    # 阅读注释（函数）：处理 lost in middle reorder 相关逻辑。
     @staticmethod
     def _lost_in_middle_reorder(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Move high-ranked chunks to prompt edges.
@@ -294,34 +206,14 @@ class ContextPacker:
 
         return left + right
 
-    # 阅读注释（函数）：应用 packing strategy。
     def _apply_packing_strategy(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """应用 packing strategy。
-
-        参数:
-            chunks: chunks，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：self._lost_in_middle_reorder。
-        """
+        """仅改变已选证据的呈现位置，不改变基于原重排顺序形成的证据集合。"""
         if self.packing_strategy == "lost_in_middle_aware":
             return self._lost_in_middle_reorder(chunks)
         return chunks
 
-    # 阅读注释（函数）：处理 position tag 相关逻辑。
     def _position_tag(self, context_rank: int, total: int) -> str:
-        """处理 position tag 相关逻辑。
-
-        参数:
-            context_rank: 上下文 rank，具体约束请结合类型标注和调用方确认。
-            total: total，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-        """
+        """为位置感知策略标记开头、结尾和补充证据。"""
         if self.packing_strategy != "lost_in_middle_aware":
             return ""
         if total <= 1:
@@ -332,7 +224,6 @@ class ContextPacker:
             return "【高优先级证据-结尾】"
         return "【补充证据】"
 
-    # 阅读注释（函数）：格式化 数据项。
     def _format_item(
         self,
         result: Dict[str, Any],
@@ -341,20 +232,7 @@ class ContextPacker:
         total_items: int,
         citation_ids: List[str] | None = None,
     ) -> str:
-        """格式化 数据项。
-
-        参数:
-            result: 待处理的结果对象。
-            context_rank: 上下文 rank，具体约束请结合类型标注和调用方确认。
-            text: 待处理文本。
-            total_items: total 数据项集合，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：_safe_str, result.get, _safe_float, meta.get, self._position_tag, str, strip。
-        """
+        """将一个候选渲染为带引用 Marker 和可选来源 metadata 的上下文块。"""
         title = _safe_str(result.get("title"))
         section = _safe_str(result.get("section"))
         doc_id = _safe_str(result.get("doc_id"))
@@ -399,21 +277,9 @@ class ContextPacker:
             header = f"{marker}{tag_line}\n"
         return f"{header}{text}".strip()
 
-    # 阅读注释（函数）：处理 mark dropped 相关逻辑。
     @staticmethod
     def _mark_dropped(result: Dict[str, Any], reason: str) -> Dict[str, Any]:
-        """处理 mark dropped 相关逻辑。
-
-        参数:
-            result: 待处理的结果对象。
-            reason: reason，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：dict, dropped.pop, dropped.get。
-        """
+        """复制候选并写入明确的上下文丢弃原因，不污染原结果。"""
         dropped = dict(result)
         dropped.pop("_pack_text", None)
         metadata = dict(dropped.get("metadata") or {})
@@ -421,7 +287,6 @@ class ContextPacker:
         dropped["metadata"] = metadata
         return dropped
 
-    # 阅读注释（函数）：收集 candidates。
     def _collect_candidates(
         self,
         results: Iterable[Dict[str, Any]],
@@ -462,7 +327,6 @@ class ContextPacker:
 
         return candidates, dropped
 
-    # 阅读注释（函数）：压缩并组装 ContextPacker。
     def pack(
         self,
         results: Iterable[Dict[str, Any]],
@@ -471,16 +335,11 @@ class ContextPacker:
         max_items: int | None = None,
         char_budget: int | None = None,
     ) -> ContextPack:
-        """压缩并组装 ContextPacker。
+        """在条目、字符和估算 Token 三重预算下构造最终上下文。
 
-        参数:
-            results: 待处理的结果集合。
-
-        返回:
-            ContextPack
-
-        阅读提示:
-            主要直接调用：self._collect_candidates, self._apply_packing_strategy, len, strip, _safe_str, result.get, self._format_item, dropped.append。
+        Citation ID 按实际子块首次进入上下文的顺序分配，同一子块不会重复建引用。若整个
+        上下文为空，第一条证据可二分搜索最大可容纳前缀并附加 ``[TRUNCATED]``；后续
+        证据不插入极小碎片，而是带原因丢弃。返回前再次验证 Token 预算不被突破。
         """
         effective_token_budget = max(
             1,

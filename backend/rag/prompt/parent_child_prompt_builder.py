@@ -1,26 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：PromptBuildResult、ParentChildPromptBuilder。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/prompt/parent_child_prompt_builder.py
-=================================================
+"""为父子块 RAG 的已打包上下文构造严格问答 Prompt。
 
-P4-lite PromptBuilder for parent-child RAG.
-
-Input:
-- query
-- packed_context from ContextPacker
-- optional citations metadata
-
-Output:
-- prompt string
-- prompt_id / prompt_version metadata
-
-职责边界：
-- 只构造 prompt，不调用 LLM。
-- 不负责检索、重排、context packing、日志保存。
+输入是用户查询、Context Packer 产出的最终上下文和可选引用 metadata；输出同时包含
+Prompt 正文、模板身份、版本和渲染变量，供模型调用、Trace 和数据采集复用。本模块
+不调用 LLM，也不负责检索、重排或上下文预算。
 """
 
 from __future__ import annotations
@@ -29,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 
+# 默认模板要求模型只依据资料回答，并在证据不足或冲突时显式说明。
 DEFAULT_PARENT_CHILD_STRICT_QA_TEMPLATE = """你是一个严格基于资料回答问题的助手。
 你只能使用给定资料回答问题，不能编造资料中不存在的信息。
 如果资料不足，请回答“资料不足，无法确定”。
@@ -50,10 +34,17 @@ DEFAULT_PARENT_CHILD_STRICT_QA_TEMPLATE = """你是一个严格基于资料回�
 """
 
 
-# 阅读注释（类）：封装 提示词 build 结果，集中封装相关状态、依赖和行为。
 @dataclass
 class PromptBuildResult:
-    """Prompt build result for downstream capture / LLM call."""
+    """保存一次 Prompt 渲染的正文和可重复性 metadata。
+
+    Attributes:
+        prompt: 最终发送给模型的文本。
+        prompt_id: 稳定模板逻辑身份。
+        prompt_version: 模板内容版本。
+        template: 本次实际使用的原始模板。
+        variables: 渲染时使用的完整变量快照。
+    """
 
     prompt: str
     prompt_id: str
@@ -61,13 +52,10 @@ class PromptBuildResult:
     template: str
     variables: Dict[str, Any]
 
-    # 阅读注释（函数）：把 PromptBuildResult 转换为 字典。
     def to_dict(self) -> Dict[str, Any]:
-        """把 PromptBuildResult 转换为 字典。
+        """返回可直接写入 JSON/Trace 的普通字典。"""
 
-        返回:
-            Dict[str, Any]
-        """
+        # 显式列出字段，保持历史序列化键顺序和公开协议稳定。
         return {
             "prompt": self.prompt,
             "prompt_id": self.prompt_id,
@@ -77,48 +65,49 @@ class PromptBuildResult:
         }
 
 
-# 阅读注释（类）：封装 父块 子块 提示词 builder，集中封装相关状态、依赖和行为。
 class ParentChildPromptBuilder:
-    """Build strict QA prompt from packed parent-child RAG context."""
+    """从最终父级上下文渲染严格问答 Prompt。"""
 
-    # 阅读注释（函数）：初始化 ParentChildPromptBuilder，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         prompt_id: str = "parent_child_strict_qa",
         prompt_version: str = "v1.0",
         template: Optional[str] = None,
-    ):
-        """初始化 ParentChildPromptBuilder，保存运行所需的依赖、配置或状态。
+    ) -> None:
+        """初始化模板身份、版本和可选自定义模板。
 
-        参数:
-            prompt_id: 提示词 标识，具体约束请结合类型标注和调用方确认。
-            prompt_version: 提示词 版本，具体约束请结合类型标注和调用方确认。
-            template: template，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
+        Args:
+            prompt_id: 进入模型和采集血缘的稳定 Prompt ID。
+            prompt_version: 模板版本字符串。
+            template: 可选自定义模板；省略时使用默认严格问答模板。
         """
+
         self.prompt_id = prompt_id
         self.prompt_version = prompt_version
-        self.template = template or DEFAULT_PARENT_CHILD_STRICT_QA_TEMPLATE
+        self.template = (
+            template or DEFAULT_PARENT_CHILD_STRICT_QA_TEMPLATE
+        )
 
-    # 阅读注释（函数）：格式化 引用 标识集合。
     @staticmethod
-    def _format_citation_ids(citations: Optional[List[Dict[str, Any]]]) -> List[str]:
-        """格式化 引用 标识集合。
+    def _format_citation_ids(
+        citations: Optional[List[Dict[str, Any]]],
+    ) -> List[str]:
+        """把引用的 context_rank 转换为人类可读资料编号。
 
-        参数:
-            citations: 引用信息集合。
+        Args:
+            citations: Context Packer 或证据层产生的引用字典。
 
-        返回:
-            List[str]
+        Returns:
+            ``资料 1`` 风格的列表。没有引用或引用缺少 context_rank 时忽略。
 
-        阅读提示:
-            主要直接调用：citation.get, ids.append。
+        当前默认模板没有直接使用 ``citation_ids`` 变量，但该字段保留在变量快照中，
+        供自定义模板和后续引用验证使用。
         """
+
         if not citations:
             return []
+
         ids: List[str] = []
         for citation in citations:
             rank = citation.get("context_rank")
@@ -126,7 +115,6 @@ class ParentChildPromptBuilder:
                 ids.append(f"资料 {rank}")
         return ids
 
-    # 阅读注释（函数）：构建 ParentChildPromptBuilder。
     def build(
         self,
         *,
@@ -135,38 +123,48 @@ class ParentChildPromptBuilder:
         citations: Optional[List[Dict[str, Any]]] = None,
         extra_variables: Optional[Dict[str, Any]] = None,
     ) -> PromptBuildResult:
-        """构建 ParentChildPromptBuilder。
+        """校验输入、渲染模板并返回完整构建结果。
 
-        参数:
-            query: 当前检索或生成查询。
-            packed_context: packed 上下文，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            extra_variables: extra variables，具体约束请结合类型标注和调用方确认。
+        Args:
+            query: 当前用户查询。
+            packed_context: Context Packer 最终选择并渲染的证据文本。
+            citations: 可选引用 metadata。
+            extra_variables: 要写入变量快照的额外字段；同名字段会覆盖默认值。
 
-        返回:
-            PromptBuildResult
+        Returns:
+            包含 Prompt 正文和模板血缘的 ``PromptBuildResult``。
 
-        阅读提示:
-            主要直接调用：strip, str, ValueError, self._format_citation_ids, variables.update, self.template.format, PromptBuildResult。
+        Raises:
+            ValueError: 查询或打包上下文为空白时抛出。
+            KeyError: 自定义模板要求了未提供变量时由 ``str.format`` 抛出。
         """
+
+        # 第一步：拒绝空查询，避免生成与用户意图无关的回答。
         if not query or not str(query).strip():
             raise ValueError("query cannot be empty")
+
+        # 第二步：严格 RAG Prompt 必须有证据上下文，不能退化为无依据生成。
         if not packed_context or not str(packed_context).strip():
             raise ValueError("packed_context cannot be empty")
 
+        # 第三步：构造标准变量快照，包括尚未必被默认模板消费的 citation_ids。
         variables: Dict[str, Any] = {
             "query": str(query),
             "packed_context": str(packed_context),
             "citation_ids": self._format_citation_ids(citations),
         }
+
+        # 第四步：额外变量显式覆盖同名值，支持实验模板扩展。
         if extra_variables:
             variables.update(extra_variables)
 
+        # 第五步：当前默认模板只渲染 query 和 packed_context，保持历史输出不变。
         prompt = self.template.format(
             query=variables["query"],
             packed_context=variables["packed_context"],
         )
 
+        # 第六步：返回正文和完整可重复性 metadata。
         return PromptBuildResult(
             prompt=prompt,
             prompt_id=self.prompt_id,

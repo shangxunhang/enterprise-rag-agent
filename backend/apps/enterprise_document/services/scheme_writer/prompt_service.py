@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SectionPromptService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Section prompt construction through the Step 14 Context Manager."""
+"""通过 Context Manager 构造章节生成 Prompt 与可审计上下文包。
+
+本服务先定义章节边界和候选上下文，再根据目标模型安全容量构建
+``LLMContextPackageSchema``，最后交给版本化 Prompt 模板渲染。Prompt 文本只是投影，
+结构化上下文包及其哈希才是复现本次模型输入选择的依据。
+"""
 
 from __future__ import annotations
 
@@ -20,9 +21,8 @@ from model_gateway.model_contract import ModelRole
 from prompt_manager.prompt_manager import PromptManager
 
 
-# 阅读注释（类）：封装 章节 提示词 服务，封装一组可复用的业务能力。
 class SectionPromptService:
-    """封装 章节 提示词 服务，封装一组可复用的业务能力。"""
+    """负责章节边界、引用目录、上下文预算和最终 Prompt 渲染。"""
 
     def __init__(
         self,
@@ -38,20 +38,9 @@ class SectionPromptService:
         self.prompt_manager = prompt_manager
         self.prompt_id = prompt_id
         self.model_gateway = model_gateway
-    # 阅读注释（函数）：处理 引用 catalog 相关逻辑。
     @staticmethod
     def citation_catalog(citations: Iterable[CitationSchema]) -> str:
-        """处理 引用 catalog 相关逻辑。
-
-        参数:
-            citations: 引用信息集合。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：json.dumps。
-        """
+        """把结构化引用渲染为修复/重写 Prompt 可消费的 JSON 目录。"""
         return json.dumps(
             [
                 {
@@ -69,28 +58,16 @@ class SectionPromptService:
             indent=2,
         )
 
-    # 阅读注释（函数）：处理 target 章节 chars 相关逻辑。
     @staticmethod
     def target_section_chars(project_input: ProjectInputSchema) -> int:
-        """Return a conservative Chinese-character budget for one section."""
+        """从输出 Token 上限派生保守中文字符目标，并限制在 600–1200。"""
 
         max_tokens = max(256, int(project_input.generation_requirements.max_tokens_per_section))
         return max(600, min(1200, max_tokens))
 
-    # 阅读注释（函数）：判断是否存在 concrete resource 输入。
     @staticmethod
     def _has_concrete_resource_input(project_input: ProjectInputSchema) -> bool:
-        """判断是否存在 concrete resource 输入。
-
-        参数:
-            project_input: 规范化后的项目输入。
-
-        返回:
-            bool
-
-        阅读提示:
-            主要直接调用：bool, project_input.extra.get。
-        """
+        """判断 ProjectInput 是否包含可被正文复述的具体组织或资源事实。"""
         return bool(
             project_input.hardware_resources
             or project_input.total_staff is not None
@@ -101,24 +78,17 @@ class SectionPromptService:
             or project_input.extra.get("capacity_requirements")
         )
 
-    # 阅读注释（函数）：处理 章节 生成 contract 相关逻辑。
     @classmethod
     def section_generation_contract(
         cls,
         section_title: str,
         project_input: ProjectInputSchema,
     ) -> str:
-        """处理 章节 生成 contract 相关逻辑。
+        """生成当前章节的动态写作边界和事实约束。
 
-        参数:
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：list, dict.fromkeys, strip, str, join, cls._has_concrete_resource_input。
+        Contract 明确当前标题、兄弟章节、允许表达的一般建议以及不得确定承诺的高风险
+        事实。存在具体资源输入时只能复述或基于其推导；不存在时必须写测算维度、建议或
+        待确认项，不能自行补数量和型号。
         """
         required_sections = list(
             dict.fromkeys(
@@ -145,24 +115,14 @@ class SectionPromptService:
             f"{resource_instruction}输入不足时明确标注待补充或需项目方确认。"
         )
 
-    # 阅读注释（函数）：处理 章节 scope violations 相关逻辑。
     @staticmethod
     def _section_scope_violations(
         content: str,
         section_title: str,
     ) -> List[Dict[str, Any]]:
-        """处理 章节 scope violations 相关逻辑。
-
-        参数:
-            content: 待处理内容。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict[str, Any]]
-        """
+        """保留的章节越界检查扩展点；当前版本不在 Prompt 服务内重复判定。"""
         return []
 
-    # 阅读注释（函数）：渲染 章节 提示词。
     def render_section_prompt(
         self,
         shared_state: SharedStateSchema,
@@ -174,23 +134,11 @@ class SectionPromptService:
         citations: List[CitationSchema],
         previous_sections: List[SchemeSectionSchema],
     ) -> PromptRenderResultSchema:
-        """渲染 章节 提示词。
+        """构造上下文包并渲染一次章节生成 Prompt。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            PromptRenderResultSchema
-
-        阅读提示:
-            主要直接调用：self.target_section_chars, self.context_policy.build_request, self.section_generation_contract, self.context_manager.build, self.prompt_manager.exists, self.prompt_manager.render, PromptRenderResultSchema, dict。
+        先由 Context Policy 产生候选块，再用 ModelGateway 的角色能力收紧输入窗口和输出
+        预留量。模板存在时执行严格变量渲染；模板缺失时使用代码内最小 fallback。无论哪种
+        路径，结果都携带完整上下文包和哈希，供 Model Trace 与 DataCapture 关联。
         """
         target_chars = self.target_section_chars(project_input)
         build_request = self.context_policy.build_request(

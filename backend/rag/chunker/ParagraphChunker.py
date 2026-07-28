@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：ParagraphChunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-# chunker/paragraph_chunker.py
+"""按空行识别自然段，并把相邻短段合并到字符上限的平面 Chunker。
+
+该策略适合政策、报告和说明类文档。它不拆分单个超长段落，也不实现 overlap；需要严格
+Token 上限或超长段落兜底时应使用 RecursiveChunker 或结构化父子分块插件。
+"""
 
 import re
 from typing import List, Dict
@@ -11,26 +11,11 @@ from rag.chunker.base_chunker import BaseChunker
 from rag.schema.Chunk_Schema import build_chunk
 
 
-# 阅读注释（类）：封装 paragraph chunker，集中封装相关状态、依赖和行为。
 class ParagraphChunker(BaseChunker):
-    """
-    段落切分。
-    适合政策、报告、说明文档、普通长文档。
-    """
+    """以段落为不可分割单元，顺序合并到 ``chunk_size`` 字符。"""
 
-    # 阅读注释（函数）：处理 文本块 文档 相关逻辑。
     def chunk_document(self, document: Dict) -> List[Dict]:
-        """处理 文本块 文档 相关逻辑。
-
-        参数:
-            document: 文档，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict]
-
-        阅读提示:
-            主要直接调用：self._split_paragraphs, self._merge_short_paragraphs, enumerate, build_chunk, chunks.append。
-        """
+        """拆分段落、合并短段，并按原顺序构造旧 Document 风格 Chunk。"""
         text = document["text"]
 
         paragraphs = self._split_paragraphs(text)
@@ -49,35 +34,13 @@ class ParagraphChunker(BaseChunker):
 
         return chunks
 
-    # 阅读注释（函数）：处理 split paragraphs 相关逻辑。
     def _split_paragraphs(self, text: str) -> List[str]:
-        """处理 split paragraphs 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：re.split, p.strip。
-        """
+        """把一个或多个空白行视为段落边界，并丢弃空段。"""
         paragraphs = re.split(r"\n\s*\n", text)
         return [p.strip() for p in paragraphs if p.strip()]
 
-    # 阅读注释（函数）：合并 short paragraphs。
     def _merge_short_paragraphs(self, paragraphs: List[str]) -> List[str]:
-        """合并 short paragraphs。
-
-        参数:
-            paragraphs: paragraphs，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：len, merged.append。
-        """
+        """贪心合并连续段落；加入下一段会超限时提交当前 Buffer。"""
         merged = []
         buffer = ""
 

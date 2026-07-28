@@ -1,8 +1,5 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：ExperimentRuntime、ParentChildExperimentRuntime、DefaultExperimentRuntimeFactory。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Runtime adapter that executes one static retrieval specification."""
+"""把一份静态检索规范装配成可执行的策略评测运行时。"""
+
 from __future__ import annotations
 
 import gc
@@ -15,49 +12,63 @@ from rag.runtime.retrieval_runtime import RetrievalRuntime, RetrievalRuntimeConf
 from .schemas import ExperimentConfig, RAGEvalSample
 
 
-# 阅读注释（类）：封装 experiment 运行时，负责驱动实际运行流程并维护执行状态。
 class ExperimentRuntime(Protocol):
-    """封装 experiment 运行时，负责驱动实际运行流程并维护执行状态。"""
-    # 阅读注释（函数）：执行 ExperimentRuntime 的主流程。
-    def run(self, sample: RAGEvalSample, experiment: ExperimentConfig) -> dict[str, Any]: ...
-    # 阅读注释（函数）：处理 元数据 相关逻辑。
-    def metadata(self) -> dict[str, Any]: ...
-    # 阅读注释（函数）：释放 ExperimentRuntime 持有的资源。
-    def close(self) -> None: ...
+    """定义策略评测 Runner 所依赖的最小运行时端口。"""
+
+    def run(
+        self,
+        sample: RAGEvalSample,
+        experiment: ExperimentConfig,
+    ) -> dict[str, Any]:
+        """执行一个样本并返回完整运行记录。"""
+        ...
+
+    def metadata(self) -> dict[str, Any]:
+        """返回本运行时实际使用的静态配置和组件血缘。"""
+        ...
+
+    def close(self) -> None:
+        """释放模型、数据库连接和设备缓存等资源。"""
+        ...
 
 
-# 阅读注释（类）：封装 父块 子块 experiment 运行时，负责驱动实际运行流程并维护执行状态。
 class ParentChildExperimentRuntime:
-    """封装 父块 子块 experiment 运行时，负责驱动实际运行流程并维护执行状态。"""
-    # 阅读注释（函数）：初始化 ParentChildExperimentRuntime，保存运行所需的依赖、配置或状态。
+    """基于生产 ``RetrievalRuntime`` 执行父子块策略实验。
+
+    构造阶段解析并加载静态检索规范，但底层资源仍由 ``RetrievalRuntime`` 按其自身
+    生命周期延迟初始化。每个实验实例绑定一份静态规范，避免样本之间动态切换组件
+    导致配置和实际执行不一致。
+    """
+
     def __init__(
         self,
         *,
         project_root: Path,
         experiment: ExperimentConfig,
     ) -> None:
-        """初始化 ParentChildExperimentRuntime，保存运行所需的依赖、配置或状态。
+        """解析实验静态规范并创建生产检索运行时。
 
-        参数:
-            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
-            experiment: experiment，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：project_root.resolve, resolve_path, PipelineConfigLoader, load, RAGTool, RAGToolConfig, str。
+        Args:
+            project_root: 用于解析相对配置路径的项目根目录。
+            experiment: 当前实验配置。
         """
+
+        # 第一步：固定绝对项目根目录和实验对象，后续样本共享同一实验上下文。
         self.project_root = project_root.resolve()
         self.experiment = experiment
-        self.spec_path = StaticRetrievalSpecLoader().resolve_path(
+
+        # 第二步：按生产规则解析并加载静态检索规范。
+        spec_loader = StaticRetrievalSpecLoader()
+        self.spec_path = spec_loader.resolve_path(
             experiment.static_retrieval_spec_file,
             project_root=self.project_root,
         )
-        self.spec = StaticRetrievalSpecLoader().load(
+        self.spec = spec_loader.load(
             self.spec_path,
             project_root=self.project_root,
         )
+
+        # 第三步：把同一规范路径交给生产 RetrievalRuntime，避免评测层复制装配逻辑。
         self.runtime = RetrievalRuntime(
             RetrievalRuntimeConfig(
                 static_retrieval_spec_file=str(self.spec_path),
@@ -65,20 +76,22 @@ class ParentChildExperimentRuntime:
             project_root=self.project_root,
         )
 
-    # 阅读注释（函数）：执行 ParentChildExperimentRuntime 的主流程。
-    def run(self, sample: RAGEvalSample, experiment: ExperimentConfig) -> dict[str, Any]:
-        """执行 ParentChildExperimentRuntime 的主流程。
+    def run(
+        self,
+        sample: RAGEvalSample,
+        experiment: ExperimentConfig,
+    ) -> dict[str, Any]:
+        """使用当前实验配置执行一条黄金样本。
 
-        参数:
-            sample: sample，具体约束请结合类型标注和调用方确认。
-            experiment: experiment，具体约束请结合类型标注和调用方确认。
+        Args:
+            sample: 包含查询和黄金文档/块/关键词的评测样本。
+            experiment: 当前实验配置；通常与构造时保存的对象相同。
 
-        返回:
-            dict[str, Any]
-
-        阅读提示:
-            主要直接调用：bool, experiment.runtime_params.get, payload.update, experiment.runtime_params.items, startswith, str, self.tool.run, response.get。
+        Returns:
+            生产检索运行时的完整响应，并额外暴露 ``runtime_metadata`` 便于报告聚合。
         """
+
+        # 第一步：构造评测专用请求，显式传递黄金标签、top_k 和完整记录开关。
         payload: dict[str, Any] = {
             "query": sample.query,
             "expected_doc_ids": sample.expected_doc_ids,
@@ -100,9 +113,13 @@ class ParentChildExperimentRuntime:
                 "retrieval_plan_overrides": dict(
                     experiment.retrieval_plan_overrides
                 ),
-                "warmup": bool(experiment.runtime_params.get("_experiment_warmup", False)),
+                "warmup": bool(
+                    experiment.runtime_params.get("_experiment_warmup", False)
+                ),
             },
         }
+
+        # 第二步：注入非私有 runtime_params；下划线前缀只用于评测控制，不下传生产链。
         payload.update(
             {
                 key: value
@@ -110,24 +127,28 @@ class ParentChildExperimentRuntime:
                 if not str(key).startswith("_")
             }
         )
+
+        # 第三步：调用生产检索入口并复制响应，避免直接修改运行时返回对象。
         response = self.runtime.retrieve(payload)
         data = dict(response)
+
+        # 第四步：从完整 run_record 中提取运行时元数据，供实验报告审计实际组件配置。
         data["runtime_metadata"] = dict(
             (response.get("run_record") or {}).get("metadata") or {}
         )
         return data
 
-    # 阅读注释（函数）：处理 元数据 相关逻辑。
     def metadata(self) -> dict[str, Any]:
-        """处理 元数据 相关逻辑。
+        """返回静态规范身份、哈希和实际组件配置。
 
-        返回:
-            dict[str, Any]
-
-        阅读提示:
-            主要直接调用：self.spec.canonical_dict, getattr, str, self.spec.config_hash。
+        在运行时尚未初始化时使用静态规范 canonical 内容；初始化后优先读取运行时
+        已解析的组件元数据，使报告反映真正执行的配置而不是仅反映输入文件。
         """
+
+        # 第一步：以静态规范 canonical 投影作为默认组件配置。
         configured_components = self.spec.canonical_dict()
+
+        # 第二步：若运行时已初始化，优先使用其最终解析后的组件元数据。
         if getattr(self.runtime, "_initialized", False):
             runtime_config = getattr(self.runtime, "config", None)
             configured_components = getattr(
@@ -135,6 +156,8 @@ class ParentChildExperimentRuntime:
                 "static_retrieval_component_metadata",
                 configured_components,
             )
+
+        # 第三步：返回可重复性所需的规范身份、路径、内容哈希和组件详情。
         return {
             "static_spec_id": self.spec.spec_id,
             "static_spec_version": self.spec.spec_version,
@@ -143,18 +166,16 @@ class ParentChildExperimentRuntime:
             "components": configured_components,
         }
 
-    # 阅读注释（函数）：释放 ParentChildExperimentRuntime 持有的资源。
     def close(self) -> None:
-        """释放 ParentChildExperimentRuntime 持有的资源。
+        """关闭检索运行时并尽力释放 Python 与 CUDA 缓存。"""
 
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：gc.collect, torch.cuda.is_available, torch.cuda.empty_cache。
-        """
+        # 第一步：由生产运行时关闭其持有的索引、模型和连接资源。
         self.runtime.close()
+
+        # 第二步：触发 Python 垃圾回收，尽早释放大对象引用。
         gc.collect()
+
+        # 第三步：在 PyTorch 可用且存在 CUDA 设备时清空缓存；缺少依赖不影响关闭流程。
         try:
             import torch
 
@@ -164,28 +185,18 @@ class ParentChildExperimentRuntime:
             pass
 
 
-# 阅读注释（类）：封装 default experiment 运行时 工厂，负责根据配置装配并返回运行实例。
 class DefaultExperimentRuntimeFactory:
-    """封装 default experiment 运行时 工厂，负责根据配置装配并返回运行实例。"""
-    # 阅读注释（函数）：构建 DefaultExperimentRuntimeFactory。
+    """为每个实验构建默认父子块检索运行时。"""
+
     def build(
         self,
         *,
         project_root: Path,
         experiment: ExperimentConfig,
     ) -> ExperimentRuntime:
-        """构建 DefaultExperimentRuntimeFactory。
+        """根据项目根目录和实验配置创建独立运行时实例。"""
 
-        参数:
-            project_root: 项目 root，具体约束请结合类型标注和调用方确认。
-            experiment: experiment，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ExperimentRuntime
-
-        阅读提示:
-            主要直接调用：ParentChildExperimentRuntime。
-        """
+        # 每个实验独立持有运行时，便于在实验结束后完整关闭并隔离资源。
         return ParentChildExperimentRuntime(
             project_root=project_root,
             experiment=experiment,

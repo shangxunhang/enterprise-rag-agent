@@ -25,6 +25,7 @@ class RuntimeOptions:
     grounded_generation_policy_file: Path = Path(
         "backend/apps/enterprise_document/config/grounded_generation_v1.yaml"
     )
+    section_max_concurrency: int = 1
 
     @classmethod
     def resolve(
@@ -79,6 +80,17 @@ class RuntimeOptions:
             if raw_generation_policy.is_absolute()
             else project_root / raw_generation_policy
         ).resolve()
+        raw_section_concurrency = os.getenv("SECTION_MAX_CONCURRENCY", "1")
+        try:
+            section_max_concurrency = int(raw_section_concurrency)
+        except ValueError as exc:
+            raise ValueError(
+                "SECTION_MAX_CONCURRENCY must be an integer from 1 to 32"
+            ) from exc
+        if not 1 <= section_max_concurrency <= 32:
+            raise ValueError(
+                "SECTION_MAX_CONCURRENCY must be an integer from 1 to 32"
+            )
         return cls(
             use_real_rag=_to_bool(os.getenv("USE_REAL_RAG_TOOL", "true")),
             rag_project_root=Path(
@@ -100,4 +112,5 @@ class RuntimeOptions:
             rag_intent_policy_file=intent_policy_file,
             rag_retrieval_gate_policy_file=retrieval_gate_policy_file,
             grounded_generation_policy_file=grounded_generation_policy_file,
+            section_max_concurrency=section_max_concurrency,
         )

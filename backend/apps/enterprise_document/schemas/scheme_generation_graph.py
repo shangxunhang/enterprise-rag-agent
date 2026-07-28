@@ -30,6 +30,11 @@ from apps.enterprise_document.schemas.table_agent_schema import (
 from schemas.agent import AgentResultSchema
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
+from schemas.human_review import (
+    HumanReviewDecisionSchema,
+    HumanReviewRequestSchema,
+    HumanReviewStatus,
+)
 from schemas.rag import RAGContextSchema, RetrievedChunkSchema
 from schemas.status import ExecutionStatus
 
@@ -135,6 +140,11 @@ class SchemeGenerationGraphPayloadSchema(SchemaBase):
     review_requested_at: str | None = None
     review_resumed_at: str | None = None
     resume_count: int = 0
+    human_review_required: bool = False
+    human_review_recommended: bool = False
+    human_review_status: HumanReviewStatus = HumanReviewStatus.NOT_REQUIRED
+    human_review_request: HumanReviewRequestSchema | None = None
+    human_review_decision: HumanReviewDecisionSchema | None = None
 
 
 class SchemeGenerationGraphState(LangGraphRuntimeState, total=False):

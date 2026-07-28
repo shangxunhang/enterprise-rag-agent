@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：Grounding 的 LLM 修复边界。
-# 只负责引用标记修复和 evidence-only 重生成；确定性绑定与支持性判断由 CitationService 负责。
-# =============================================================================
-"""LLM-backed grounding repair for generated scheme sections."""
+"""章节 Grounding 的受约束 LLM 修复边界。
+
+模型仅允许执行两类操作：不改正文地补充引用标记，或只依据 ProjectInput 与显式证据重写
+失败章节。引用绑定、支持性评分和是否接受候选文本仍由确定性 ``CitationService`` 决定。
+"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .prompt_service import SectionPromptService
 
 
 class GroundingRepairService:
-    """Own only LLM-backed citation repair and evidence-grounded regeneration."""
+    """隔离所有需要模型参与的引用修复和基于证据重生成。"""
 
     def __init__(
         self,
@@ -44,7 +44,11 @@ class GroundingRepairService:
         project_input: ProjectInputSchema,
         citations: List[CitationSchema],
     ) -> Tuple[str, Optional[ModelResponseSchema]]:
-        """Insert citation markers without allowing the repair call to rewrite prose."""
+        """请求模型只插入引用标记，并用确定性规则拒绝正文改写。
+
+        候选必须形成至少一个受支持绑定；移除已知标记后与原文相似度低于 0.97 时视为
+        模型越权改写，返回原文而不接受候选。
+        """
 
         if not content.strip() or not citations:
             return content, None
@@ -124,7 +128,11 @@ class GroundingRepairService:
         project_input: ProjectInputSchema,
         citations: List[CitationSchema],
     ) -> ModelResponseSchema:
-        """Rewrite one failed section using only explicit evidence and project input."""
+        """只使用显式证据和 ProjectInput 重写未通过 Claim-Evidence 校验的章节。
+
+        未被证据覆盖的内容必须降级为待补充或需项目方确认，不能继承原文中的无依据资源、
+        指标、安全措施或承诺。
+        """
 
         prompt = (
             f"“{section_title}”章节未通过 Claim-Evidence 校验，请重写该章节。\n"
