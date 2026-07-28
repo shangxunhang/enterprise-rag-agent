@@ -30,15 +30,21 @@ cleaned_text_units.jsonl
 
 建议同时保留 `title`、`section`、`page_start`、`page_end`、`source_uri`、`cleaning_version` 等字段，供引用追溯使用。
 
-## 安装缺失依赖
+## 准备宿主依赖
 
-在现有 Conda 环境中执行：
+`pyproject.toml` 是唯一人工维护的 Python 依赖声明，`uv.lock` 是完整锁
+文件。CI/普通应用同步只安装 `test,providers`，不会安装 `local-model`。
 
 ```powershell
-pip install -r requirements-step-11-2.txt
+uv lock --check
+uv sync --frozen --extra local-rag
 ```
 
-不要让 `pip` 覆盖当前可用的 CUDA PyTorch；如果依赖解析准备更换 PyTorch，应停止安装并单独安装 `pymilvus`、`sentence-transformers`。
+CUDA PyTorch 和 GPU 驱动属于宿主运行时前置条件，不由普通 uv extras
+替换。真实本地模型验收前，应在专用 Conda 环境中单独准备已验证的 CUDA
+PyTorch 与 `sentence-transformers`，再运行 `scripts/check_environment.py
+--require-local-rag --require-local-model`。如果任何安装计划准备替换当前
+CUDA wheel，应停止并先核对宿主运行时版本。
 
 ## 配置检查
 
