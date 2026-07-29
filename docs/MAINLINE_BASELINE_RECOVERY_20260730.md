@@ -94,3 +94,113 @@ Self-RAG 生成支持性检查，插件只更新导入路径；现有 `RagQualit
 
 运行产生的 checkpoint、trace、报告及其他 `.tmp` 文件仅作为本地证据，
 不纳入版本控制。
+
+## 第 0.5 轮：生产主链成功基线
+
+### 原失败证据与调用链
+
+上轮 trace 的 event sequence 9 是 `rag_finished/failed`，sequence 10 是
+`retrieve_document_evidence/failed`，错误类型为 `ImportError`，消息为：
+
+```text
+cannot import name 'ParentChildChunkResult'
+from 'rag.chunker.ChildParentChunker'
+```
+
+该 trace 的 `stack_trace` 字段实际为 `null`。通过同一生产导入路径复现的 traceback
+和源码调用关系为：
+
+```text
+LangGraph node: retrieve_document_evidence
+→ SchemeGenerationStageService.retrieve_document_evidence
+→ SchemeEvidenceService.retrieve
+→ RAGServicePort
+→ TracedRAGService / RAGService
+→ RetrievalRuntime.retrieve / initialize
+→ ParentChildRuntimeFactory.build
+→ rag.registry.default_registrations
+→ rag.registry.component_registry
+→ rag.ports.__init__
+→ rag.ports.chunking
+→ rag.chunker.ChildParentChunker（缺少 ParentChildChunkResult）
+```
+
+该问题属于代码接口漂移，不是 checkpoint schema、索引缺失、数据输入或可预期业务
+失败。`c7171b7` 将 `ChildParentChunker.py` 替换为另一套接口，删除了
+`ParentChildChunkResult`、旧构造参数和 `chunk_records()`，但 port、plugin 和测试
+仍按原契约调用。仓库中没有等价新类型。
+
+历史契约的定义位置为具体 chunker，字段及构造参数均为
+`parents: list[dict]`、`children: list[dict]`。使用方包括 `ChunkerPort`、四种
+chunker plugin 和 `OfflineIndexBuilder`；adapter 必须返回可序列化的
+`parent_chunk_v1` / `child_chunk_v1`，测试还要求父子 ID 一致、时间确定且重复运行
+结果相同。
+
+### 语义修复
+
+- 将 `ParentChildChunkResult` 归属到 `rag.ports.chunking`，并从历史具体模块重新
+  导出，避免 port 反向依赖 adapter。
+- 为现有 `ChildParentChunker` 补回 plugin 已经依赖的构造参数、
+  `chunk_records()` 和带字符偏移的窗口接口；保留现有 `chunk_document(s)`。
+- 恢复仍被在线/离线生产模块引用的 chunk、vector-index 和 retrieval-result schema
+  兼容契约。没有使用 `Any`、空占位类型或静默 ImportError 降级。
+- `c7171b7` 同时删除了在线检索 assessor 使用的 `CRAGJudge`。该能力恢复到独立
+  `rag.judge.crag_judge`，旧导入路径只重新导出同一实现；Self-RAG 修复未改写。
+
+修复过程中按真实导入顺序继续暴露并处理了
+`RETRIEVAL_RESULT_TEMPLATE`、企业 chunk builder 和 `CRAGJudge` 漂移；这些都发生在
+`ParentChildRuntimeFactory.build` 内，属于同一检索节点的直接阻断。
+
+### Provider 边界
+
+真实模式运行
+`baseline_success_20260730_05a` 已越过接口漂移，但在 runtime 初始化时因当前
+`.venv` 缺少 `sentence_transformers` 失败。环境同时缺少 `torch`、
+`transformers` 和 `pymilvus`；active manifest 是真实模型 embedding +
+Milvus Lite，因此不能使用 hash query 冒充同一索引的真实召回。
+
+成功 baseline 使用仓库正式支持的 `scripts/run_demo.py --fake-runtime`。替换边界仅为
+外部 `FakeRAGService/FakeRAGTool` 和 `fake_llm` provider；仍执行现有 Supervisor、
+生产 LangGraph、GraphState、质量门禁、checkpoint、trace 和 artifact 持久化。
+未进入 Standalone Runtime 或 Multi-Agent V1。
+
+### 成功 baseline evidence
+
+| 项目 | 记录 |
+| --- | --- |
+| 入口 | `.venv\Scripts\python.exe scripts/run_demo.py --fake-runtime --user-input "请生成企业知识库与RAG平台建设方案" --run-id baseline_success_20260730_05b --output-root .tmp\mainline-baseline-success-20260730-05b` |
+| task_id | `task_baseline_success_20260730_05b` |
+| run_id | `baseline_success_20260730_05b` |
+| workflow namespace | `scheme_generation_v2:v2.0` |
+| checkpoint thread_id | `baseline_success_20260730_05b` |
+| 最终状态 | `partial_success`（仓库正式成功类终态） |
+| 节点顺序 | `normalize_project_input` → `plan_document` → `retrieve_document_evidence` → `initialize_generation` → `execute_sections` → `assemble_document` → `evaluate_document_gate` → `persist_deliverable` → `finalize_workflow_result` |
+| 检索结果 | document retrieval 成功；1 chunk、1 canonical citation |
+| sections | 8；3 success、5 partial_success |
+| trace | `D:\MyCode\rag-agent\.tmp\mainline-baseline-success-20260730-05b\runs\baseline_success_20260730_05b_trace.jsonl` |
+| checkpoint | `D:\MyCode\rag-agent\.tmp\mainline-baseline-success-20260730-05b\runs\langgraph_checkpoints.sqlite3` |
+| artifact | `D:\MyCode\rag-agent\.tmp\mainline-baseline-success-20260730-05b\runs\baseline_success_20260730_05b_deliverable.md` |
+| e2e report | `D:\MyCode\rag-agent\.tmp\mainline-baseline-success-20260730-05b\runs\baseline_success_20260730_05b_e2e_report.json` |
+| trace events | 98 |
+| artifact lifecycle | `generated_draft=true`、`deliverable_final_result=true` |
+
+最终报告可读取 8 个 section 的状态、citation count 和 evidence scope；`建设内容`、
+`技术方案`、`安全设计` 各绑定 canonical citation `C1`。Hard Gate 通过，五个章节
+因确定性 fixture 的 Self-RAG 告警形成 `partial_success`，没有吞掉技术异常或强制
+改写终态。
+
+### 验证矩阵
+
+- 顶层生产图 import：`TOP_LEVEL_IMPORT_OK`。
+- Self-RAG baseline recovery：`6 passed`。
+- 原先被阻断的两条定向测试：
+  - `test_quality_checker_exposes_deterministic_primary_without_degradation`
+  - `test_self_rag_llm_failure_exposes_degraded_deterministic_fallback`
+  - 结果：`2 passed`。
+- ParentChild/offline index 全文件：`18 passed`。
+- 新增 production retrieval baseline 回归：`4 passed`。
+- 检索节点直接相关五个测试文件：`49 passed`。
+- 指定五组生产主链测试：`39 passed in 58.32s`。
+
+默认旧 checkpoint 数据库仍由现有 runtime 以明确的 legacy schema 错误拒绝；本轮
+未删除、覆盖或迁移它。成功 baseline 使用上述全新 `.tmp` checkpoint。

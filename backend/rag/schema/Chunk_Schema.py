@@ -6,6 +6,8 @@
 """
 
 from datetime import datetime
+import hashlib
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,7 +20,102 @@ def _now_iso() -> str:
     return datetime.now().isoformat()
 
 
-def build_chunk(
+def build_chunk(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Build modern chunks and both historical Mini-RAG call shapes."""
+
+    if args and isinstance(args[0], dict):
+        kwargs = {
+            **kwargs,
+            "doc": args[0],
+            "chunk_text": (
+                args[1] if len(args) > 1 else kwargs.get("chunk_text", "")
+            ),
+            "chunk_index": (
+                args[2] if len(args) > 2 else kwargs.get("chunk_index", 0)
+            ),
+        }
+    if "doc" in kwargs:
+        document = dict(kwargs["doc"])
+        return _build_legacy_chunk(
+            doc_id=str(document.get("doc_id") or ""),
+            text=str(kwargs.get("chunk_text") or ""),
+            index=int(kwargs.get("chunk_index") or 0),
+            metadata=dict(document.get("metadata") or {}),
+            chunk_type=str(kwargs.get("chunk_type") or "fixed"),
+            page=kwargs.get("page"),
+            section=kwargs.get("section"),
+            section_path=kwargs.get("section_path"),
+            parent_chunk_id=kwargs.get("parent_chunk_id"),
+            start_char=kwargs.get("start_char"),
+            end_char=kwargs.get("end_char"),
+            heading_level=kwargs.get("heading_level"),
+            token_count=kwargs.get("token_count"),
+            extra=kwargs.get("extra"),
+        )
+    if "idx" in kwargs or "doc_metadata" in kwargs:
+        return _build_legacy_chunk(
+            doc_id=str(kwargs.get("doc_id") or ""),
+            text=str(kwargs.get("text") or ""),
+            index=int(kwargs.get("idx") or 0),
+            metadata=dict(kwargs.get("doc_metadata") or {}),
+            chunk_type=str(kwargs.get("chunk_type") or "fixed"),
+            page=kwargs.get("page"),
+            section=kwargs.get("section"),
+            section_path=kwargs.get("section_path"),
+            parent_chunk_id=kwargs.get("parent_chunk_id"),
+            start_char=kwargs.get("start_char"),
+            end_char=kwargs.get("end_char"),
+            heading_level=kwargs.get("heading_level"),
+            token_count=kwargs.get("token_count"),
+            extra=kwargs.get("extra"),
+        )
+    return _build_modern_chunk(*args, **kwargs)
+
+
+def _build_legacy_chunk(
+    *,
+    doc_id: str,
+    text: str,
+    index: int,
+    metadata: Dict[str, Any],
+    chunk_type: str,
+    page: Optional[int] = None,
+    section: Optional[str] = None,
+    section_path: Any = None,
+    parent_chunk_id: Optional[str] = None,
+    start_char: Optional[int] = None,
+    end_char: Optional[int] = None,
+    heading_level: Optional[int] = None,
+    token_count: Optional[int] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    output_metadata = deepcopy(CHUNK_METADATA_TEMPLATE)
+    output_metadata.update(metadata)
+    output_metadata.update(
+        {
+            "chunk_index": index,
+            "page": page,
+            "section": section,
+            "section_path": section_path,
+            "parent_chunk_id": parent_chunk_id,
+            "chunk_type": chunk_type,
+            "start_char": start_char,
+            "end_char": end_char,
+            "heading_level": heading_level,
+            "token_count": token_count,
+            "char_count": len(text),
+            "extra": dict(extra or {}),
+        }
+    )
+    return {
+        "chunk_id": f"{doc_id}_chunk_{index:04d}",
+        "doc_id": doc_id,
+        "text": text,
+        "metadata": output_metadata,
+    }
+
+
+def _build_modern_chunk(
     chunk_id: str,
     doc_id: str,
     text: str,
@@ -221,5 +318,196 @@ def build_child_chunk(
         "language": language,
         "status": status,
         "security_level": security_level,
+        "extra": dict(extra or {}),
+    }
+
+
+def _enterprise_text_hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def build_chunk_v1(
+    *,
+    chunk_id: str,
+    doc_id: str,
+    text: str,
+    tenant_id: str = "default",
+    kb_id: str = "default",
+    file_id: Optional[str] = None,
+    source_type: str = DEFAULT_SOURCE_TYPE,
+    source_unit_ids: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    section: Optional[str] = None,
+    section_level: Optional[int] = None,
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None,
+    chunk_index: int = 0,
+    chunk_strategy: Optional[str] = None,
+    cleaning_version: str = DEFAULT_CLEANING_VERSION,
+    chunk_version: str = DEFAULT_CHUNK_VERSION,
+    token_count: Optional[int] = None,
+    created_at: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the enterprise flat-chunk contract consumed by offline indexing."""
+
+    value = text or ""
+    return {
+        "schema_version": DEFAULT_CHUNK_SCHEMA_VERSION,
+        "chunk_id": chunk_id,
+        "tenant_id": tenant_id or "default",
+        "kb_id": kb_id or "default",
+        "file_id": file_id,
+        "doc_id": doc_id,
+        "source_type": source_type or DEFAULT_SOURCE_TYPE,
+        "text": value,
+        "text_length": len(value),
+        "token_count": token_count if token_count is not None else len(value),
+        "text_hash": _enterprise_text_hash(value),
+        "source_unit_ids": list(source_unit_ids or []),
+        "title": title,
+        "section": section,
+        "section_level": section_level,
+        "page_start": page_start,
+        "page_end": page_end,
+        "chunk_index": chunk_index,
+        "chunk_strategy": chunk_strategy or DEFAULT_CHUNK_STRATEGY,
+        "cleaning_version": cleaning_version or DEFAULT_CLEANING_VERSION,
+        "chunk_version": chunk_version or DEFAULT_CHUNK_VERSION,
+        "created_at": created_at or current_time_str(),
+        "extra": dict(extra or {}),
+    }
+
+
+def build_parent_chunk_v1(
+    *,
+    parent_chunk_id: str,
+    doc_id: str,
+    text: str,
+    tenant_id: str = "default",
+    kb_id: str = "default",
+    file_id: Optional[str] = None,
+    source_type: str = DEFAULT_SOURCE_TYPE,
+    source_unit_ids: Optional[List[str]] = None,
+    child_chunk_ids: Optional[List[str]] = None,
+    child_count: Optional[int] = None,
+    title: Optional[str] = None,
+    section: Optional[str] = None,
+    section_level: Optional[int] = None,
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None,
+    parent_chunk_index: int = 0,
+    parent_chunk_strategy: Optional[str] = None,
+    cleaning_version: str = DEFAULT_CLEANING_VERSION,
+    parent_chunk_version: str = DEFAULT_PARENT_CHUNK_VERSION,
+    token_count: Optional[int] = None,
+    created_at: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the enterprise parent-chunk contract."""
+
+    value = text or ""
+    child_ids = list(child_chunk_ids or [])
+    return {
+        "schema_version": DEFAULT_PARENT_CHUNK_SCHEMA_VERSION,
+        "parent_chunk_id": parent_chunk_id,
+        "tenant_id": tenant_id or "default",
+        "kb_id": kb_id or "default",
+        "file_id": file_id,
+        "doc_id": doc_id,
+        "source_type": source_type or DEFAULT_SOURCE_TYPE,
+        "text": value,
+        "text_length": len(value),
+        "token_count": token_count if token_count is not None else len(value),
+        "text_hash": _enterprise_text_hash(value),
+        "source_unit_ids": list(source_unit_ids or []),
+        "child_chunk_ids": child_ids,
+        "child_count": child_count if child_count is not None else len(child_ids),
+        "title": title,
+        "section": section,
+        "section_level": section_level,
+        "page_start": page_start,
+        "page_end": page_end,
+        "parent_chunk_index": parent_chunk_index,
+        "parent_chunk_strategy": (
+            parent_chunk_strategy or DEFAULT_PARENT_CHUNK_STRATEGY
+        ),
+        "cleaning_version": cleaning_version or DEFAULT_CLEANING_VERSION,
+        "parent_chunk_version": (
+            parent_chunk_version or DEFAULT_PARENT_CHUNK_VERSION
+        ),
+        "created_at": created_at or current_time_str(),
+        "updated_at": None,
+        "is_active": True,
+        "extra": dict(extra or {}),
+    }
+
+
+def build_child_chunk_v1(
+    *,
+    child_chunk_id: str,
+    parent_chunk_id: str,
+    doc_id: str,
+    text: str,
+    tenant_id: str = "default",
+    kb_id: str = "default",
+    file_id: Optional[str] = None,
+    source_type: str = DEFAULT_SOURCE_TYPE,
+    source_unit_ids: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    section: Optional[str] = None,
+    section_level: Optional[int] = None,
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None,
+    child_chunk_index: int = 0,
+    child_index_in_parent: int = 0,
+    child_chunk_strategy: Optional[str] = None,
+    char_start_in_parent: Optional[int] = None,
+    char_end_in_parent: Optional[int] = None,
+    cleaning_version: str = DEFAULT_CLEANING_VERSION,
+    parent_chunk_version: str = DEFAULT_PARENT_CHUNK_VERSION,
+    child_chunk_version: str = DEFAULT_CHILD_CHUNK_VERSION,
+    token_count: Optional[int] = None,
+    created_at: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the enterprise child-chunk contract."""
+
+    value = text or ""
+    return {
+        "schema_version": DEFAULT_CHILD_CHUNK_SCHEMA_VERSION,
+        "chunk_id": child_chunk_id,
+        "child_chunk_id": child_chunk_id,
+        "parent_chunk_id": parent_chunk_id,
+        "tenant_id": tenant_id or "default",
+        "kb_id": kb_id or "default",
+        "file_id": file_id,
+        "doc_id": doc_id,
+        "source_type": source_type or DEFAULT_SOURCE_TYPE,
+        "text": value,
+        "text_length": len(value),
+        "token_count": token_count if token_count is not None else len(value),
+        "text_hash": _enterprise_text_hash(value),
+        "source_unit_ids": list(source_unit_ids or []),
+        "title": title,
+        "section": section,
+        "section_level": section_level,
+        "page_start": page_start,
+        "page_end": page_end,
+        "child_chunk_index": child_chunk_index,
+        "child_index_in_parent": child_index_in_parent,
+        "child_chunk_strategy": (
+            child_chunk_strategy or DEFAULT_CHILD_CHUNK_STRATEGY
+        ),
+        "char_start_in_parent": char_start_in_parent,
+        "char_end_in_parent": char_end_in_parent,
+        "cleaning_version": cleaning_version or DEFAULT_CLEANING_VERSION,
+        "parent_chunk_version": (
+            parent_chunk_version or DEFAULT_PARENT_CHUNK_VERSION
+        ),
+        "child_chunk_version": child_chunk_version or DEFAULT_CHILD_CHUNK_VERSION,
+        "created_at": created_at or current_time_str(),
+        "updated_at": None,
+        "is_active": True,
         "extra": dict(extra or {}),
     }

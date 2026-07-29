@@ -5,6 +5,8 @@ Vector Store、Retriever 和 Reranker 写出记录时会引用它们；修改版
 兼容性边界发生变化，应同步提供迁移器或重新构建索引。
 """
 
+from datetime import datetime
+
 # 文档和分块协议版本。
 DEFAULT_DOCUMENT_SCHEMA_VERSION = "document_v1"
 DEFAULT_CHUNK_SCHEMA_VERSION = "chunk_v1"
@@ -71,3 +73,150 @@ DEFAULT_RETRIEVAL_SOURCES = []
 # Schema 扩展字段必须通过 default_factory 创建；该常量只用于历史调用方只读兼容，
 # 新 dataclass/Pydantic 字段不应直接把可变字典作为默认值。
 DEFAULT_EXTRA = {}
+
+# ``c7171b7`` 保留了使用企业父子分块/索引协议的调用方，却误删了它们引用的
+# 版本常量和模板。以下定义是仍在生产 RAG 模块中使用的兼容契约，不是运行时配置。
+DEFAULT_SOURCE_TYPE = "offline"
+DEFAULT_INDEXED_GRANULARITY = "child"
+DEFAULT_CLEANING_VERSION = "cleaning_v1.0"
+DEFAULT_CHUNK_VERSION = "chunk_v1.0"
+DEFAULT_PARENT_CHUNK_VERSION = "parent_chunk_v1.0"
+DEFAULT_CHILD_CHUNK_VERSION = "child_chunk_v1.0"
+DEFAULT_CHUNK_STRATEGY = "rule_based_by_doc_unit_order_v1"
+DEFAULT_PARENT_CHUNK_STRATEGY = "small_to_big_parent_fixed_v1"
+DEFAULT_CHILD_CHUNK_STRATEGY = "small_to_big_child_fixed_v1"
+
+
+def current_time_str() -> str:
+    """Return the historical serialized timestamp format."""
+
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+CHUNK_METADATA_TEMPLATE = {
+    "source": None,
+    "source_path": None,
+    "doc_type": "unknown",
+    "title": None,
+    "chunk_index": None,
+    "page": None,
+    "section": None,
+    "section_path": None,
+    "created_at": None,
+    "updated_at": None,
+    "indexed_at": None,
+    "version": None,
+    "status": DEFAULT_STATUS,
+    "is_latest": True,
+    "department": None,
+    "project_id": None,
+    "project_name": None,
+    "security_level": DEFAULT_SECURITY_LEVEL,
+    "char_count": None,
+    "token_count": None,
+    "extra": {},
+}
+
+RETRIEVAL_RESULT_TEMPLATE = {
+    "rank": None,
+    "score": None,
+    "rerank_score": None,
+    "chunk_id": None,
+    "doc_id": None,
+    "text": "",
+    "metadata": CHUNK_METADATA_TEMPLATE,
+}
+
+RETRIEVAL_RESULT_V2_TEMPLATE = {
+    "schema_version": DEFAULT_RETRIEVAL_RESULT_V2_SCHEMA_VERSION,
+    "rank": None,
+    "score": None,
+    "rerank_score": None,
+    "chunk_id": None,
+    "child_chunk_id": None,
+    "parent_chunk_id": None,
+    "doc_id": None,
+    "matched_granularity": "child",
+    "context_granularity": "parent",
+    "child_text": "",
+    "parent_text": "",
+    "text": "",
+    "title": None,
+    "section": None,
+    "page_start": None,
+    "page_end": None,
+    "child_index_in_parent": None,
+    "source_type": DEFAULT_SOURCE_TYPE,
+    "source_unit_ids": [],
+    "cleaning_version": DEFAULT_CLEANING_VERSION,
+    "parent_chunk_version": DEFAULT_PARENT_CHUNK_VERSION,
+    "child_chunk_version": DEFAULT_CHILD_CHUNK_VERSION,
+    "embedding_model": None,
+    "embedding_version": DEFAULT_EMBEDDING_VERSION,
+    "index_name": None,
+    "vector_db": DEFAULT_VECTOR_DB,
+    "metadata": {},
+    "extra": {},
+}
+
+VECTOR_INDEX_RECORD_V1_TEMPLATE = {
+    "schema_version": DEFAULT_VECTOR_INDEX_RECORD_SCHEMA_VERSION,
+    "chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
+    "doc_id": None,
+    "source_type": DEFAULT_SOURCE_TYPE,
+    "embedding_model": None,
+    "embedding_dim": 0,
+    "index_name": None,
+    "vector_db": DEFAULT_VECTOR_DB,
+    "title": None,
+    "section": None,
+    "page_start": None,
+    "page_end": None,
+    "source_unit_ids": [],
+    "cleaning_version": DEFAULT_CLEANING_VERSION,
+    "chunk_version": DEFAULT_CHUNK_VERSION,
+    "embedding_version": DEFAULT_EMBEDDING_VERSION,
+    "created_at": None,
+    "extra": {},
+}
+
+VECTOR_INDEX_RECORD_V2_TEMPLATE = {
+    "schema_version": DEFAULT_VECTOR_INDEX_RECORD_V2_SCHEMA_VERSION,
+    "vector_id": None,
+    "indexed_chunk_id": None,
+    "chunk_id": None,
+    "child_chunk_id": None,
+    "parent_chunk_id": None,
+    "tenant_id": "default",
+    "kb_id": "default",
+    "file_id": None,
+    "doc_id": None,
+    "source_type": DEFAULT_SOURCE_TYPE,
+    "indexed_granularity": DEFAULT_INDEXED_GRANULARITY,
+    "text_hash": None,
+    "embedding_key": None,
+    "embedding_model": None,
+    "embedding_dim": 0,
+    "embedding_version": DEFAULT_EMBEDDING_VERSION,
+    "index_name": None,
+    "index_version": DEFAULT_INDEX_VERSION,
+    "vector_db": DEFAULT_VECTOR_DB,
+    "title": None,
+    "section": None,
+    "section_level": None,
+    "page_start": None,
+    "page_end": None,
+    "child_index_in_parent": None,
+    "source_unit_ids": [],
+    "cleaning_version": DEFAULT_CLEANING_VERSION,
+    "parent_chunk_version": DEFAULT_PARENT_CHUNK_VERSION,
+    "child_chunk_version": DEFAULT_CHILD_CHUNK_VERSION,
+    "is_active": True,
+    "created_at": None,
+    "updated_at": None,
+    "deleted_at": None,
+    "extra": {},
+}

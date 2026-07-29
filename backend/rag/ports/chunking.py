@@ -1,9 +1,16 @@
 """离线父子分块构建的稳定端口。"""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable, Protocol, runtime_checkable
 
-from rag.chunker.ChildParentChunker import ParentChildChunkResult
+
+@dataclass
+class ParentChildChunkResult:
+    """父子分块端口的稳定返回值。"""
+
+    parents: list[dict[str, Any]]
+    children: list[dict[str, Any]]
 
 
 @runtime_checkable

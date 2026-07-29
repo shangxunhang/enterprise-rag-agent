@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Iterable
 
-from rag.judge.rag_quality_judge import CRAGJudge
+from rag.judge.crag_judge import CRAGJudge
 from rag.ports.quality import EvidenceAssessment, EvidenceJudgement
 
 

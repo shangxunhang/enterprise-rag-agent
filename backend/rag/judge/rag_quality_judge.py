@@ -529,3 +529,8 @@ class RagQualityJudge:
             "keyword_hit_good": self.keyword_hit_good,
             "lexical_overlap_good": self.lexical_overlap_good,
         }
+
+
+# Historical import compatibility for callers that used the combined judge
+# module before retrieval and generation quality responsibilities were split.
+from rag.judge.crag_judge import CRAGJudge, CRAGJudgeResult

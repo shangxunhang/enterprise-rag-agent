@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Iterable, Sequence
 
-from rag.chunker.ChildParentChunker import ChildParentChunker, ParentChildChunkResult
+from rag.chunker.ChildParentChunker import ChildParentChunker
 from rag.chunker.FixedSizeChunker import FixedSizeChunker
 from rag.chunker.HeadingChunker import HeadingChunker
 from rag.chunker.ParagraphChunker import ParagraphChunker
@@ -21,6 +21,7 @@ from rag.configs.SchemaConfig import (
     DEFAULT_PARENT_CHUNK_VERSION,
     DEFAULT_SOURCE_TYPE,
 )
+from rag.ports.chunking import ParentChildChunkResult
 from rag.schema.Chunk_Schema import build_child_chunk_v1, build_parent_chunk_v1
 from rag.util.text_utils import unique_keep_order
 
