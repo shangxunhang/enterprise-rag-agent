@@ -53,6 +53,7 @@ class ToolGateway:
             "material.read",
             "excel.fact.query",
             "evidence.filter",
+            "knowledge.retrieve",
         },
         AgentRole.WRITER: {
             "excel.fact.query",

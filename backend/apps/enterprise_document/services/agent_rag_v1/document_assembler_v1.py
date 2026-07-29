@@ -66,7 +66,9 @@ class MultiAgentDocumentAssembler:
                 ).decode("utf-8")
                 lines.extend([content.strip(), ""])
             if section.execution.status == SectionStatus.PARTIALLY_ACCEPTED:
-                lines.append(self.PARTIAL_NOTICE)
+                lines.append(
+                    f"{section.section_title}：{self.PARTIAL_NOTICE}"
+                )
             elif section.execution.status in {
                 SectionStatus.FAILED,
                 SectionStatus.BLOCKED,
@@ -80,12 +82,16 @@ class MultiAgentDocumentAssembler:
                 SectionStatus.GENERATED,
                 SectionStatus.VERIFYING,
             }:
-                lines.append(self.FAILED_NOTICE)
+                lines.append(
+                    f"{section.section_title}：{self.FAILED_NOTICE}"
+                )
             elif (
                 section.execution.status == SectionStatus.ACCEPTED
                 and not verified_ids
             ):
-                lines.append(self.FAILED_NOTICE)
+                lines.append(
+                    f"{section.section_title}：{self.FAILED_NOTICE}"
+                )
 
         lines.extend(["", f"## {len(included) + 1}. 生成报告附录", ""])
         if report.partial_success_reasons:
