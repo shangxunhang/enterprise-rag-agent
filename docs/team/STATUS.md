@@ -89,6 +89,20 @@ TASK-009 可以在 TASK-007 后启动。TASK-001 至 TASK-004 的文字与证据
 - Current State: backlog candidate only；尚未创建正式实施任务。
 - E-001 Rule: TASK-009 只需在 TASK-005 Analysis/Handoff 中准确记录 M-002、限定 Trace authority 条件并引用该候选；禁止在 E-001 整改中修改 Trace runtime。
 
+- Candidate ID: `TASK-CANDIDATE-012-decompose-execute-sections-orchestration`
+- Candidate Owner: Enterprise Document Workflow Owner / Agent-Workflow Engineer
+- Candidate Scope: 重构 `SchemeWriterStageService.execute_sections()`，将前置状态读取、章节依赖调度、单章节执行、并行隔离、预算分配、事件发布、引用与状态增量归并、最终结果组装拆为独立组件或服务；顶层方法只保留章节阶段编排骨架。
+- Current Finding: 当前函数超过 400 行，同时承担调度器、执行器、状态隔离器、事件发布器、引用归并器和结果聚合器职责；顶层 LangGraph、章节执行图与手写 `while remaining` 调度形成多层编排，阅读、测试和修改成本过高。
+- Required Constraints: 保持章节依赖语义、安全并行条件、预算上限、取消传播、checkpoint-safe 状态、文档级稳定 citation ID、并行分支确定性归并及现有事件协议不变；重构前先补充行为锁定测试。
+- Current State: backlog candidate only；当前代码阅读阶段只登记问题，不立即修改实现。
+
+- Candidate ID: `TASK-CANDIDATE-013-decompose-document-hard-gate-rules`
+- Candidate Owner: Enterprise Document Quality-Gate Owner / Agent-Workflow Engineer
+- Candidate Scope: 重构 `evaluate_scheme_draft()`，将基础结构、截断、工具状态、引用存在性、引用指向与 occurrence 完整性、引用目标、grounding、高风险事实、证据边界、工作流完整性和章节状态等检查拆为独立可组合规则；顶层函数仅负责构建门控上下文并聚合 `checks`、`failures`、`warnings` 与 `metadata`。
+- Current Finding: 当前函数接近 500 行，把大量彼此独立的确定性规则、诊断变量、失败消息和元数据汇总摊平在单个函数中；虽然已抽出 `CitationOccurrenceIntegrityGate` 与 `HighRiskClaimGate`，整体规则组件化迁移仍未完成，单规则测试和后续扩展成本过高。
+- Required Constraints: 保持现有硬失败语义、失败文案、检查键、诊断 metadata、引用一一对应与血缘校验、高风险事实复核、证据不足 fail-closed 行为和运行时/离线评测共用契约不变；重构前建立逐规则回归测试和最终结果快照。
+- Current State: backlog candidate only；当前代码阅读阶段只登记问题，不立即修改实现。
+
 ## Roles Required to Re-enter Work
 
 - AI Project Manager / Workflow Coordinator：执行 TASK-007，协调 TASK-009，维护依赖和 Gate；

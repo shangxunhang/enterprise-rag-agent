@@ -395,17 +395,19 @@ class SchemeGenerationStageService:
         payload: SchemeGenerationGraphPayloadSchema,
     ) -> SchemeGenerationGraphPayloadSchema:
         """Initialize deterministic generation context without external calls."""
-
+        # 获取项目输入
         project_input = self._require(
             payload.project_input,
             field_name="project_input",
             node_name="initialize_generation",
         )
+        # 获取文档ID
         document_id = self._require(
             payload.document_id,
             field_name="document_id",
             node_name="initialize_generation",
         )
+        # 初始化生成状态
         self.state_writer.initialize_generation(
             shared_state,
             document_id=document_id,
