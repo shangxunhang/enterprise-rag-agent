@@ -12,11 +12,15 @@ import hashlib
 import json
 import os
 import shutil
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from functools import wraps
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from rag.offline.manifest import (
     ActiveIndexPointer,
@@ -24,6 +28,7 @@ from rag.offline.manifest import (
     atomic_write_text,
     sha256_file,
 )
+from rag.offline.resolver import ActiveIndexResolver
 from rag.offline.verification import (
     OfflineIndexVerificationResult,
     OfflineIndexVerifier,
@@ -83,6 +88,10 @@ class IndexNotFoundError(IndexLifecycleError):
     """请求的索引版本或 Manifest 无法找到。"""
 
 
+class IndexLifecycleLockTimeout(IndexLifecycleError):
+    """另一个生命周期操作在超时时间内持续持有互斥锁。"""
+
+
 class IndexLifecycleStatus(str, Enum):
     """注册表中的离线索引生命周期状态。"""
 
@@ -138,6 +147,11 @@ class IndexRegistryEntry:
         """返回 JSON 兼容 dataclass 字典。"""
 
         return asdict(self)
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        """兼容历史 Pydantic 公共契约。"""
+
+        return self.to_dict()
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IndexRegistryEntry":
@@ -200,6 +214,31 @@ class IndexLifecycleEvent:
 
         return asdict(self)
 
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        """兼容历史 Pydantic 公共契约。"""
+
+        return self.to_dict()
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IndexLifecycleEvent":
+        """从历史 JSONL 记录恢复事件。"""
+
+        return cls(
+            event_id=str(payload["event_id"]),
+            event_type=str(payload["event_type"]),
+            created_at=str(payload["created_at"]),
+            index_version=str(payload["index_version"]),
+            previous_index_version=(
+                str(payload["previous_index_version"])
+                if payload.get("previous_index_version") is not None
+                else None
+            ),
+            status=str(payload["status"]),
+            manifest_path=str(payload["manifest_path"]),
+            active_pointer_path=str(payload["active_pointer_path"]),
+            details=dict(payload.get("details") or {}),
+        )
+
 
 @dataclass(frozen=True)
 class IndexLifecycleResult:
@@ -224,10 +263,86 @@ class IndexLifecycleResult:
     active_pointer_path: str
     verification: dict[str, Any] | None
     registry_entry: dict[str, Any]
+    event_id: str | None = None
+
+    @property
+    def active_index_version(self) -> str:
+        """兼容历史结果字段。"""
+
+        return self.index_version
+
+    @property
+    def pointer_path(self) -> str:
+        """兼容历史结果字段。"""
+
+        return self.active_pointer_path
+
+    @property
+    def verification_status(self) -> str:
+        """兼容历史结果字段。"""
+
+        return str((self.verification or {}).get("status") or "success")
+
+    @property
+    def verification_metrics(self) -> dict[str, Any]:
+        """兼容历史结果字段。"""
+
+        return dict((self.verification or {}).get("metrics") or {})
 
     def to_dict(self) -> dict[str, Any]:
         """返回 JSON 兼容结果字典。"""
 
+        return asdict(self)
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        """兼容历史 Pydantic 公共契约。"""
+
+        payload = self.to_dict()
+        payload.update(
+            {
+                "active_index_version": self.active_index_version,
+                "pointer_path": self.pointer_path,
+                "verification_status": self.verification_status,
+                "verification_metrics": self.verification_metrics,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True)
+class LegacyIndexLifecycleEvent:
+    """历史 ``history()`` API 的只读事件投影。"""
+
+    event_id: str
+    timestamp: str
+    operation: str
+    actor: str
+    reason: str | None
+    from_index_version: str | None
+    to_index_version: str
+    pointer_path: str
+    previous_pointer: dict[str, Any] | None
+    active_pointer: dict[str, Any]
+    verification_status: str
+    verification_metrics: dict[str, Any] = field(default_factory=dict)
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class IndexLifecycleSummary:
+    """历史 ``status()`` API 的只读状态投影。"""
+
+    pointer_path: str
+    active_index_version: str | None
+    active_manifest_path: str | None
+    active_manifest_sha256: str | None
+    registered_index_count: int
+    history_event_count: int
+    schema_version: str = "rag_index_lifecycle_status_v1"
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -248,13 +363,23 @@ class IndexRegistry:
         *,
         registry_file: str = "index_registry.json",
         history_file: str = "index_lifecycle_history.jsonl",
+        registry_path: str | Path | None = None,
+        history_path: str | Path | None = None,
     ) -> None:
         """解析控制面路径并确保根目录存在。"""
 
         self.root_dir = Path(root_dir).expanduser().resolve()
         self.root_dir.mkdir(parents=True, exist_ok=True)
-        self.registry_path = self.root_dir / registry_file
-        self.history_path = self.root_dir / history_file
+        self.registry_path = (
+            _resolve_from(self.root_dir, registry_path)
+            if registry_path is not None
+            else self.root_dir / registry_file
+        )
+        self.history_path = (
+            _resolve_from(self.root_dir, history_path)
+            if history_path is not None
+            else self.root_dir / history_file
+        )
 
     def _load_payload(self) -> dict[str, Any]:
         """读取注册表快照，文件不存在时返回空协议。"""
@@ -279,9 +404,85 @@ class IndexRegistry:
                 f"{payload.get('schema_version')!r}"
             )
         indexes = payload.get("indexes")
+        if isinstance(indexes, dict):
+            migrated: list[dict[str, Any]] = []
+            for index_version, legacy_entry in indexes.items():
+                if not isinstance(legacy_entry, dict):
+                    continue
+                manifest_path = str(
+                    legacy_entry.get("manifest_path") or ""
+                )
+                manifest: IndexManifest | None = None
+                try:
+                    manifest_file = Path(manifest_path).expanduser().resolve()
+                    if manifest_file.is_file():
+                        manifest = IndexManifest.model_validate_json(
+                            manifest_file.read_text(encoding="utf-8")
+                        )
+                except Exception:
+                    manifest = None
+                registered_at = str(
+                    legacy_entry.get("registered_at")
+                    or payload.get("updated_at")
+                    or _utc_now()
+                )
+                migrated.append(
+                    {
+                        "index_version": str(index_version),
+                        "manifest_path": manifest_path,
+                        "manifest_sha256": str(
+                            legacy_entry.get("manifest_sha256") or ""
+                        ),
+                        "status": IndexLifecycleStatus.REGISTERED.value,
+                        "dataset_version": str(
+                            legacy_entry.get("dataset_version")
+                            or (
+                                manifest.dataset_version
+                                if manifest is not None
+                                else ""
+                            )
+                        ),
+                        "config_hash": (
+                            manifest.config_hash
+                            if manifest is not None
+                            else str(legacy_entry.get("config_hash") or "")
+                        ),
+                        "reproducibility_hash": (
+                            manifest.reproducibility_hash
+                            if manifest is not None
+                            else str(
+                                legacy_entry.get("reproducibility_hash") or ""
+                            )
+                        ),
+                        "registered_at": registered_at,
+                        "updated_at": str(
+                            payload.get("updated_at") or registered_at
+                        ),
+                        "last_verified_at": None,
+                        "last_error": None,
+                        "metadata": {
+                            "migrated_from_legacy_registry": True,
+                            "backend": legacy_entry.get("backend"),
+                            "collection_name": legacy_entry.get(
+                                "collection_name"
+                            ),
+                            "embedding_model": legacy_entry.get(
+                                "embedding_model"
+                            ),
+                            "embedding_version": legacy_entry.get(
+                                "embedding_version"
+                            ),
+                            "embedding_dim": legacy_entry.get(
+                                "embedding_dim"
+                            ),
+                        },
+                    }
+                )
+            payload = {**payload, "indexes": migrated}
+            indexes = migrated
         if not isinstance(indexes, list):
             raise IndexLifecycleError(
-                "index registry 'indexes' must be a list"
+                "index registry 'indexes' must be a list or legacy object"
             )
         return payload
 
@@ -358,6 +559,84 @@ class IndexRegistry:
             os.fsync(handle.fileno())
         return self.history_path
 
+    def read_events(self) -> list[IndexLifecycleEvent]:
+        """读取完整且可解析的生命周期事件。"""
+
+        if not self.history_path.is_file():
+            return []
+        events: list[IndexLifecycleEvent] = []
+        for raw_line in self.history_path.read_text(
+            encoding="utf-8"
+        ).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    continue
+                if "event_type" in payload:
+                    events.append(IndexLifecycleEvent.from_dict(payload))
+                    continue
+                if "operation" in payload:
+                    active_pointer = dict(
+                        payload.get("active_pointer") or {}
+                    )
+                    operation = str(payload.get("operation") or "")
+                    events.append(
+                        IndexLifecycleEvent(
+                            event_id=str(payload["event_id"]),
+                            event_type=(
+                                "rolled_back"
+                                if operation == "rollback"
+                                else "activated"
+                            ),
+                            created_at=str(payload.get("timestamp") or ""),
+                            index_version=str(
+                                payload.get("to_index_version") or ""
+                            ),
+                            previous_index_version=(
+                                str(payload["from_index_version"])
+                                if payload.get("from_index_version")
+                                is not None
+                                else None
+                            ),
+                            status="success",
+                            manifest_path=str(
+                                active_pointer.get("manifest_path") or ""
+                            ),
+                            active_pointer_path=str(
+                                payload.get("pointer_path") or ""
+                            ),
+                            details={
+                                "actor": payload.get("actor"),
+                                "reason": payload.get("reason"),
+                                "verification_status": payload.get(
+                                    "verification_status"
+                                ),
+                                "verification_metrics": payload.get(
+                                    "verification_metrics"
+                                )
+                                or {},
+                            },
+                        )
+                    )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                # JSONL 最后一行若因进程崩溃不完整，不应污染此前完整历史。
+                continue
+        return events
+
+
+def _lifecycle_locked(method: Callable[..., Any]) -> Callable[..., Any]:
+    """让公共写操作统一经过 manager 文件锁。"""
+
+    @wraps(method)
+    def wrapped(self: "IndexLifecycleManager", *args: Any, **kwargs: Any) -> Any:
+        with self._exclusive_lock():
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
 
 class IndexLifecycleManager:
     """协调索引注册、验证、active pointer 切换和回滚。
@@ -372,25 +651,230 @@ class IndexLifecycleManager:
 
     def __init__(
         self,
-        root_dir: str | Path,
+        root_dir: str | Path | None = None,
         *,
         active_pointer_path: str | Path | None = None,
         registry: IndexRegistry | None = None,
         verifier: OfflineIndexVerifier | None = None,
         manifest_name: str = "index_manifest.json",
+        project_root: str | Path | None = None,
+        indexes_root: str | Path | None = None,
+        pointer_path: str | Path | None = None,
+        registry_path: str | Path | None = None,
+        history_path: str | Path | None = None,
+        lock_path: str | Path | None = None,
+        verifier_factory: Callable[[], Any] | None = None,
+        lock_timeout_seconds: float = 15.0,
+        stale_lock_seconds: float = 3600.0,
     ) -> None:
-        """初始化索引控制面根目录和依赖。"""
+        """初始化新版依赖，并把历史构造参数严格映射到同一内部对象。"""
 
-        self.root_dir = Path(root_dir).expanduser().resolve()
+        legacy_mode = project_root is not None
+        if root_dir is None and not legacy_mode:
+            raise TypeError("root_dir or project_root is required")
+        if not legacy_mode and any(
+            value is not None
+            for value in (
+                indexes_root,
+                pointer_path,
+                registry_path,
+                history_path,
+                lock_path,
+                verifier_factory,
+            )
+        ):
+            raise TypeError(
+                "legacy lifecycle arguments require project_root"
+            )
+
+        if legacy_mode:
+            resolved_project_root = Path(project_root).expanduser().resolve()
+            legacy_indexes_root = (
+                indexes_root or "data/processed/indexes"
+            )
+            legacy_pointer_path = (
+                pointer_path
+                or "data/processed/indexes/active_index.json"
+            )
+            legacy_registry_path = (
+                registry_path
+                or "data/processed/indexes/index_registry.json"
+            )
+            legacy_history_path = (
+                history_path
+                or "data/processed/indexes/index_lifecycle_history.jsonl"
+            )
+            legacy_lock_path = (
+                lock_path
+                or "data/processed/indexes/.index_lifecycle.lock"
+            )
+            resolved_legacy_root = _resolve_from(
+                resolved_project_root,
+                legacy_indexes_root,
+            )
+            if root_dir is not None:
+                resolved_root_dir = Path(root_dir).expanduser().resolve()
+                if resolved_root_dir != resolved_legacy_root:
+                    raise ValueError(
+                        "root_dir conflicts with project_root + indexes_root"
+                    )
+            effective_root = resolved_legacy_root
+        else:
+            resolved_project_root = Path(root_dir).expanduser().resolve()
+            effective_root = resolved_project_root
+
+        self._legacy_mode = legacy_mode
+        self.root_dir = effective_root
         self.root_dir.mkdir(parents=True, exist_ok=True)
-        self.active_pointer_path = (
+        self.project_root = resolved_project_root
+        self.indexes_root = self.root_dir
+
+        legacy_pointer = (
+            _resolve_from(self.project_root, legacy_pointer_path)
+            if legacy_mode
+            else None
+        )
+        new_pointer = (
             _resolve_from(self.root_dir, active_pointer_path)
             if active_pointer_path is not None
-            else self.root_dir / "active_index.json"
+            else None
         )
-        self.registry = registry or IndexRegistry(self.root_dir)
-        self.verifier = verifier or OfflineIndexVerifier()
+        if (
+            legacy_pointer is not None
+            and new_pointer is not None
+            and legacy_pointer != new_pointer
+        ):
+            raise ValueError(
+                "active_pointer_path conflicts with legacy pointer_path"
+            )
+        self.active_pointer_path = (
+            new_pointer
+            or legacy_pointer
+            or (self.root_dir / "active_index.json")
+        )
+        self.pointer_path = self.active_pointer_path
+
+        if registry is not None and legacy_mode:
+            expected_registry = _resolve_from(
+                self.project_root,
+                legacy_registry_path,
+            )
+            expected_history = _resolve_from(
+                self.project_root,
+                legacy_history_path,
+            )
+            if (
+                registry.registry_path != expected_registry
+                or registry.history_path != expected_history
+            ):
+                raise ValueError(
+                    "registry object conflicts with legacy registry/history paths"
+                )
+        self.registry = registry or IndexRegistry(
+            self.root_dir,
+            registry_path=(
+                _resolve_from(self.project_root, legacy_registry_path)
+                if legacy_mode
+                else None
+            ),
+            history_path=(
+                _resolve_from(self.project_root, legacy_history_path)
+                if legacy_mode
+                else None
+            ),
+        )
+        self.registry_path = self.registry.registry_path
+        self.history_path = self.registry.history_path
+
+        if verifier is not None and verifier_factory is not None:
+            raise ValueError("verifier conflicts with verifier_factory")
+        self._verifier = verifier
+        self.verifier_factory = verifier_factory or OfflineIndexVerifier
+
+        self.lock_path = (
+            _resolve_from(self.project_root, legacy_lock_path)
+            if legacy_mode
+            else self.root_dir / ".index_lifecycle.lock"
+        )
+        self.lock_timeout_seconds = max(
+            0.1,
+            float(lock_timeout_seconds),
+        )
+        self.stale_lock_seconds = max(
+            0.1,
+            float(stale_lock_seconds),
+        )
+        self._lock_owner_thread_id: int | None = None
+        self._lock_depth = 0
         self.manifest_name = manifest_name
+
+    @property
+    def verifier(self) -> Any:
+        """返回显式验证器，或按历史工厂契约延迟构造一次。"""
+
+        if self._verifier is None:
+            self._verifier = self.verifier_factory()
+        return self._verifier
+
+    @contextmanager
+    def _exclusive_lock(self) -> Iterator[None]:
+        """获取跨进程文件锁；同一 manager/线程内允许重入。"""
+
+        owner = threading.get_ident()
+        if self._lock_owner_thread_id == owner:
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+            return
+
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.lock_timeout_seconds
+        descriptor: int | None = None
+        while descriptor is None:
+            try:
+                descriptor = os.open(
+                    self.lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+            except FileExistsError:
+                try:
+                    lock_age = time.time() - self.lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if lock_age > self.stale_lock_seconds:
+                    try:
+                        self.lock_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                if time.monotonic() >= deadline:
+                    raise IndexLifecycleLockTimeout(
+                        f"index lifecycle lock timeout: {self.lock_path}"
+                    )
+                time.sleep(0.05)
+
+        self._lock_owner_thread_id = owner
+        self._lock_depth = 1
+        try:
+            payload = json.dumps(
+                {"pid": os.getpid(), "created_at": _utc_now()},
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+            yield
+        finally:
+            self._lock_depth = 0
+            self._lock_owner_thread_id = None
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                self.lock_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def _manifest_path_for_version(self, index_version: str) -> Path:
         """返回标准版本目录中的 Manifest 路径。"""
@@ -398,6 +882,60 @@ class IndexLifecycleManager:
         return (
             self.root_dir / index_version / self.manifest_name
         ).resolve()
+
+    def _manifest_path_for_target(self, target: str | Path) -> Path:
+        """同时解析新版 Manifest 路径入口和历史 index_version 入口。"""
+
+        raw = str(target)
+        registered = self.registry.get(raw)
+        if registered is not None:
+            return Path(registered.manifest_path).expanduser().resolve()
+
+        standard = self._manifest_path_for_version(raw)
+        if standard.is_file():
+            return standard
+
+        return _resolve_from(self.root_dir, target)
+
+    @staticmethod
+    def _verification_status(verification: Any) -> str:
+        return str(getattr(verification, "status", "failed"))
+
+    @classmethod
+    def _verification_passed(cls, verification: Any) -> bool:
+        explicit = getattr(verification, "passed", None)
+        return bool(explicit) if explicit is not None else (
+            cls._verification_status(verification) == "success"
+        )
+
+    @staticmethod
+    def _verification_metrics(verification: Any) -> dict[str, Any]:
+        return dict(getattr(verification, "metrics", {}) or {})
+
+    @classmethod
+    def _verification_to_dict(
+        cls,
+        verification: Any,
+        *,
+        manifest_file: Path,
+        index_version: str,
+    ) -> dict[str, Any]:
+        to_dict = getattr(verification, "to_dict", None)
+        if callable(to_dict):
+            return dict(to_dict())
+        return {
+            "schema_version": "offline_index_verification_report_v1",
+            "status": cls._verification_status(verification),
+            "manifest_path": str(
+                getattr(verification, "manifest_path", manifest_file)
+            ),
+            "index_version": str(
+                getattr(verification, "index_version", index_version)
+            ),
+            "checks": [],
+            "metrics": cls._verification_metrics(verification),
+            "self_retrieval": [],
+        }
 
     def _read_manifest(
         self,
@@ -539,14 +1077,16 @@ class IndexLifecycleManager:
         )
 
     def discover_manifests(self) -> list[Path]:
-        """发现 root 下标准二级目录中的 Manifest，排除 pointer 和注册表文件。"""
+        """递归发现 Manifest，并排除失败/归档目录和控制面文件。"""
 
         manifests = sorted(
             path.resolve()
-            for path in self.root_dir.glob(
-                f"*/{self.manifest_name}"
-            )
+            for path in self.root_dir.rglob(self.manifest_name)
             if path.is_file()
+            and not any(
+                ".failed_" in part or ".archived_" in part
+                for part in path.parts
+            )
         )
         return [
             path
@@ -555,6 +1095,7 @@ class IndexLifecycleManager:
             and path != self.registry.registry_path
         ]
 
+    @_lifecycle_locked
     def register(
         self,
         manifest_path: str | Path,
@@ -574,8 +1115,17 @@ class IndexLifecycleManager:
                 f"expected={expected} actual={manifest_file}"
             )
 
-        # 第二步：保留首次注册时间和旧 metadata，更新 Manifest 内容与状态。
+        # 第二步：同一版本不得注册到另一个 Manifest 路径。
         previous = self.registry.get(manifest.index_version)
+        if (
+            previous is not None
+            and Path(previous.manifest_path).resolve() != manifest_file
+        ):
+            raise IndexLifecycleError(
+                "index version collision: "
+                f"{manifest.index_version}"
+            )
+
         entry = self._entry_from_manifest(
             manifest_file=manifest_file,
             manifest=manifest,
@@ -606,53 +1156,113 @@ class IndexLifecycleManager:
             for path in self.discover_manifests()
         ]
 
-    def list_indexes(self) -> list[IndexRegistryEntry]:
-        """返回注册表中的全部索引条目。"""
+    def discover(self, *, persist: bool = True) -> list[IndexRegistryEntry]:
+        """兼容历史发现 API；无效 Manifest 跳过，版本碰撞仍显式失败。"""
 
-        return self.registry.list_entries()
+        discovered: dict[str, IndexRegistryEntry] = {}
+        for path in self.discover_manifests():
+            try:
+                entry = self.register(path) if persist else (
+                    self._entry_from_discovered_manifest(path)
+                )
+            except IndexLifecycleError as exc:
+                if "collision" in str(exc) or "duplicate index_version" in str(exc):
+                    raise
+                continue
+            except Exception:
+                continue
+            existing = discovered.get(entry.index_version)
+            if (
+                existing is not None
+                and existing.manifest_path != entry.manifest_path
+            ):
+                raise IndexLifecycleError(
+                    "duplicate index_version discovered at different manifests: "
+                    f"{entry.index_version}"
+                )
+            discovered[entry.index_version] = entry
+        return [discovered[key] for key in sorted(discovered)]
 
+    def _entry_from_discovered_manifest(
+        self,
+        manifest_path: str | Path,
+    ) -> IndexRegistryEntry:
+        manifest_file, manifest, manifest_hash = self._read_manifest(
+            manifest_path
+        )
+        expected = self._manifest_path_for_version(manifest.index_version)
+        if manifest_file != expected:
+            raise IndexLifecycleError(
+                "manifest path does not match immutable version layout: "
+                f"expected={expected} actual={manifest_file}"
+            )
+        return self._entry_from_manifest(
+            manifest_file=manifest_file,
+            manifest=manifest,
+            manifest_hash=manifest_hash,
+            status=IndexLifecycleStatus.REGISTERED,
+            previous_entry=self.registry.get(manifest.index_version),
+        )
+
+    def list_indexes(
+        self,
+        *,
+        refresh: bool | None = None,
+    ) -> list[IndexRegistryEntry]:
+        """返回注册表条目；旧构造默认刷新，新构造默认读取快照。"""
+
+        effective_refresh = self._legacy_mode if refresh is None else refresh
+        return self.discover(persist=True) if effective_refresh else (
+            self.registry.list_entries()
+        )
+
+    @_lifecycle_locked
     def verify(
         self,
         manifest_path: str | Path,
         **verify_kwargs: Any,
-    ) -> OfflineIndexVerificationResult:
-        """执行深度验证并更新注册表状态与事件历史。
+    ) -> Any:
+        """执行深度验证，并拒绝注册后被篡改的 Manifest。"""
 
-        验证失败不会抛出 ``IndexActivationError``，而是返回 failed report；激活流程会
-        根据该结果决定是否拒绝切换。
-        """
-
-        # 第一步：读取或隐式注册目标 Manifest。
         manifest_file, manifest, manifest_hash = self._read_manifest(
             manifest_path
         )
         previous = self.registry.get(manifest.index_version)
         if previous is None:
             previous = self.register(manifest_file)
+        else:
+            if Path(previous.manifest_path).resolve() != manifest_file:
+                raise IndexActivationError(
+                    "registered index manifest path changed after registration: "
+                    f"index_version={manifest.index_version}"
+                )
+            if previous.manifest_sha256 != manifest_hash:
+                raise IndexActivationError(
+                    "registered index manifest changed after registration: "
+                    f"index_version={manifest.index_version}"
+                )
 
-        # 第二步：运行完整验证器并记录验证时间。
         verification = self.verifier.verify(
             manifest_file,
             **verify_kwargs,
         )
         verified_at = _utc_now()
+        passed = self._verification_passed(verification)
+        verification_status = self._verification_status(verification)
+        metrics = self._verification_metrics(verification)
 
-        # 第三步：根据验证结果设置 VERIFIED 或 FAILED 状态，并保存失败检查列表。
         status = (
             IndexLifecycleStatus.VERIFIED
-            if verification.passed
+            if passed
             else IndexLifecycleStatus.FAILED
         )
         last_error = (
             None
-            if verification.passed
+            if passed
             else {
                 "error_type": "IndexVerificationFailed",
                 "message": "index verification failed",
-                "failed_checks": verification.metrics.get(
-                    "failed_checks",
-                    [],
-                ),
+                "failed_checks": metrics.get("failed_checks", []),
             }
         )
         entry = self._entry_from_manifest(
@@ -664,26 +1274,21 @@ class IndexLifecycleManager:
             last_verified_at=verified_at,
             last_error=last_error,
             metadata={
-                "verification_status": verification.status,
-                "verification_metrics": verification.metrics,
+                "verification_status": verification_status,
+                "verification_metrics": metrics,
             },
         )
         self.registry.upsert(entry)
-
-        # 第四步：追加成功或失败验证事件。
         self.registry.append_event(
             self._event(
                 event_type="verified",
                 index_version=manifest.index_version,
                 previous_index_version=self.active_index_version(),
-                status=verification.status,
+                status=verification_status,
                 manifest_path=str(manifest_file),
                 details={
-                    "metrics": verification.metrics,
-                    "failed_checks": verification.metrics.get(
-                        "failed_checks",
-                        [],
-                    ),
+                    "metrics": metrics,
+                    "failed_checks": metrics.get("failed_checks", []),
                 },
             )
         )
@@ -761,12 +1366,18 @@ class IndexLifecycleManager:
         )
         self.registry.upsert(updated)
 
+    @_lifecycle_locked
     def activate(
         self,
         manifest_path: str | Path,
         *,
-        verification_result: OfflineIndexVerificationResult | None = None,
+        verification_result: OfflineIndexVerificationResult | Any | None = None,
         verify_kwargs: dict[str, Any] | None = None,
+        actor: str = "manual",
+        reason: str | None = None,
+        verify_artifact_hashes: bool = True,
+        verify_milvus: bool = True,
+        self_retrieval_samples: int = 3,
     ) -> IndexLifecycleResult:
         """验证目标索引并原子切换 active pointer。
 
@@ -781,8 +1392,26 @@ class IndexLifecycleManager:
 
         # 第一步：读取目标 Manifest 和切换前 active 状态，并备份旧 pointer 原始字节。
         manifest_file, manifest, manifest_hash = self._read_manifest(
-            manifest_path
+            self._manifest_path_for_target(manifest_path)
         )
+        registered_entry = self.registry.get(manifest.index_version)
+        if registered_entry is not None:
+            if Path(registered_entry.manifest_path).resolve() != manifest_file:
+                raise IndexActivationError(
+                    "registered index manifest path changed after registration: "
+                    f"index_version={manifest.index_version}"
+                )
+            if registered_entry.manifest_sha256 != manifest_hash:
+                raise IndexActivationError(
+                    "registered index manifest changed after registration: "
+                    f"index_version={manifest.index_version}"
+                )
+        if str(manifest.index.get("backend") or "") != "milvus_lite":
+            raise IndexActivationError(
+                "only backend=milvus_lite can be activated for online runtime; "
+                f"got {manifest.index.get('backend')!r}"
+            )
+
         previous_pointer = self.read_active_pointer()
         previous_index_version = (
             previous_pointer.index_version
@@ -796,21 +1425,45 @@ class IndexLifecycleManager:
         )
 
         # 第二步：使用调用方报告或现场执行完整验证。
+        effective_verify_kwargs = dict(verify_kwargs or {})
+        effective_verify_kwargs.setdefault(
+            "verify_artifact_hashes",
+            verify_artifact_hashes,
+        )
+        effective_verify_kwargs.setdefault("verify_milvus", verify_milvus)
+        effective_verify_kwargs.setdefault(
+            "self_retrieval_samples",
+            self_retrieval_samples,
+        )
         verification = verification_result or self.verify(
             manifest_file,
-            **(verify_kwargs or {}),
+            **effective_verify_kwargs,
         )
+        verification_status = self._verification_status(verification)
+        verification_metrics = self._verification_metrics(verification)
 
-        # 第三步：验证报告必须成功且明确属于目标 Manifest/版本。
-        if not verification.passed:
+        # 第三步：验证报告必须成功；若报告声明目标，也必须与激活目标一致。
+        if not self._verification_passed(verification):
             raise IndexActivationError(
                 "index activation rejected because verification failed: "
-                f"{verification.metrics.get('failed_checks', [])}"
+                f"{verification_metrics.get('failed_checks', [])}"
             )
+        report_manifest_path = getattr(
+            verification,
+            "manifest_path",
+            None,
+        )
+        report_index_version = getattr(
+            verification,
+            "index_version",
+            None,
+        )
         if (
-            Path(verification.manifest_path).resolve()
-            != manifest_file.resolve()
-            or verification.index_version != manifest.index_version
+            report_manifest_path is not None
+            and Path(report_manifest_path).resolve() != manifest_file.resolve()
+        ) or (
+            report_index_version is not None
+            and report_index_version != manifest.index_version
         ):
             raise IndexActivationError(
                 "verification result does not match activation target"
@@ -823,6 +1476,14 @@ class IndexLifecycleManager:
                 manifest=manifest,
                 manifest_hash=manifest_hash,
             )
+            resolved = ActiveIndexResolver(
+                verify_manifest_hash=True,
+                verify_artifacts=False,
+            ).resolve(self.active_pointer_path)
+            if resolved["index_version"] != manifest.index_version:
+                raise IndexActivationError(
+                    "post-activation online resolution mismatch"
+                )
 
             previous_entry = self.registry.get(
                 manifest.index_version
@@ -836,7 +1497,7 @@ class IndexLifecycleManager:
                 last_verified_at=_utc_now(),
                 last_error=None,
                 metadata={
-                    "verification_status": verification.status,
+                    "verification_status": verification_status,
                     "activated_at": _utc_now(),
                 },
             )
@@ -850,19 +1511,21 @@ class IndexLifecycleManager:
                 )
 
             # 第六步：追加成功激活事件。
-            self.registry.append_event(
-                self._event(
-                    event_type="activated",
-                    index_version=manifest.index_version,
-                    previous_index_version=previous_index_version,
-                    status="success",
-                    manifest_path=str(manifest_file),
-                    details={
-                        "manifest_sha256": manifest_hash,
-                        "verification_metrics": verification.metrics,
-                    },
-                )
+            event = self._event(
+                event_type="activated",
+                index_version=manifest.index_version,
+                previous_index_version=previous_index_version,
+                status="success",
+                manifest_path=str(manifest_file),
+                details={
+                    "manifest_sha256": manifest_hash,
+                    "verification_status": verification_status,
+                    "verification_metrics": verification_metrics,
+                    "actor": actor,
+                    "reason": reason,
+                },
             )
+            self.registry.append_event(event)
 
             return IndexLifecycleResult(
                 operation="activate",
@@ -873,8 +1536,13 @@ class IndexLifecycleManager:
                 active_pointer_path=str(
                     self.active_pointer_path
                 ),
-                verification=verification.to_dict(),
+                verification=self._verification_to_dict(
+                    verification,
+                    manifest_file=manifest_file,
+                    index_version=manifest.index_version,
+                ),
                 registry_entry=active_entry.to_dict(),
+                event_id=event.event_id,
             )
 
         except Exception as exc:
@@ -918,18 +1586,19 @@ class IndexLifecycleManager:
                 )
             )
 
-            if isinstance(exc, IndexActivationError):
-                raise
-            raise IndexActivationError(
-                f"index activation failed: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+            raise
 
+    @_lifecycle_locked
     def rollback(
         self,
-        target_index_version: str,
+        target_index_version: str | None = None,
         *,
         verify_kwargs: dict[str, Any] | None = None,
+        actor: str = "manual",
+        reason: str | None = None,
+        verify_artifact_hashes: bool = True,
+        verify_milvus: bool = True,
+        self_retrieval_samples: int = 3,
     ) -> IndexLifecycleResult:
         """验证并激活一个历史版本，把当前版本标记为 rolled_back。
 
@@ -943,6 +1612,23 @@ class IndexLifecycleManager:
             raise IndexRollbackError(
                 "cannot rollback without an active index"
             )
+        if target_index_version is None:
+            latest = next(
+                (
+                    event
+                    for event in reversed(self.registry.read_events())
+                    if event.event_type in {"activated", "rolled_back"}
+                    and event.index_version == current_pointer.index_version
+                    and event.previous_index_version is not None
+                ),
+                None,
+            )
+            if latest is None:
+                raise IndexRollbackError(
+                    "no previous active index recorded; provide target_index_version"
+                )
+            target_index_version = latest.previous_index_version
+
         if target_index_version == current_pointer.index_version:
             raise IndexRollbackError(
                 "rollback target is already active"
@@ -967,6 +1653,11 @@ class IndexLifecycleManager:
             result = self.activate(
                 target_manifest,
                 verify_kwargs=verify_kwargs,
+                actor=actor,
+                reason=reason,
+                verify_artifact_hashes=verify_artifact_hashes,
+                verify_milvus=verify_milvus,
+                self_retrieval_samples=self_retrieval_samples,
             )
         except Exception as exc:
             if isinstance(exc, IndexRollbackError):
@@ -982,19 +1673,20 @@ class IndexLifecycleManager:
         )
 
         # 第五步：追加显式回滚事件，区别于底层 activate 事件。
-        self.registry.append_event(
-            self._event(
-                event_type="rolled_back",
-                index_version=target_index_version,
-                previous_index_version=current_pointer.index_version,
-                status="success",
-                manifest_path=result.manifest_path,
-                details={
-                    "activated_via": "rollback",
-                    "verification": result.verification,
-                },
-            )
+        rollback_event = self._event(
+            event_type="rolled_back",
+            index_version=target_index_version,
+            previous_index_version=current_pointer.index_version,
+            status="success",
+            manifest_path=result.manifest_path,
+            details={
+                "activated_via": "rollback",
+                "verification": result.verification,
+                "actor": actor,
+                "reason": reason,
+            },
         )
+        self.registry.append_event(rollback_event)
 
         # 第六步：返回 rollback 语义的结果对象和目标最新注册表状态。
         target_after = self.registry.get(target_index_version)
@@ -1011,8 +1703,124 @@ class IndexLifecycleManager:
                 if target_after is not None
                 else result.registry_entry
             ),
+            event_id=rollback_event.event_id,
         )
 
+    def resolve_active(
+        self,
+        *,
+        verify_artifacts: bool = True,
+    ) -> dict[str, Any]:
+        """按在线运行时正式 Resolver 解析当前 active pointer。"""
+
+        return ActiveIndexResolver(
+            verify_manifest_hash=True,
+            verify_artifacts=verify_artifacts,
+        ).resolve(self.active_pointer_path)
+
+    def _legacy_pointer_payload(
+        self,
+        index_version: str | None,
+    ) -> dict[str, Any] | None:
+        if not index_version:
+            return None
+        entry = self.registry.get(index_version)
+        if entry is None:
+            return {"index_version": index_version}
+        return {
+            "index_version": index_version,
+            "manifest_path": entry.manifest_path,
+            "manifest_sha256": entry.manifest_sha256,
+        }
+
+    def history(self) -> list[LegacyIndexLifecycleEvent]:
+        """返回历史公共契约的激活/回滚审计投影。"""
+
+        control_events = [
+            event
+            for event in self.registry.read_events()
+            if event.status == "success"
+            and event.event_type in {"activated", "rolled_back"}
+        ]
+        projected: list[LegacyIndexLifecycleEvent] = []
+        for index, event in enumerate(control_events):
+            if event.event_type == "activated" and index + 1 < len(
+                control_events
+            ):
+                following = control_events[index + 1]
+                if (
+                    following.event_type == "rolled_back"
+                    and following.index_version == event.index_version
+                    and following.previous_index_version
+                    == event.previous_index_version
+                ):
+                    continue
+
+            details = dict(event.details)
+            verification_payload = dict(
+                details.get("verification") or {}
+            )
+            verification_metrics = dict(
+                details.get("verification_metrics")
+                or verification_payload.get("metrics")
+                or {}
+            )
+            verification_status = str(
+                details.get("verification_status")
+                or verification_payload.get("status")
+                or "success"
+            )
+            projected.append(
+                LegacyIndexLifecycleEvent(
+                    event_id=event.event_id,
+                    timestamp=event.created_at,
+                    operation=(
+                        "rollback"
+                        if event.event_type == "rolled_back"
+                        else "activate"
+                    ),
+                    actor=str(details.get("actor") or "manual"),
+                    reason=(
+                        str(details["reason"])
+                        if details.get("reason") is not None
+                        else None
+                    ),
+                    from_index_version=event.previous_index_version,
+                    to_index_version=event.index_version,
+                    pointer_path=event.active_pointer_path,
+                    previous_pointer=self._legacy_pointer_payload(
+                        event.previous_index_version
+                    ),
+                    active_pointer=(
+                        self._legacy_pointer_payload(event.index_version)
+                        or {"index_version": event.index_version}
+                    ),
+                    verification_status=verification_status,
+                    verification_metrics=verification_metrics,
+                )
+            )
+        return projected
+
+    def status(self) -> IndexLifecycleSummary:
+        """返回历史公共契约的只读生命周期状态。"""
+
+        pointer = self.read_active_pointer()
+        return IndexLifecycleSummary(
+            pointer_path=str(self.active_pointer_path),
+            active_index_version=(
+                pointer.index_version if pointer is not None else None
+            ),
+            active_manifest_path=(
+                pointer.manifest_path if pointer is not None else None
+            ),
+            active_manifest_sha256=(
+                pointer.manifest_sha256 if pointer is not None else None
+            ),
+            registered_index_count=len(self.registry.list_entries()),
+            history_event_count=len(self.history()),
+        )
+
+    @_lifecycle_locked
     def delete_version(
         self,
         index_version: str,
