@@ -68,7 +68,12 @@ def main(root: Path) -> None:
                 max_text_chars=1024,
             ),
         ]
-        insert_child_chunk_records(client, collection, records, batch_size=2)
+        insert_child_chunk_records(
+            client=client,
+            collection_name=collection,
+            records=records,
+            batch_size=2,
+        )
     finally:
         client.close()
 

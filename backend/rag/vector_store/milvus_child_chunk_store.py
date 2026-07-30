@@ -346,9 +346,9 @@ def create_or_reset_child_chunk_collection(
 
 
 def build_milvus_child_chunk_record(
-    *,
     child_chunk: Dict[str, Any],
     vector: Any,
+    *,
     embedding_model: str,
     embedding_dim: int,
     embedding_version: str = DEFAULT_EMBEDDING_VERSION,
@@ -357,6 +357,9 @@ def build_milvus_child_chunk_record(
     index_version: str | None = None,
 ) -> Dict[str, Any]:
     """把 canonical 子块与同一行向量映射为 Milvus 物理记录。
+
+    ``child_chunk`` 和 ``vector`` 保留位置参数兼容；其余配置参数必须显式命名，
+    避免 Embedding 与索引血缘字段因位置错位而被静默污染。
 
     Raises:
         ValueError: child_chunk_id/doc_id 为空或向量维度不匹配时抛出。
