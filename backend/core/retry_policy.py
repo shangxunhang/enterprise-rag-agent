@@ -25,6 +25,14 @@ _AUTH_MARKERS = (
     "configuration",
 )
 
+_CONTRACT_CONFIGURATION_MARKERS = (
+    "has no attribute",
+    "unexpected keyword argument",
+    "required positional argument",
+    "cannot import name",
+    "no module named",
+)
+
 
 def _http_failure_category(status: int) -> FailureCategory | None:
     if status in {401, 403}:
@@ -74,6 +82,15 @@ def classify_failure(exc: BaseException) -> FailureCategory:
     if any(marker in message for marker in _AUTH_MARKERS):
         return FailureCategory.CONFIGURATION
     if isinstance(exc, PermissionError):
+        return FailureCategory.CONFIGURATION
+    if isinstance(
+        exc,
+        (AttributeError, ImportError, ModuleNotFoundError, NotImplementedError),
+    ):
+        return FailureCategory.CONFIGURATION
+    if isinstance(exc, TypeError) and any(
+        marker in message for marker in _CONTRACT_CONFIGURATION_MARKERS
+    ):
         return FailureCategory.CONFIGURATION
     if isinstance(exc, (FileNotFoundError, KeyError)):
         return FailureCategory.CONFIGURATION

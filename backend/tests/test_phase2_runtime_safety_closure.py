@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import replace
+import importlib.util
 import inspect
 import threading
 import os
@@ -22,6 +23,9 @@ from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgen
 from apps.enterprise_document.schemas.scheme_generation_graph import (
     SchemeGenerationGraphPayloadSchema,
 )
+from apps.enterprise_document.services.scheme_writer.evidence_service import (
+    SchemeEvidenceService,
+)
 from apps.enterprise_document.services.scheme_writer.stage_service import (
     SchemeGenerationStageService,
 )
@@ -34,11 +38,15 @@ from apps.enterprise_document.workflows.top_level_business_graph import (
 )
 from bootstrap.supervisor_factory import SupervisorFactory
 from core.config import get_settings
+from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.execution_control import (
     WorkflowExecutionCancelled,
     current_execution_control,
 )
+from rag.services.rag_service import RAGService
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
+from schemas.failure import FailureCategory
+from schemas.rag import RAGToolInputSchema
 
 
 SUCCESS_SEQUENCE = [
@@ -147,6 +155,41 @@ def _error_code(summary: dict) -> str | None:
     return error.get("error_code")
 
 
+def _rag_contract_failure_bundle(*, run_id: str):
+    class BrokenRetrievalRuntime:
+        def retrieve(self, payload):
+            del payload
+            raise AttributeError(
+                "type object 'ParentChunkStore' has no attribute 'from_jsonl'"
+            )
+
+    service = RAGService(
+        Path(__file__).resolve().parents[2],
+        retrieval_runtime=BrokenRetrievalRuntime(),
+        allow_legacy_unscoped=True,
+    )
+    return service.retrieve(
+        RAGToolInputSchema(
+            task_id=f"task_{run_id}",
+            run_id=run_id,
+            agent_name="SchemeWriterAgent",
+            query="forced contract failure",
+        )
+    )
+
+
+def _load_run_demo_module():
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_demo.py"
+    spec = importlib.util.spec_from_file_location(
+        "phase2_runtime_safety_run_demo",
+        script,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _capture_canonical_state(
     engine: EnterpriseDocumentWorkflowEngine,
     sink: list,
@@ -158,6 +201,22 @@ def _capture_canonical_state(
         return original_execute(workflow, graph_state)
 
     engine.execute = execute
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        AttributeError("dependency has no attribute 'legacy_factory'"),
+        TypeError("Builder() got an unexpected keyword argument 'legacy_path'"),
+        ImportError("cannot import name 'LegacyRegistry'"),
+    ],
+)
+def test_dependency_contract_failures_are_configuration_and_not_retryable(
+    exc,
+) -> None:
+    category = classify_failure(exc)
+    assert category == FailureCategory.CONFIGURATION
+    assert RetryDecisionPolicy().should_retry(category) is False
 
 
 @pytest.fixture(scope="module")
@@ -207,6 +266,84 @@ def test_technical_failure_returns_only_actual_business_nodes(tmp_path) -> None:
     assert len(execution["node_outputs"]) == 4
     assert len(execution["node_results"]) == 4
     assert execution["completed_node_ids"] == TECHNICAL_FAILURE_SEQUENCE
+
+
+def test_rag_contract_failure_preserves_error_across_all_result_layers(
+    tmp_path,
+) -> None:
+    run_id = "phase2_rag_contract_failure"
+    rag_failure = _rag_contract_failure_bundle(run_id=run_id)
+    assert rag_failure.error is not None
+    assert rag_failure.error.error_code == "RAG_RETRIEVAL_FAILED"
+    assert rag_failure.error.error_type == "AttributeError"
+    assert "ParentChunkStore" in rag_failure.error.message
+    assert rag_failure.error.failure_category == FailureCategory.CONFIGURATION
+    assert rag_failure.error.retryable is False
+    assert rag_failure.error.failed_node is None
+
+    summary, _ = _run_production_fake(
+        tmp_path,
+        run_id=run_id,
+        patchers=(
+            patch.object(
+                SchemeEvidenceService,
+                "retrieve",
+                return_value=rag_failure,
+            ),
+        ),
+    )
+    execution = _execution(summary)
+    retrieval_result = next(
+        item
+        for item in execution["node_results"]
+        if item["agent_name"] == "retrieve_document_evidence"
+    )
+    terminal_result = execution["node_results"][-1]
+    workflow_error = execution["error"]
+    report = _load_run_demo_module()._build_e2e_report(
+        summary,
+        runtime_preflight={},
+        validation=None,
+    )
+
+    errors = [
+        retrieval_result["error"],
+        terminal_result["error"],
+        workflow_error,
+        report["error"],
+    ]
+    for error in errors:
+        assert error["error_code"] == "RAG_RETRIEVAL_FAILED"
+        assert error["error_type"] == "AttributeError"
+        assert "ParentChunkStore" in error["message"]
+        assert error["failed_node"] == "retrieve_document_evidence"
+        assert error["failure_category"] == "configuration"
+        assert error["retryable"] is False
+
+    assert summary["status"] == "failed"
+    assert execution["completed_node_ids"] == TECHNICAL_FAILURE_SEQUENCE
+
+
+def test_non_retrieval_contract_failure_keeps_its_own_node_name(tmp_path) -> None:
+    summary, _ = _run_production_fake(
+        tmp_path,
+        run_id="phase2_plan_contract_failure",
+        patchers=(
+            patch.object(
+                SchemeGenerationStageService,
+                "prepare_document_plan",
+                side_effect=AttributeError(
+                    "PlannerRegistry has no attribute 'resolve_contract'"
+                ),
+            ),
+        ),
+    )
+
+    error = _execution(summary)["error"]
+    assert error["error_code"] == "SCHEME_GENERATION_STAGE_FAILED"
+    assert error["failed_node"] == "plan_document"
+    assert error["failure_category"] == "configuration"
+    assert error["retryable"] is False
 
 
 def test_undeclared_graph_state_write_is_blocked_and_rolled_back(tmp_path) -> None:
@@ -284,6 +421,9 @@ def test_workflow_execution_cancelled_is_normalized_and_task_is_terminal(
     )
 
     assert _error_code(summary) == "WORKFLOW_NODE_CANCELLED"
+    error = _execution(summary)["error"]
+    assert error["failed_node"] == "plan_document"
+    assert error["failure_category"] == "cancelled"
     assert summary["task_state"]["status"] != "running"
 
 
@@ -331,6 +471,9 @@ def test_hard_timeout_returns_before_sleep_and_discards_late_state(tmp_path) -> 
 
     assert engine_durations and engine_durations[0] < 0.75
     assert _error_code(summary) == "WORKFLOW_NODE_TIMEOUT"
+    error = _execution(summary)["error"]
+    assert error["failed_node"] == "plan_document"
+    assert error["failure_category"] == "timeout"
     assert canonical_states[0].tenant_id != "LATE_RESULT"
     assert summary["task_state"]["status"] != "running"
 

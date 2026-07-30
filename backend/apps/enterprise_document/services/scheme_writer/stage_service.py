@@ -345,16 +345,38 @@ class SchemeGenerationStageService:
             evidence_sufficient=semantic_sufficiency,
         )
         if rag_result is None or not rag_result.success:
+            node_name = "retrieve_document_evidence"
             underlying = rag_result.error if rag_result else None
-            error = underlying or self.runtime_support.error(
-                "RAG_TOOL_FAILED",
-                rag_result.error_message if rag_result else "RAG tool is not configured",
-                node="retrieve_document_evidence",
-                retryable=True,
-                failure_category=FailureCategory.AVAILABILITY,
-                requires_human=True,
-                user_message="知识检索失败，文档生成任务已停止。",
-            )
+            if underlying is not None:
+                source = (
+                    underlying.source.model_copy(
+                        update={"step_name": node_name},
+                        deep=True,
+                    )
+                    if underlying.source is not None
+                    else ErrorSourceSchema(
+                        component=self.rag_service_name,
+                        agent_name=self.agent_name,
+                        step_name=node_name,
+                    )
+                )
+                error = underlying.model_copy(
+                    update={
+                        "failed_node": node_name,
+                        "source": source,
+                    },
+                    deep=True,
+                )
+            else:
+                error = self.runtime_support.error(
+                    "RAG_TOOL_FAILED",
+                    rag_result.error_message if rag_result else "RAG tool is not configured",
+                    node=node_name,
+                    retryable=True,
+                    failure_category=FailureCategory.AVAILABILITY,
+                    requires_human=True,
+                    user_message="知识检索失败，文档生成任务已停止。",
+                )
             self.state_writer.add_error(shared_state, error)
             raise SchemeGenerationStageFailure(error)
 

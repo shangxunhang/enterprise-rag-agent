@@ -6,12 +6,27 @@ thin adapters preserve both public behaviours.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Literal
+from typing import Any, Dict, List, Literal
 
 from rag.schema.Chunk_Schema import build_chunk
 from rag.util.text_utils import split_text_by_fixed_size
 
 SchemaStyle = Literal["document", "fields"]
+
+
+def _compat_extra(
+    document: Dict,
+    *,
+    chunk_type: str,
+    **fields: Any,
+) -> Dict[str, Any]:
+    """Copy caller metadata.extra and overlay authoritative chunk facts."""
+
+    metadata = document.get("metadata") or {}
+    extra = dict(metadata.get("extra") or {})
+    extra.update(fields)
+    extra["chunk_type"] = chunk_type
+    return extra
 
 
 def chunk_fixed_size(
@@ -44,6 +59,10 @@ def chunk_fixed_size(
                     chunk_text=chunk_text,
                     chunk_index=idx,
                     chunk_type="fixed_size",
+                    extra=_compat_extra(
+                        document,
+                        chunk_type="fixed_size",
+                    ),
                 )
             )
             continue
@@ -65,6 +84,12 @@ def chunk_fixed_size(
                 chunk_type="fixed",
                 start_char=start_char,
                 end_char=end_char,
+                extra=_compat_extra(
+                    document,
+                    chunk_type="fixed",
+                    start_char=start_char,
+                    end_char=end_char,
+                ),
             )
         )
 
