@@ -145,7 +145,7 @@ class ParentChildResourcePool:
         if self._parent_store is None:
             from rag.store.parent_chunk_store import ParentChunkStore
 
-            self._parent_store = ParentChunkStore.from_jsonl(
+            self._parent_store = ParentChunkStore(
                 self.runtime_config.parent_file
             )
         return self._parent_store
