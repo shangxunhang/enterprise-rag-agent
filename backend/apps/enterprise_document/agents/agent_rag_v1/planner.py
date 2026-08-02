@@ -21,6 +21,31 @@ class PlannerAgent(StatelessBusinessAgent):
     input_schema = PlannerInvocationInputSchema
     payload_schema = PlannerResultPayloadSchema
 
+    def _validate_payload(
+        self,
+        context: AgentExecutionContextSchema,
+        invocation_input: PlannerInvocationInputSchema,
+        payload: PlannerResultPayloadSchema,
+    ) -> None:
+        del context
+        if invocation_input.project_input is None:
+            return
+        plan = payload.document_plan
+        if plan is None:
+            raise ValueError(
+                "production planner result requires canonical DocumentPlanSchema"
+            )
+        if plan.document_id != invocation_input.document_id:
+            raise ValueError("planner result document_id does not match invocation")
+        if payload.plan_revision != invocation_input.plan_revision:
+            raise ValueError("planner result revision does not match invocation")
+        section_ids = [section.section_id for section in plan.sections]
+        if payload.section_task_ids != section_ids:
+            raise ValueError("planner result section_task_ids do not match plan")
+        section_titles = [section.section_title for section in plan.sections]
+        if section_titles != invocation_input.required_sections:
+            raise ValueError("planner result sections do not match required_sections")
+
     def _build_patches(
         self,
         context: AgentExecutionContextSchema,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Callable, Iterable
 from uuid import uuid4
 
@@ -19,6 +20,26 @@ class ParagraphIdentityService:
             if candidate and candidate not in reserved:
                 return candidate
         raise RuntimeError("unable to allocate a unique paragraph id")
+
+    @staticmethod
+    def stable_id(
+        *,
+        section_id: str,
+        order: int,
+        role: str,
+    ) -> str:
+        """Return a replay-stable ID for one logical paragraph slot."""
+
+        section = str(section_id).strip()
+        normalized_role = str(role).strip() or "body"
+        if not section:
+            raise ValueError("section_id cannot be empty")
+        if order < 0:
+            raise ValueError("paragraph order cannot be negative")
+        digest = hashlib.sha256(
+            f"{section}|{order}|{normalized_role}".encode("utf-8")
+        ).hexdigest()[:24]
+        return f"paragraph_{digest}"
 
     @staticmethod
     def preserve(paragraph_id: str) -> str:

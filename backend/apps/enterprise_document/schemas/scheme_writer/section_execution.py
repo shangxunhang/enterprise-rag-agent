@@ -20,6 +20,7 @@ from schemas.rag import RAGContextSchema, RetrievedChunkSchema
 from .document import SchemeSectionSchema
 from .evidence import SectionEvidenceBundleSchema
 from .planning import SectionPlanSchema
+from .state_projection import SectionStateSchema
 
 
 class SectionExecutionRequestSchema(SchemaBase):
@@ -73,6 +74,7 @@ class SectionExecutionResultSchema(SchemaBase):
     citation_registry: List[CitationSchema] = Field(default_factory=list)
     budget_usage: Dict[str, Any] = Field(default_factory=dict)
     need_human_review: bool = False
+    section_state: Optional[SectionStateSchema] = None
 
     warnings: List[WarningSchema] = Field(default_factory=list)
     error: Optional[ErrorSchema] = None

@@ -31,6 +31,24 @@ from schemas.task import TaskSchema
 from task.task_manager import JsonlTaskManager
 
 
+ROUND7_REVIEW_PREFIX = [
+    "normalize_project_input",
+    "plan_document",
+    "retrieve_document_evidence",
+    "initialize_generation",
+    "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
+    "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "decide_document_version",
+    "evaluate_document_gate",
+    "build_generation_report",
+]
+
+
 class _InspectingFactory(SupervisorFactory):
     def __init__(self) -> None:
         super().__init__()
@@ -167,15 +185,9 @@ def test_human_review_interrupt_is_paused_and_task_is_not_terminal_failure(
     assert execution["metadata"]["workflow_complete"] is False
     assert execution["metadata"]["workflow_paused"] is True
     assert execution["metadata"]["interrupts"]
-    assert execution["metadata"]["business_node_sequence"] == [
-        "normalize_project_input",
-        "plan_document",
-        "retrieve_document_evidence",
-        "initialize_generation",
-        "execute_sections",
-        "assemble_document",
-        "evaluate_document_gate",
-    ]
+    assert execution["metadata"]["business_node_sequence"] == (
+        ROUND7_REVIEW_PREFIX
+    )
     settings = replace(
         get_settings(),
         data_root=tmp_path,
@@ -246,16 +258,8 @@ def test_new_engine_resumes_without_replaying_completed_nodes(tmp_path) -> None:
     assert result.metadata["resumed"] is True
     assert result.metadata["resume_count"] == 1
     sequence = result.metadata["business_node_sequence"]
-    assert sequence[:7] == [
-        "normalize_project_input",
-        "plan_document",
-        "retrieve_document_evidence",
-        "initialize_generation",
-        "execute_sections",
-        "assemble_document",
-        "evaluate_document_gate",
-    ]
-    assert sequence[7:] == [
+    assert sequence[: len(ROUND7_REVIEW_PREFIX)] == ROUND7_REVIEW_PREFIX
+    assert sequence[len(ROUND7_REVIEW_PREFIX) :] == [
         "apply_human_review",
         "persist_deliverable",
         "finalize_workflow_result",

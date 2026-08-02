@@ -29,6 +29,10 @@ from agent.runtime.langgraph_state import (
     WorkflowNamespaceCheckpointSaver,
 )
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema
+from apps.enterprise_document.quality.budget import (
+    TaskDrainingBudget,
+    activate_task_draining_budget,
+)
 from apps.enterprise_document.schemas.scheme_generation_graph import (
     SchemeGenerationGraphPayloadSchema,
     SchemeGenerationGraphState,
@@ -77,8 +81,15 @@ PHASE2_BUSINESS_NODE_NAMES = (
     "retrieve_document_evidence",
     "initialize_generation",
     "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
     "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "decide_document_version",
     "evaluate_document_gate",
+    "build_generation_report",
     "persist_deliverable",
     "persist_rejected",
     "finalize_workflow_result",
@@ -91,8 +102,15 @@ _SUCCESS_SEQUENCE = [
     "retrieve_document_evidence",
     "initialize_generation",
     "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
     "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "decide_document_version",
     "evaluate_document_gate",
+    "build_generation_report",
     "persist_deliverable",
     "finalize_workflow_result",
 ]
@@ -182,6 +200,7 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
                 "generation_options",
                 "document_id",
                 "document_plan",
+                "plan_state",
                 "scheme_input",
             ),
         ),
@@ -228,10 +247,42 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
             ),
             payload_write_paths=(
                 "sections",
+                "section_states",
                 "section_evidence",
                 "all_retrieved_chunks",
                 "all_citations",
                 "all_rag_outputs",
+                "document_validation",
+            ),
+        ),
+        "document_verify": BusinessNodeContract(
+            node_name="document_verify",
+            read_keys=("sections", "section_states", "project_input"),
+            payload_write_paths=(
+                "document_verification",
+                "conflict_repair_plan",
+                "document_validation",
+            ),
+        ),
+        "repair_document_conflicts": BusinessNodeContract(
+            node_name="repair_document_conflicts",
+            read_keys=("document_verification", "section_states"),
+            payload_write_paths=(
+                "conflict_repair_plan",
+                "conflict_repair_history",
+                "document_validation",
+            ),
+        ),
+        "incremental_document_reverify": BusinessNodeContract(
+            node_name="incremental_document_reverify",
+            read_keys=(
+                "conflict_repair_history",
+                "sections",
+                "section_states",
+            ),
+            payload_write_paths=(
+                "incremental_document_verification",
+                "document_validation",
             ),
         ),
         "assemble_document": BusinessNodeContract(
@@ -242,6 +293,31 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
                 "generated_draft",
                 "all_retrieved_chunks",
                 "all_citations",
+            ),
+        ),
+        "validate_document_assembly": BusinessNodeContract(
+            node_name="validate_document_assembly",
+            read_keys=("assembly", "required_sections"),
+            payload_write_paths=(
+                "assembly_validation",
+                "document_validation",
+            ),
+        ),
+        "final_artifact_review": BusinessNodeContract(
+            node_name="final_artifact_review",
+            read_keys=("assembly", "assembly_validation", "project_input"),
+            payload_write_paths=(
+                "final_artifact_review",
+                "document_validation",
+            ),
+        ),
+        "decide_document_version": BusinessNodeContract(
+            node_name="decide_document_version",
+            read_keys=("project_input",),
+            payload_write_paths=(
+                "version_decision",
+                "document_version",
+                "document_validation",
             ),
         ),
         "evaluate_document_gate": BusinessNodeContract(
@@ -259,6 +335,19 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
                 "output_error",
                 "output_warnings",
                 "artifact_route",
+            ),
+        ),
+        "build_generation_report": BusinessNodeContract(
+            node_name="build_generation_report",
+            read_keys=(
+                "hard_gate",
+                "document_version",
+                "sections",
+                "section_states",
+            ),
+            payload_write_paths=(
+                "generation_report",
+                "document_validation",
             ),
         ),
         "persist_deliverable": BusinessNodeContract(
@@ -359,7 +448,7 @@ class EnterpriseDocumentWorkflowEngine:
     """Application-owned workflow engine with shared Phase 1 runtime safety."""
 
     engine_name = "enterprise_document_langgraph_engine"
-    engine_version = "phase5-langgraph-langchain-takeover-v1"
+    engine_version = "phase8-recovery-retirement-v1"
     capabilities = WorkflowEngineCapabilities(
         resume=True,
         inspect=True,
@@ -918,7 +1007,11 @@ class EnterpriseDocumentWorkflowEngine:
         )
 
         route = "technical_failure" if error is not None else "continue"
-        if node_name in {"evaluate_document_gate", "apply_human_review"} and error is None:
+        if node_name in {
+            "evaluate_document_gate",
+            "build_generation_report",
+            "apply_human_review",
+        } and error is None:
             route = committed_payload.artifact_route
         update: dict[str, Any] = {
             "graph_state_payload": self.runtime_state_codec.dump_graph_state(
@@ -1140,6 +1233,41 @@ class EnterpriseDocumentWorkflowEngine:
         )
         return update
 
+    def _execute_sections_with_task_budget(
+        self,
+        graph_state: GraphStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Run Section scheduling under one checkpoint-projected draining budget."""
+
+        project_input = payload.project_input
+        if project_input is None:
+            raise ValueError("execute_sections requires project_input")
+        policy = dict(
+            project_input.generation_requirements.extra.get("task_budget") or {}
+        )
+        validation_metadata = dict(payload.document_validation.metadata)
+        budget = TaskDrainingBudget.from_snapshot(
+            validation_metadata.get("task_budget"),
+            policy_metadata={"task_budget": policy},
+        )
+        with activate_task_draining_budget(budget):
+            updated = self.stage_service.execute_sections(graph_state, payload)
+        validation = updated.document_validation.model_copy(
+            update={
+                "metadata": {
+                    **dict(updated.document_validation.metadata),
+                    "task_budget": budget.snapshot(),
+                    "budget_integration_round": "round8",
+                }
+            },
+            deep=True,
+        )
+        return updated.model_copy(
+            update={"document_validation": validation},
+            deep=True,
+        )
+
     def _normalize_project_input(
         self,
         graph_state: GraphStateSchema,
@@ -1180,6 +1308,19 @@ class EnterpriseDocumentWorkflowEngine:
         route = str(runtime_state.get("business_route") or "")
         return route if route in _GATE_ROUTES else "technical_failure"
 
+    @staticmethod
+    def _active_input_snapshot(
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> str:
+        snapshot = str(payload.plan_state.input_snapshot_version or "").strip()
+        if snapshot:
+            return snapshot
+        if payload.project_input is None:
+            return "snapshot:uninitialized"
+        return "sha256:" + stable_graph_hash(
+            payload.project_input.model_dump(mode="json", round_trip=True)
+        )
+
     def _human_review_interrupt(
         self,
         runtime_state: SchemeGenerationGraphState,
@@ -1199,6 +1340,12 @@ class EnterpriseDocumentWorkflowEngine:
                 item.model_dump(mode="json") for item in payload.output_warnings
             ],
             requested_at=self.stage_service.runtime_support.now_iso(),
+            metadata={
+                "input_snapshot_version": self._active_input_snapshot(payload),
+                "plan_revision": payload.plan_state.plan_revision,
+                "resume_stage": "persist_artifact",
+                "recovery_integration_round": "round8",
+            },
         )
         response = interrupt(review_request.model_dump(mode="json"))
         return {
@@ -1214,6 +1361,21 @@ class EnterpriseDocumentWorkflowEngine:
         response: Any,
     ) -> SchemeGenerationGraphPayloadSchema:
         raw = dict(response) if isinstance(response, dict) else {}
+        raw_metadata = dict(raw.get("metadata") or {})
+        expected_snapshot = self._active_input_snapshot(payload)
+        provided_snapshot = str(
+            raw.get("input_snapshot_version")
+            or raw_metadata.get("input_snapshot_version")
+            or ""
+        ).strip()
+        if provided_snapshot and provided_snapshot != expected_snapshot:
+            raise ValueError("human review decision snapshot is stale")
+        provided_task_id = str(raw.get("task_id") or "").strip()
+        if provided_task_id and provided_task_id != graph_state.task_id:
+            raise ValueError("human review task identity mismatch")
+        provided_run_id = str(raw.get("run_id") or "").strip()
+        if provided_run_id and provided_run_id != graph_state.run_id:
+            raise ValueError("human review run identity mismatch")
         raw_decision = str(
             raw.get("decision")
             or ("approved" if raw.get("approved") is True else "")
@@ -1241,7 +1403,12 @@ class EnterpriseDocumentWorkflowEngine:
             feedback=feedback,
             decided_at=decided_at,
             reviewer_id=str(raw.get("reviewer_id") or "").strip() or None,
-            metadata=dict(raw.get("metadata") or {}),
+            metadata={
+                **raw_metadata,
+                "input_snapshot_version": expected_snapshot,
+                "resume_stage": "persist_artifact",
+                "recovery_integration_round": "round8",
+            },
         )
         artifact_route = payload.artifact_route
         output_status = payload.output_status
@@ -1344,16 +1511,65 @@ class EnterpriseDocumentWorkflowEngine:
         )
         builder.add_node(
             "execute_sections",
-            business_node("execute_sections", self.stage_service.execute_sections),
+            business_node(
+                "execute_sections",
+                self._execute_sections_with_task_budget,
+            ),
+        )
+        builder.add_node(
+            "document_verify",
+            business_node("document_verify", self.stage_service.document_verify),
+        )
+        builder.add_node(
+            "repair_document_conflicts",
+            business_node(
+                "repair_document_conflicts",
+                self.stage_service.repair_document_conflicts,
+            ),
+        )
+        builder.add_node(
+            "incremental_document_reverify",
+            business_node(
+                "incremental_document_reverify",
+                self.stage_service.incremental_document_reverify,
+            ),
         )
         builder.add_node(
             "assemble_document",
             business_node("assemble_document", self.stage_service.assemble_document),
         )
         builder.add_node(
+            "validate_document_assembly",
+            business_node(
+                "validate_document_assembly",
+                self.stage_service.validate_document_assembly,
+            ),
+        )
+        builder.add_node(
+            "final_artifact_review",
+            business_node(
+                "final_artifact_review",
+                self.stage_service.final_artifact_review,
+            ),
+        )
+        builder.add_node(
+            "decide_document_version",
+            business_node(
+                "decide_document_version",
+                self.stage_service.decide_document_version,
+            ),
+        )
+        builder.add_node(
             "evaluate_document_gate",
             business_node(
                 "evaluate_document_gate", self.stage_service.evaluate_document_gate
+            ),
+        )
+        builder.add_node(
+            "build_generation_report",
+            business_node(
+                "build_generation_report",
+                self.stage_service.build_generation_report,
             ),
         )
         # 人工审核节点
@@ -1409,8 +1625,18 @@ class EnterpriseDocumentWorkflowEngine:
             ("plan_document", "retrieve_document_evidence"),
             ("retrieve_document_evidence", "initialize_generation"),
             ("initialize_generation", "execute_sections"),
-            ("execute_sections", "assemble_document"),
-            ("assemble_document", "evaluate_document_gate"),
+            ("execute_sections", "document_verify"),
+            ("document_verify", "repair_document_conflicts"),
+            (
+                "repair_document_conflicts",
+                "incremental_document_reverify",
+            ),
+            ("incremental_document_reverify", "assemble_document"),
+            ("assemble_document", "validate_document_assembly"),
+            ("validate_document_assembly", "final_artifact_review"),
+            ("final_artifact_review", "decide_document_version"),
+            ("decide_document_version", "evaluate_document_gate"),
+            ("evaluate_document_gate", "build_generation_report"),
         ]
         for source, destination in linear_routes:
             builder.add_conditional_edges(
@@ -1422,7 +1648,7 @@ class EnterpriseDocumentWorkflowEngine:
                 },
             )
         builder.add_conditional_edges(
-            "evaluate_document_gate",
+            "build_generation_report",
             self._route_after_gate,
             {
                 **_GATE_ROUTES,
@@ -1472,7 +1698,7 @@ class EnterpriseDocumentWorkflowEngine:
                 "checkpoint_namespace": self.runtime_state_codec.workflow_namespace(
                     workflow
                 ),
-                "business_graph": "enterprise_document_phase5",
+                "business_graph": "enterprise_document_phase8",
             },
         }
 
@@ -1677,6 +1903,38 @@ class EnterpriseDocumentWorkflowEngine:
             resumed=False,
         )
 
+    def _latest_checkpoint_payload(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        *,
+        run_id: str,
+    ) -> SchemeGenerationGraphPayloadSchema | None:
+        latest = self.checkpointer.get_tuple(
+            phase2_checkpoint_identity(workflow, run_id=run_id)
+        )
+        if latest is None:
+            return None
+        checkpoint = getattr(latest, "checkpoint", {})
+        values = (
+            checkpoint.get("channel_values", {})
+            if isinstance(checkpoint, dict)
+            else {}
+        )
+        raw = values.get("scheme_generation_payload")
+        if not isinstance(raw, dict):
+            return None
+        return self.business_state_codec.restore_payload(
+            {
+                "scheme_generation_state_version": values.get(
+                    "scheme_generation_state_version",
+                    1,
+                ),
+                "scheme_generation_payload": raw,
+                "task_id": values.get("task_id") or raw.get("task_id"),
+                "run_id": values.get("run_id") or raw.get("run_id"),
+            }
+        )
+
     def resume(
         self,
         workflow: WorkflowDefinitionSchema,
@@ -1684,6 +1942,27 @@ class EnterpriseDocumentWorkflowEngine:
         resume_value: dict[str, Any],
     ) -> WorkflowEngineResultSchema:
         """Resume from the durable checkpoint without replaying completed nodes."""
+
+        persisted = self._latest_checkpoint_payload(
+            workflow,
+            run_id=graph_state.run_id,
+        )
+        if persisted is not None:
+            raw_metadata = dict(resume_value.get("metadata") or {})
+            provided_snapshot = str(
+                resume_value.get("input_snapshot_version")
+                or raw_metadata.get("input_snapshot_version")
+                or ""
+            ).strip()
+            expected_snapshot = self._active_input_snapshot(persisted)
+            if provided_snapshot and provided_snapshot != expected_snapshot:
+                raise ValueError("human review decision snapshot is stale")
+            provided_task_id = str(resume_value.get("task_id") or "").strip()
+            if provided_task_id and provided_task_id != persisted.task_id:
+                raise ValueError("human review task identity mismatch")
+            provided_run_id = str(resume_value.get("run_id") or "").strip()
+            if provided_run_id and provided_run_id != persisted.run_id:
+                raise ValueError("human review run identity mismatch")
 
         initial_revision = graph_state.graph_revision
         final_runtime = self.build_graph(workflow).invoke(

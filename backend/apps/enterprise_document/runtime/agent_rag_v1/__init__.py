@@ -1,24 +1,23 @@
-"""Public surface of the standalone Agent-RAG Multi-Agent V1 runtime."""
+"""Production Agent-RAG runtime surface after Round-8 retirement.
 
-from .application_service import MultiAgentApplicationService
-from .contracts import (
-    MultiAgentProjectInputSchema,
-    StandaloneRunResultSchema,
-    StandaloneScenario,
+Only recovery primitives used by the existing Mainline graphs are public.
+Former Standalone Orchestrator/RuntimeFactory/ApplicationService modules remain
+as archived fixture references and are intentionally not re-exported here.
+"""
+
+from .mainline_recovery import (
+    MainlineAttemptGuard,
+    MainlineReplanAttempt,
+    MainlineRunningInvocationRecovery,
+    StaleMainlineResultError,
 )
-from .runtime_factory import RuntimeComponents, RuntimeFactory, RuntimeSession
-from .scenario_runtime import render_result, run_scenario
-from .workflow_orchestrator import WorkflowOrchestrator
+
+LEGACY_STANDALONE_FIXTURE_ONLY = True
 
 __all__ = [
-    "MultiAgentApplicationService",
-    "MultiAgentProjectInputSchema",
-    "RuntimeComponents",
-    "RuntimeFactory",
-    "RuntimeSession",
-    "StandaloneRunResultSchema",
-    "StandaloneScenario",
-    "WorkflowOrchestrator",
-    "render_result",
-    "run_scenario",
+    "LEGACY_STANDALONE_FIXTURE_ONLY",
+    "MainlineAttemptGuard",
+    "MainlineReplanAttempt",
+    "MainlineRunningInvocationRecovery",
+    "StaleMainlineResultError",
 ]

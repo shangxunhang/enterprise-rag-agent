@@ -7,6 +7,8 @@ Document Hard Gate、最终 Capture 或 AgentResult 映射。
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from apps.enterprise_document.quality.budget import (
     WorkflowBudget,
     WorkflowBudgetExceeded,
@@ -30,6 +32,9 @@ from .runtime_support import SchemeWriterRuntimeSupport
 from .section_generation_service import SectionGenerationService
 from .section_retrieval_query_builder import SectionRetrievalQueryBuilder
 
+if TYPE_CHECKING:
+    from .agent_integration import MainlineSectionAgentAdapter
+
 
 class SectionExecutionCoordinator:
     """串联单章节子流程，并将所有检索历史和最终有效证据一起返回。"""
@@ -48,6 +53,15 @@ class SectionExecutionCoordinator:
         self.section_generation_service = section_generation_service
         self.runtime_support = runtime_support
         self.generation_quality_metadata = dict(generation_quality_metadata or {})
+        self.section_agent_adapter: MainlineSectionAgentAdapter | None = None
+
+    def attach_section_agent_adapter(
+        self,
+        adapter: "MainlineSectionAgentAdapter",
+    ) -> None:
+        """Attach production-owned Agents without changing legacy execution."""
+
+        self.section_agent_adapter = adapter
 
     @staticmethod
     def _evidence_assessment(normalized_output: dict) -> dict:

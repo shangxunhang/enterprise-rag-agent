@@ -33,8 +33,15 @@ PHASE2_NODE_SEQUENCE = [
     "retrieve_document_evidence",
     "initialize_generation",
     "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
     "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "decide_document_version",
     "evaluate_document_gate",
+    "build_generation_report",
     "persist_deliverable",
     "finalize_workflow_result",
 ]
@@ -414,7 +421,7 @@ def test_evidence_insufficient_reaches_gate_once_and_persists_rejected(
     )
 
     assert _phase2_started_nodes(summary) == [
-        *PHASE2_NODE_SEQUENCE[:7],
+        *PHASE2_NODE_SEQUENCE[:14],
         "persist_rejected",
         "finalize_workflow_result",
     ]

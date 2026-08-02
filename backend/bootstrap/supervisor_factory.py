@@ -14,6 +14,10 @@ from apps.enterprise_document.agents.project_input_normalizer_agent import (
     ProjectInputNormalizerAgent,
 )
 from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
+from apps.enterprise_document.services.scheme_writer.agent_integration import (
+    build_mainline_planner_adapter,
+    build_round5_section_agent_adapter,
+)
 from apps.enterprise_document.workflows.top_level_business_graph import (
     EnterpriseDocumentWorkflowEngine,
 )
@@ -144,6 +148,19 @@ class SupervisorFactory:
             generation_quality_metadata=agent_quality.metadata,
             retrieval_access_scope=retrieval_access_scope,
             section_max_concurrency=options.section_max_concurrency,
+        )
+        scheme_writer.stage_service.attach_planner_adapter(
+            build_mainline_planner_adapter(
+                planning_service=scheme_writer.document_planning_service,
+                trace_sink=trace,
+            )
+        )
+        scheme_writer.section_execution_coordinator.attach_section_agent_adapter(
+            build_round5_section_agent_adapter(
+                evidence_service=scheme_writer.evidence_service,
+                model_gateway=model_gateway,
+                trace_sink=trace,
+            )
         )
         side_effect_commit_store = JsonlSideEffectCommitStore(
             runs_dir / "side_effect_commits.jsonl"

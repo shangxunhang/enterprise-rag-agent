@@ -1,6 +1,8 @@
-"""Composition root for the standalone Agent-RAG Multi-Agent V1 runtime."""
+"""Archived fixture composition root for the retired Standalone runtime."""
 
 from __future__ import annotations
+
+LEGACY_FIXTURE_ONLY = True
 
 from dataclasses import dataclass
 from pathlib import Path

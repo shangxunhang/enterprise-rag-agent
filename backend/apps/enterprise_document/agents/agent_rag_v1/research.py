@@ -30,6 +30,10 @@ class ResearchAgent(StatelessBusinessAgent):
     ) -> None:
         if payload.section_id != context.section_id:
             raise ValueError("research payload section does not match context")
+        if payload.evidence_summary.section_id != payload.section_id:
+            raise ValueError("research evidence summary section does not match payload")
+        if payload.research_round < 0:
+            raise ValueError("research_round cannot be negative")
 
     def _build_patches(
         self,

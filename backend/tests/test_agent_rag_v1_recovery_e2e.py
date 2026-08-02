@@ -1,55 +1,40 @@
+"""Recovery ownership moved from Standalone replay to production LangGraph."""
+
 from __future__ import annotations
 
-import json
-from collections import Counter
-from pathlib import Path
+import inspect
 
-import pytest
-
-from apps.enterprise_document.runtime.agent_rag_v1 import (
-    MultiAgentApplicationService,
-    MultiAgentProjectInputSchema,
+from apps.enterprise_document.runtime.agent_rag_v1.mainline_recovery import (
+    MainlineAttemptGuard,
+    MainlineReplanAttempt,
+    MainlineRunningInvocationRecovery,
+)
+from apps.enterprise_document.workflows.section_execution_graph import (
+    SectionExecutionGraph,
+)
+from apps.enterprise_document.workflows.top_level_business_graph import (
+    EnterpriseDocumentWorkflowEngine,
 )
 
 
-pytestmark = pytest.mark.recovery_e2e
+def test_mainline_owns_attempt_running_invocation_and_replan_recovery() -> None:
+    assert callable(MainlineAttemptGuard.validate_result_metadata)
+    assert callable(MainlineRunningInvocationRecovery.decide)
+    assert callable(MainlineReplanAttempt.prepare)
 
 
-def test_writer_recovers_from_checkpoint_and_progress_events(
-    tmp_path: Path,
-) -> None:
-    result = MultiAgentApplicationService().run(
-        MultiAgentProjectInputSchema(
-            scenario="crash-recovery",
-            output_dir=str(tmp_path),
-            task_id="recovery-e2e",
-            run_id="run-001",
-        )
-    )
-    records = [
-        json.loads(line)
-        for line in Path(result.writer_event_log_path)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    compute_paragraphs = [
-        record["paragraph"]["paragraph_id"]
-        for record in records
-        if record.get("section_id") == "compute"
-        and "paragraph" in record
-    ]
+def test_section_graph_owns_crash_resume_and_replan_entrypoints() -> None:
+    assert callable(SectionExecutionGraph.resume)
+    assert callable(SectionExecutionGraph.replan)
+    assert callable(SectionExecutionGraph.recover_running_invocation)
+    source = inspect.getsource(SectionExecutionGraph)
+    assert "JsonCheckpointStore" not in source
+    assert "EventReplayRecoveryService" not in source
 
-    assert result.task_status.value == "success"
-    assert result.trace.recovery_performed is True
-    assert result.trace.checkpoint_event_recovery is True
-    assert result.trace.reused_paragraph_ids == ["p001", "p002"]
-    assert Counter(compute_paragraphs) == {
-        "p001": 1,
-        "p002": 1,
-        "p003": 1,
-    }
-    assert (
-        result.final_state.section_states["compute"].writing.expected_paragraph_ids
-        == ["p001", "p002", "p003"]
-    )
-    assert Path(result.document_artifact_path).is_file()
+
+def test_top_level_graph_owns_durable_human_review_resume() -> None:
+    assert callable(EnterpriseDocumentWorkflowEngine.resume)
+    source = inspect.getsource(EnterpriseDocumentWorkflowEngine)
+    assert "human review decision snapshot is stale" in source
+    assert "WorkflowOrchestrator" not in source
+    assert "HumanReviewResumeService" not in source

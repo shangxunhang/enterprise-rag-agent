@@ -22,9 +22,16 @@ from agent.runtime.langgraph_state import (
 from agent.runtime.workflow_stream_context import emit_workflow_custom_event
 from agent.runtime.state_access import SharedStateWriter
 from apps.enterprise_document.quality.budget import (
+    TaskDrainingBudgetExceeded,
     WorkflowBudget,
     WorkflowBudgetExceeded,
     activate_workflow_budget,
+    current_task_draining_budget,
+)
+from apps.enterprise_document.schemas.agent_rag_v1 import (
+    ResearchRecommendedAction,
+    RunningInvocationRecoveryInputSchema,
+    VerifierAction,
 )
 from apps.enterprise_document.schemas.section_execution_graph import (
     SectionExecutionGraphPayloadSchema,
@@ -33,6 +40,7 @@ from apps.enterprise_document.schemas.section_execution_graph import (
     SectionGraphExecutionRequestSchema,
 )
 from apps.enterprise_document.schemas.scheme_writer_schema import (
+    SectionEvalSchema,
     SectionEvidenceBundleSchema,
     SectionExecutionRequestSchema,
     SectionExecutionResultSchema,
@@ -41,6 +49,14 @@ from apps.enterprise_document.services.output_validation import detect_truncatio
 from schemas.common import ErrorSourceSchema, WarningSchema
 from schemas.status import ExecutionStatus
 
+from ..runtime.agent_rag_v1.mainline_recovery import (
+    MainlineAttemptGuard,
+    MainlineReplanAttempt,
+    MainlineRunningInvocationRecovery,
+)
+from ..services.agent_rag_v1.streaming_writer import (
+    CheckpointParagraphPipeline,
+)
 from ..services.scheme_writer.document_citation_registry import (
     DocumentCitationRegistry,
 )
@@ -54,6 +70,9 @@ SECTION_GRAPH_NODE_NAMES = (
     "retrieve_section_evidence",
     "evaluate_evidence_gate",
     "generate_section",
+    "prepare_paragraph_pipeline",
+    "persist_paragraph",
+    "precheck_paragraph",
     "evaluate_generation",
     "retrieve_more",
     "corrective_retrieval",
@@ -74,9 +93,17 @@ class SectionExecutionGraph:
         self.evidence_service = coordinator.evidence_service
         self.query_builder = coordinator.query_builder
         self.section_generation_service = coordinator.section_generation_service
+        self.paragraph_pipeline = CheckpointParagraphPipeline()
+        self.attempt_guard = MainlineAttemptGuard()
+        self.running_invocation_recovery = MainlineRunningInvocationRecovery()
         self.runtime_support = coordinator.runtime_support
         self.generation_quality_metadata = dict(
             coordinator.generation_quality_metadata or {}
+        )
+        self.section_agent_adapter = getattr(
+            coordinator,
+            "section_agent_adapter",
+            None,
         )
         self.codec = SectionExecutionGraphStateCodec()
         self.graph_state_codec = LangGraphRuntimeStateCodec()
@@ -120,7 +147,7 @@ class SectionExecutionGraph:
                 "checkpoint_namespace": namespace,
                 "graph_kind": "section_execution_subgraph",
             },
-            "recursion_limit": 64,
+            "recursion_limit": 128,
         }
 
     def _restore(
@@ -174,6 +201,367 @@ class SectionExecutionGraph:
         details = assessment.get("details")
         assessment["details"] = dict(details) if isinstance(details, dict) else {}
         return assessment
+
+    @staticmethod
+    def _evidence_contract_sha(
+        payload: SectionExecutionGraphPayloadSchema,
+    ) -> str | None:
+        context = payload.active_context or payload.document_rag_context
+        return str(
+            (context.extra or {}).get("evidence_contract_sha256") or ""
+        ) or None
+
+    @staticmethod
+    def _active_evidence_ids(
+        payload: SectionExecutionGraphPayloadSchema,
+    ) -> list[str]:
+        citation_ids = [
+            str(item.citation_id).strip()
+            for item in payload.active_citations
+            if str(item.citation_id).strip()
+        ]
+        if citation_ids:
+            return list(dict.fromkeys(citation_ids))
+        chunk_ids = [
+            str(getattr(item, "chunk_id", "") or "").strip()
+            for item in payload.active_chunks
+            if str(getattr(item, "chunk_id", "") or "").strip()
+        ]
+        return list(dict.fromkeys(chunk_ids))
+
+    @staticmethod
+    def _append_agent_payload(
+        existing: list,
+        item,
+        *,
+        metadata_field: str,
+    ) -> list:
+        metadata = dict(getattr(item, metadata_field, {}) or {})
+        invocation_id = str(metadata.get("invocation_id") or "").strip()
+        if not invocation_id:
+            return [*existing, item]
+        retained = [
+            value
+            for value in existing
+            if str(
+                dict(getattr(value, metadata_field, {}) or {}).get(
+                    "invocation_id"
+                )
+                or ""
+            ).strip()
+            != invocation_id
+        ]
+        return [*retained, item]
+
+    def _validate_agent_result_identity(
+        self,
+        payload: SectionExecutionGraphPayloadSchema,
+        *,
+        section_state,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Reject stale Agent output before it can mutate the Section payload."""
+
+        section_id = str(payload.section_id or payload.section_plan.section_id)
+        return self.attempt_guard.validate_result_metadata(
+            run_id=payload.run_id,
+            section_id=section_id,
+            section_state=section_state,
+            project_input=payload.project_input,
+            section_plan=payload.section_plan,
+            metadata=metadata,
+        )
+
+    def _invoke_research_agent(
+        self,
+        payload: SectionExecutionGraphPayloadSchema,
+        *,
+        node_name: str,
+        research_mode: str,
+        retrieval_succeeded: bool,
+        retrieval_scope: str | None = None,
+        shared_state: GraphStateSchema | None = None,
+        query: str = "",
+        call_suffix: str = "",
+        citation_registry: list | None = None,
+    ) -> SectionExecutionGraphPayloadSchema:
+        adapter = self.section_agent_adapter
+        if adapter is None:
+            return payload
+        section_state = payload.section_state
+        if section_state is None or payload.section_id is None:
+            raise ValueError("ResearchAgent requires initialized section state")
+        outcome = adapter.research(
+            node_name=node_name,
+            task_id=payload.task_id,
+            run_id=payload.run_id,
+            project_input=payload.project_input,
+            section_plan=payload.section_plan,
+            section_state=section_state,
+            section_id=payload.section_id,
+            section_title=str(payload.section_title or payload.section_plan.section_title),
+            retrieval_scope=str(retrieval_scope or payload.active_scope),
+            research_mode=research_mode,
+            research_round=max(1, payload.recovery_count + 1),
+            citation_required=payload.citation_required,
+            assessment=dict(payload.active_assessment),
+            accepted_evidence_ids=self._active_evidence_ids(payload),
+            rejected_evidence_ids=[],
+            evidence_contract_sha256=self._evidence_contract_sha(payload),
+            tool_call_ids=list(payload.tool_call_ids),
+            retrieval_succeeded=retrieval_succeeded,
+            prior_evidence_package_ref=(
+                section_state.research.evidence_package_ref
+            ),
+            budget=dict(payload.budget_state),
+            shared_state=shared_state,
+            query=query,
+            call_suffix=call_suffix,
+            citation_registry=list(citation_registry or []),
+        )
+        identity_audit = self._validate_agent_result_identity(
+            payload,
+            section_state=section_state,
+            metadata=dict(outcome.payload.agent_metadata),
+        )
+        metadata = dict(payload.retrieval_metadata)
+        metadata.update(
+            {
+                "research_agent_identity": identity_audit,
+                "research_agent_action": (
+                    outcome.payload.evidence_summary.recommended_action.value
+                ),
+                "research_agent_status": (
+                    outcome.payload.evidence_summary.research_status.value
+                ),
+                "research_agent_invocation_id": (
+                    outcome.payload.agent_metadata.get("invocation_id")
+                ),
+                "research_agent_fake_reasoner": bool(
+                    outcome.payload.agent_metadata.get("fake_reasoner")
+                ),
+                "research_agent_tool_gateway": (
+                    outcome.payload.agent_metadata.get("tool_gateway")
+                ),
+            }
+        )
+        updates: dict[str, Any] = {
+            "section_state": outcome.section_state,
+            "research_agent_payloads": self._append_agent_payload(
+                list(payload.research_agent_payloads),
+                outcome.payload,
+                metadata_field="agent_metadata",
+            ),
+            "retrieval_metadata": metadata,
+        }
+        retrieval = outcome.retrieval
+        if retrieval is not None:
+            tool_call_ids = list(payload.tool_call_ids)
+            if retrieval.retrieval_trace_id:
+                tool_call_ids.append(retrieval.retrieval_trace_id)
+            metadata.update(
+                {
+                    "research_tool_retrieval_success": retrieval.success,
+                    "research_tool_error": retrieval.error_message,
+                    "evidence_assessment_status": retrieval.assessment.get(
+                        "status", "not_assessed"
+                    ),
+                    "evidence_assessment": dict(retrieval.assessment),
+                }
+            )
+            updates.update(
+                {
+                    "tool_call_ids": list(dict.fromkeys(tool_call_ids)),
+                    "active_assessment": dict(retrieval.assessment),
+                    "retrieval_metadata": metadata,
+                }
+            )
+            if retrieval.success:
+                updates.update(
+                    {
+                        "citation_registry": list(retrieval.citation_registry),
+                        "retrieved_chunks": [
+                            *payload.retrieved_chunks,
+                            *retrieval.chunks,
+                        ],
+                        "rag_outputs": [
+                            *payload.rag_outputs,
+                            dict(retrieval.normalized),
+                        ],
+                    }
+                )
+                if (
+                    retrieval.context is not None
+                    and retrieval.context.context_text.strip()
+                    and retrieval.citations
+                ):
+                    updates.update(
+                        {
+                            "active_context": retrieval.context,
+                            "active_chunks": list(retrieval.chunks),
+                            "active_citations": list(retrieval.citations),
+                            "active_query": query,
+                            "active_scope": str(
+                                retrieval_scope or payload.active_scope
+                            ),
+                        }
+                    )
+        return payload.model_copy(update=updates, deep=True)
+
+    def _invoke_writer_agent(
+        self,
+        payload: SectionExecutionGraphPayloadSchema,
+        *,
+        node_name: str,
+        section,
+    ) -> SectionExecutionGraphPayloadSchema:
+        adapter = self.section_agent_adapter
+        if adapter is None:
+            return payload
+        section_state = payload.section_state
+        if section_state is None:
+            raise ValueError("WriterAgent requires initialized section state")
+        evidence_ref = (
+            section_state.research.evidence_package_ref
+            or f"state://section-evidence/{section.section_id}/{payload.active_scope}"
+        )
+        outcome = adapter.write(
+            node_name=node_name,
+            task_id=payload.task_id,
+            run_id=payload.run_id,
+            project_input=payload.project_input,
+            section_plan=payload.section_plan,
+            section_state=section_state,
+            section=section,
+            evidence_package_ref=evidence_ref,
+            generation_attempt=payload.generation_attempt,
+            citation_required=payload.citation_required,
+            generation_check=dict(payload.generation_check),
+            budget=dict(payload.budget_state),
+        )
+        identity_audit = self._validate_agent_result_identity(
+            payload,
+            section_state=section_state,
+            metadata=dict(outcome.payload.writer_metadata),
+        )
+        projected_payload = self.paragraph_pipeline.writer_payload(
+            section=section,
+            artifacts=list(payload.paragraph_artifacts),
+            draft_version=max(1, payload.generation_attempt),
+            blocked_paragraph_id=payload.paragraph_blocked_id,
+        )
+        projected_payload = projected_payload.model_copy(
+            update={
+                "writer_metadata": {
+                    **dict(outcome.payload.writer_metadata),
+                    **dict(projected_payload.writer_metadata),
+                    "agent_generation_complete": (
+                        outcome.payload.generation_complete
+                    ),
+                    "fixed_projector": "round6_paragraph_checkpoint_projection",
+                }
+            },
+            deep=True,
+        )
+        metadata = dict(payload.retrieval_metadata)
+        metadata.update(
+            {
+                "writer_agent_identity": identity_audit,
+                "writer_agent_status": (
+                    projected_payload.writer_metadata.get("agent_status")
+                ),
+                "writer_agent_invocation_id": (
+                    projected_payload.writer_metadata.get("invocation_id")
+                ),
+                "writer_agent_fake_reasoner": bool(
+                    projected_payload.writer_metadata.get("fake_reasoner")
+                ),
+                "writer_agent_model_call_id": (
+                    projected_payload.writer_metadata.get("model_call_id")
+                ),
+                "paragraph_pipeline_attached": True,
+                "paragraph_artifact_count": len(payload.paragraph_artifacts),
+            }
+        )
+        return payload.model_copy(
+            update={
+                "section_state": outcome.section_state,
+                "writer_agent_payloads": self._append_agent_payload(
+                    list(payload.writer_agent_payloads),
+                    projected_payload,
+                    metadata_field="writer_metadata",
+                ),
+                "retrieval_metadata": metadata,
+                "budget_state": dict(outcome.budget_state),
+            },
+            deep=True,
+        )
+
+    def _invoke_verifier_agent(
+        self,
+        payload: SectionExecutionGraphPayloadSchema,
+        *,
+        node_name: str,
+        section,
+    ) -> SectionExecutionGraphPayloadSchema:
+        adapter = self.section_agent_adapter
+        if adapter is None:
+            return payload
+        section_state = payload.section_state
+        if section_state is None:
+            raise ValueError("VerifierAgent requires initialized section state")
+        outcome = adapter.verify(
+            node_name=node_name,
+            task_id=payload.task_id,
+            run_id=payload.run_id,
+            project_input=payload.project_input,
+            section_plan=payload.section_plan,
+            section_state=section_state,
+            section=section,
+            generation_attempt=payload.generation_attempt,
+            generation_check=dict(payload.generation_check),
+            citation_required=payload.citation_required,
+            evidence_blocked=payload.evidence_blocked,
+            corrective_retrieval_enabled=payload.corrective_retrieval_enabled,
+            budget=dict(payload.budget_state),
+        )
+        identity_audit = self._validate_agent_result_identity(
+            payload,
+            section_state=section_state,
+            metadata=dict(outcome.payload.decision_metadata),
+        )
+        metadata = dict(payload.retrieval_metadata)
+        metadata.update(
+            {
+                "verifier_agent_identity": identity_audit,
+                "verifier_agent_action": outcome.payload.action.value,
+                "verifier_agent_retrieval_route": (
+                    outcome.payload.decision_metadata.get("retrieval_route")
+                ),
+                "verifier_agent_invocation_id": (
+                    outcome.payload.decision_metadata.get("invocation_id")
+                ),
+                "verifier_agent_fake_reasoner": bool(
+                    outcome.payload.decision_metadata.get("fake_reasoner")
+                ),
+                "verifier_agent_model_call_id": (
+                    outcome.payload.decision_metadata.get("model_call_id")
+                ),
+            }
+        )
+        return payload.model_copy(
+            update={
+                "section_state": outcome.section_state,
+                "verifier_agent_payloads": self._append_agent_payload(
+                    list(payload.verifier_agent_payloads),
+                    outcome.payload,
+                    metadata_field="decision_metadata",
+                ),
+                "retrieval_metadata": metadata,
+                "budget_state": dict(outcome.budget_state),
+            },
+            deep=True,
+        )
 
     def _request(
         self,
@@ -232,6 +620,8 @@ class SectionExecutionGraph:
                 **dict(payload.budget_policy_override),
             }
         )
+        task_budget = current_task_draining_budget()
+        task_budget_snapshot = task_budget.snapshot() if task_budget else {}
         updated = payload.model_copy(
             update={
                 "section_id": section_id,
@@ -260,7 +650,13 @@ class SectionExecutionGraph:
                         )
                     ),
                 },
-                "budget_state": budget.snapshot(),
+                "budget_state": {
+                    **budget.snapshot(),
+                    "task_budget": task_budget_snapshot,
+                    "task_draining": bool(
+                        task_budget_snapshot.get("draining", False)
+                    ),
+                },
             },
             deep=True,
         )
@@ -286,7 +682,9 @@ class SectionExecutionGraph:
             },
         )
         route = (
-            "retrieve"
+            "finalize"
+            if payload.budget_exhaustion_resource is not None
+            else "retrieve"
             if payload.section_retrieval_enabled and citation_required
             else "evidence_gate"
         )
@@ -321,6 +719,60 @@ class SectionExecutionGraph:
             section_id=section_id,
             payload={"scope": "section", "query": query},
         )
+        if (
+            self.section_agent_adapter is not None
+            and self.section_agent_adapter.uses_research_tool_gateway
+        ):
+            updated = self._invoke_research_agent(
+                payload,
+                node_name="retrieve_section_evidence",
+                research_mode="initial",
+                retrieval_succeeded=False,
+                retrieval_scope="section",
+                shared_state=shared_state,
+                query=query,
+                call_suffix=f"section_{order:03d}",
+                citation_registry=list(payload.citation_registry),
+            )
+            success = bool(
+                updated.retrieval_metadata.get(
+                    "research_tool_retrieval_success"
+                )
+            )
+            metadata = dict(updated.retrieval_metadata)
+            metadata.update(
+                {
+                    "section_retrieval_success": success,
+                    "section_citation_count": len(updated.active_citations),
+                }
+            )
+            updated = updated.model_copy(
+                update={"retrieval_metadata": metadata},
+                deep=True,
+            )
+            emit_workflow_custom_event(
+                "retrieval_completed",
+                node_name="retrieve_section_evidence",
+                section_id=section_id,
+                status=(
+                    ExecutionStatus.SUCCESS.value
+                    if success
+                    else ExecutionStatus.FAILED.value
+                ),
+                payload={"scope": "section", "query": query},
+            )
+            print(
+                f"[SectionRAG] END   section={title} success={success} "
+                f"chunks={len(updated.active_chunks)} "
+                f"citations={len(updated.active_citations)}",
+                flush=True,
+            )
+            return self._update(
+                updated,
+                node_name="retrieve_section_evidence",
+                route="evidence_gate",
+                shared_state=shared_state,
+            )
         result = self.evidence_service.retrieve(
             shared_state,
             payload.project_input,
@@ -416,6 +868,12 @@ class SectionExecutionGraph:
             }
         )
         updated = payload.model_copy(update=updates, deep=True)
+        updated = self._invoke_research_agent(
+            updated,
+            node_name="retrieve_section_evidence",
+            research_mode="initial",
+            retrieval_succeeded=bool(result is not None and result.success),
+        )
         return self._update(
             updated,
             node_name="retrieve_section_evidence",
@@ -428,10 +886,32 @@ class SectionExecutionGraph:
         state: SectionExecutionGraphState,
     ) -> dict[str, Any]:
         payload, shared_state = self._restore(state)
+        if self.section_agent_adapter is not None and not payload.research_agent_payloads:
+            payload = self._invoke_research_agent(
+                payload,
+                node_name="evaluate_evidence_gate",
+                research_mode="document_context",
+                retrieval_succeeded=True,
+            )
+        research_action = (
+            payload.research_agent_payloads[-1]
+            .evidence_summary.recommended_action
+            if payload.research_agent_payloads
+            else None
+        )
         blocked = bool(
             payload.citation_required
             and payload.active_assessment.get("status") == "insufficient"
         )
+        if (
+            research_action
+            in {
+                ResearchRecommendedAction.HUMAN_REVIEW,
+                ResearchRecommendedAction.PARTIAL_DELIVERY,
+            }
+            and payload.active_assessment.get("status") == "insufficient"
+        ):
+            blocked = True
         updates: dict[str, Any] = {"evidence_blocked": blocked}
         route = "generate"
         if blocked:
@@ -532,7 +1012,405 @@ class SectionExecutionGraph:
         return self._update(
             updated,
             node_name="generate_section",
-            route="evaluate_generation",
+            route="prepare_paragraph_pipeline",
+            shared_state=shared_state,
+        )
+
+    def _prepare_paragraph_pipeline(
+        self,
+        state: SectionExecutionGraphState,
+    ) -> dict[str, Any]:
+        payload, shared_state = self._restore(state)
+        section = payload.section
+        if section is None:
+            raise ValueError("paragraph pipeline requires generated section")
+        candidates = self.paragraph_pipeline.plan(
+            section_id=section.section_id,
+            content=section.content,
+            paragraph_version=max(1, payload.generation_attempt),
+            prior_paragraphs=list(payload.paragraph_artifacts),
+        )
+        candidate_ids = {
+            str(item.paragraph_id)
+            for item in candidates
+            if item.paragraph_id is not None
+        }
+        retained_artifacts = [
+            item
+            for item in payload.paragraph_artifacts
+            if item.paragraph_id in candidate_ids
+            and any(
+                candidate.paragraph_id == item.paragraph_id
+                and candidate.paragraph_version == item.paragraph_version
+                and candidate.content.strip() == item.content
+                for candidate in candidates
+            )
+        ]
+        retained_ids = {item.paragraph_id for item in retained_artifacts}
+        retained_prechecks = [
+            item
+            for item in payload.paragraph_precheck_results
+            if item.paragraph_id in retained_ids
+            and any(
+                artifact.paragraph_id == item.paragraph_id
+                and artifact.paragraph_version == item.paragraph_version
+                for artifact in retained_artifacts
+            )
+        ]
+        retained_claims = [
+            item
+            for item in payload.paragraph_claims
+            if item.paragraph_id in retained_ids
+        ]
+        prechecked_versions = {
+            (item.paragraph_id, item.paragraph_version)
+            for item in retained_prechecks
+        }
+        cursor = len(candidates)
+        for index, candidate in enumerate(candidates):
+            if (
+                str(candidate.paragraph_id),
+                candidate.paragraph_version,
+            ) not in prechecked_versions:
+                cursor = index
+                break
+        updated = payload.model_copy(
+            update={
+                "paragraph_candidates": candidates,
+                "paragraph_artifacts": retained_artifacts,
+                "paragraph_precheck_results": retained_prechecks,
+                "paragraph_claims": retained_claims,
+                "paragraph_cursor": cursor,
+                "paragraph_blocked_id": None,
+                "paragraph_pipeline_revision": max(
+                    payload.paragraph_pipeline_revision,
+                    payload.generation_attempt,
+                ),
+            },
+            deep=True,
+        )
+        route = "persist_paragraph" if cursor < len(candidates) else "evaluate_generation"
+        if route == "evaluate_generation":
+            updated = self._invoke_writer_agent(
+                updated,
+                node_name="prepare_paragraph_pipeline",
+                section=section,
+            )
+        emit_workflow_custom_event(
+            "paragraph_pipeline_planned",
+            node_name="prepare_paragraph_pipeline",
+            section_id=section.section_id,
+            status="success",
+            payload={
+                "candidate_count": len(candidates),
+                "retained_count": len(retained_artifacts),
+                "cursor": cursor,
+            },
+        )
+        return self._update(
+            updated,
+            node_name="prepare_paragraph_pipeline",
+            route=route,
+            shared_state=shared_state,
+        )
+
+    def _persist_paragraph(
+        self,
+        state: SectionExecutionGraphState,
+    ) -> dict[str, Any]:
+        payload, shared_state = self._restore(state)
+        if payload.paragraph_cursor >= len(payload.paragraph_candidates):
+            raise ValueError("paragraph persist cursor has no candidate")
+        candidate = payload.paragraph_candidates[payload.paragraph_cursor]
+        artifact = self.paragraph_pipeline.persist(
+            task_id=payload.task_id,
+            run_id=payload.run_id,
+            section_id=str(payload.section_id),
+            candidate=candidate,
+        )
+        artifacts = list(payload.paragraph_artifacts)
+        existing_index = next(
+            (
+                index
+                for index, item in enumerate(artifacts)
+                if item.paragraph_id == artifact.paragraph_id
+            ),
+            None,
+        )
+        changed = False
+        if existing_index is None:
+            artifacts.append(artifact)
+            changed = True
+        else:
+            existing = artifacts[existing_index]
+            if existing.paragraph_version == artifact.paragraph_version:
+                self.paragraph_pipeline.assert_idempotent_commit(existing, artifact)
+            elif artifact.paragraph_version > existing.paragraph_version:
+                artifacts[existing_index] = artifact
+                changed = True
+            else:
+                raise ValueError("paragraph replay attempted an older version")
+        artifacts.sort(key=lambda item: item.order)
+        prechecks = [
+            item
+            for item in payload.paragraph_precheck_results
+            if not (
+                item.paragraph_id == artifact.paragraph_id
+                and item.paragraph_version != artifact.paragraph_version
+            )
+        ]
+        updated = payload.model_copy(
+            update={
+                "paragraph_artifacts": artifacts,
+                "paragraph_precheck_results": prechecks,
+                "paragraph_pipeline_revision": (
+                    payload.paragraph_pipeline_revision + 1
+                    if changed
+                    else payload.paragraph_pipeline_revision
+                ),
+            },
+            deep=True,
+        )
+        emit_workflow_custom_event(
+            "paragraph_committed",
+            node_name="persist_paragraph",
+            section_id=str(payload.section_id),
+            status="success",
+            payload={
+                "paragraph_id": artifact.paragraph_id,
+                "paragraph_version": artifact.paragraph_version,
+                "content_hash": artifact.content_hash,
+                "idempotent_replay": not changed,
+            },
+        )
+        return self._update(
+            updated,
+            node_name="persist_paragraph",
+            route="precheck_paragraph",
+            shared_state=shared_state,
+        )
+
+    def _paragraph_section_snapshot(
+        self,
+        payload: SectionExecutionGraphPayloadSchema,
+        *,
+        blocked_paragraph_id: str | None,
+    ):
+        section = payload.section
+        if section is None:
+            raise ValueError("paragraph snapshot requires generated section")
+        excluded = {blocked_paragraph_id} if blocked_paragraph_id else set()
+        content = self.paragraph_pipeline.assemble_content(
+            payload.paragraph_artifacts,
+            exclude_ids=excluded,
+        )
+        checks = dict(
+            section.eval_result.checks if section.eval_result is not None else {}
+        )
+        failures = list(
+            section.eval_result.failures if section.eval_result is not None else []
+        )
+        warnings = list(
+            section.eval_result.warnings if section.eval_result is not None else []
+        )
+        checks["paragraph_precheck_passed"] = blocked_paragraph_id is None
+        if blocked_paragraph_id is not None:
+            failure = f"paragraph_precheck_blocked:{blocked_paragraph_id}"
+            if failure not in failures:
+                failures.append(failure)
+        passed = bool(
+            blocked_paragraph_id is None
+            and (section.eval_result is None or section.eval_result.passed)
+        )
+        status = section.status
+        if blocked_paragraph_id is not None:
+            status = (
+                ExecutionStatus.PARTIAL_SUCCESS
+                if content
+                else ExecutionStatus.FAILED
+            )
+        return section.model_copy(
+            update={
+                "content": content,
+                "status": status,
+                "eval_result": SectionEvalSchema(
+                    passed=passed,
+                    checks=checks,
+                    failures=failures,
+                    warnings=warnings,
+                    semantic_gate=(
+                        section.eval_result.semantic_gate
+                        if section.eval_result is not None
+                        else None
+                    ),
+                ),
+                "extra": {
+                    **dict(section.extra or {}),
+                    "paragraph_pipeline": {
+                        "artifact_authority": "section_langgraph_checkpoint",
+                        "paragraph_count": len(payload.paragraph_artifacts),
+                        "precheck_count": len(
+                            payload.paragraph_precheck_results
+                        ),
+                        "claim_count": len(payload.paragraph_claims),
+                        "blocked_paragraph_id": blocked_paragraph_id,
+                        "pipeline_revision": payload.paragraph_pipeline_revision,
+                    },
+                },
+            },
+            deep=True,
+        )
+
+    def _precheck_paragraph(
+        self,
+        state: SectionExecutionGraphState,
+    ) -> dict[str, Any]:
+        payload, shared_state = self._restore(state)
+        if payload.paragraph_cursor >= len(payload.paragraph_candidates):
+            raise ValueError("paragraph precheck cursor has no candidate")
+        candidate = payload.paragraph_candidates[payload.paragraph_cursor]
+        paragraph_id = str(candidate.paragraph_id)
+        artifact = next(
+            (
+                item
+                for item in payload.paragraph_artifacts
+                if item.paragraph_id == paragraph_id
+            ),
+            None,
+        )
+        if artifact is None:
+            raise ValueError("paragraph precheck requires committed artifact")
+        snapshot_version = str(
+            payload.section_state.attempt.input_snapshot_version
+            if payload.section_state is not None
+            and payload.section_state.attempt.input_snapshot_version
+            else f"sha256:{payload.task_id}:{payload.run_id}"
+        )
+        fact_snapshot = self.paragraph_pipeline.fact_snapshot(
+            task_id=payload.task_id,
+            run_id=payload.run_id,
+            section_id=str(payload.section_id),
+            snapshot_version=snapshot_version,
+            structured_facts=list(payload.structured_facts),
+        )
+        existing = next(
+            (
+                item
+                for item in payload.paragraph_precheck_results
+                if item.paragraph_id == paragraph_id
+                and item.paragraph_version == artifact.paragraph_version
+            ),
+            None,
+        )
+        precheck = existing or self.paragraph_pipeline.precheck_paragraph(
+            section_id=str(payload.section_id),
+            artifact=artifact,
+            fact_snapshot=fact_snapshot,
+        )
+        prechecks = [
+            item
+            for item in payload.paragraph_precheck_results
+            if item.paragraph_id != paragraph_id
+        ]
+        prechecks.append(precheck)
+        prechecks.sort(
+            key=lambda item: next(
+                artifact_item.order
+                for artifact_item in payload.paragraph_artifacts
+                if artifact_item.paragraph_id == item.paragraph_id
+            )
+        )
+        claims = self.paragraph_pipeline.update_claims(
+            section_id=str(payload.section_id),
+            artifacts=list(payload.paragraph_artifacts),
+            previous_claims=list(payload.paragraph_claims),
+            changed_paragraph_ids={paragraph_id},
+            fact_snapshot=fact_snapshot,
+        )
+        claims_by_id = {item.claim_id: item for item in claims}
+        claims = sorted(claims_by_id.values(), key=lambda item: item.claim_id)
+        generation_check = dict(payload.generation_check)
+        generation_check.update(
+            {
+                "paragraph_precheck_passed": not precheck.blocking,
+                "paragraph_precheck_blocking": precheck.blocking,
+                "paragraph_precheck_issue_count": len(precheck.issues),
+            }
+        )
+        updates: dict[str, Any] = {
+            "paragraph_precheck_results": prechecks,
+            "paragraph_claims": claims,
+            "generation_check": generation_check,
+            "paragraph_pipeline_revision": (
+                payload.paragraph_pipeline_revision
+                if existing is not None
+                else payload.paragraph_pipeline_revision + 1
+            ),
+        }
+        route = "persist_paragraph"
+        if precheck.blocking:
+            updates["paragraph_blocked_id"] = paragraph_id
+            blocked_payload = payload.model_copy(update=updates, deep=True)
+            section = self._paragraph_section_snapshot(
+                blocked_payload,
+                blocked_paragraph_id=paragraph_id,
+            )
+            blocked_payload = blocked_payload.model_copy(
+                update={"section": section},
+                deep=True,
+            )
+            blocked_payload = self._invoke_writer_agent(
+                blocked_payload,
+                node_name="precheck_paragraph",
+                section=section,
+            )
+            updated = blocked_payload
+            route = "evaluate_generation"
+        else:
+            cursor = payload.paragraph_cursor + 1
+            prechecked_versions = {
+                (item.paragraph_id, item.paragraph_version)
+                for item in prechecks
+            }
+            while cursor < len(payload.paragraph_candidates):
+                next_candidate = payload.paragraph_candidates[cursor]
+                if (
+                    str(next_candidate.paragraph_id),
+                    next_candidate.paragraph_version,
+                ) not in prechecked_versions:
+                    break
+                cursor += 1
+            updates["paragraph_cursor"] = cursor
+            updated = payload.model_copy(update=updates, deep=True)
+            if cursor >= len(payload.paragraph_candidates):
+                section = self._paragraph_section_snapshot(
+                    updated,
+                    blocked_paragraph_id=None,
+                )
+                updated = updated.model_copy(update={"section": section}, deep=True)
+                updated = self._invoke_writer_agent(
+                    updated,
+                    node_name="precheck_paragraph",
+                    section=section,
+                )
+                route = "evaluate_generation"
+        emit_workflow_custom_event(
+            "paragraph_prechecked",
+            node_name="precheck_paragraph",
+            section_id=str(payload.section_id),
+            status="blocked" if precheck.blocking else "success",
+            payload={
+                "paragraph_id": paragraph_id,
+                "paragraph_version": artifact.paragraph_version,
+                "blocking": precheck.blocking,
+                "claim_count": len(precheck.claims),
+                "issue_count": len(precheck.issues),
+            },
+        )
+        return self._update(
+            updated,
+            node_name="precheck_paragraph",
+            route=route,
             shared_state=shared_state,
         )
 
@@ -541,10 +1419,15 @@ class SectionExecutionGraph:
         state: SectionExecutionGraphState,
     ) -> dict[str, Any]:
         payload, shared_state = self._restore(state)
-        budget = WorkflowBudget.from_snapshot(payload.budget_state)
         section = payload.section
         if section is None:
             raise ValueError("evaluate_generation requires section")
+        payload = self._invoke_verifier_agent(
+            payload,
+            node_name="evaluate_generation",
+            section=section,
+        )
+        budget = WorkflowBudget.from_snapshot(payload.budget_state)
         route = "finalize"
         updates: dict[str, Any] = {}
         metadata = dict(payload.retrieval_metadata)
@@ -584,36 +1467,101 @@ class SectionExecutionGraph:
                     "retrieval_metadata": metadata,
                 }
             )
-        need_more = bool(payload.generation_check.get("need_retrieve_more"))
-        citation_bound = bool(
-            section.eval_result
-            and section.eval_result.checks.get("citation_bound", False)
+        verifier_payload = (
+            payload.verifier_agent_payloads[-1]
+            if payload.verifier_agent_payloads
+            else None
         )
-        if need_more:
-            if budget.retrieval_rounds < budget.max_retrieval_rounds:
-                route = "retrieve_more"
-            else:
+        paragraph_blocking = bool(
+            payload.generation_check.get("paragraph_precheck_blocking")
+        )
+        if paragraph_blocking:
+            try:
+                budget.consume_rewrite_round()
+                route = "generate"
                 updates.update(
                     {
-                        "budget_exhaustion_resource": "retrieval_rounds",
-                        "budget_exhaustion_limit": budget.max_retrieval_rounds,
+                        "generation_attempt": payload.generation_attempt + 1,
+                        "budget_state": budget.snapshot(),
                     }
                 )
-        elif (
-            payload.citation_required
-            and not payload.evidence_blocked
-            and not citation_bound
-            and payload.corrective_retrieval_enabled
-        ):
-            if budget.retrieval_rounds < budget.max_retrieval_rounds:
-                route = "corrective_retrieval"
-            else:
+            except WorkflowBudgetExceeded as exc:
                 updates.update(
                     {
-                        "budget_exhaustion_resource": "retrieval_rounds",
-                        "budget_exhaustion_limit": budget.max_retrieval_rounds,
+                        "budget_state": budget.snapshot(),
+                        "budget_exhaustion_resource": exc.resource,
+                        "budget_exhaustion_limit": exc.limit,
                     }
                 )
+        elif verifier_payload is not None:
+            action = verifier_payload.action
+            if action == VerifierAction.RESEARCH_MORE:
+                desired_route = str(
+                    verifier_payload.decision_metadata.get("retrieval_route")
+                    or "retrieve_more"
+                )
+                if desired_route not in {"retrieve_more", "corrective_retrieval"}:
+                    desired_route = "retrieve_more"
+                if budget.retrieval_rounds < budget.max_retrieval_rounds:
+                    route = desired_route
+                else:
+                    updates.update(
+                        {
+                            "budget_exhaustion_resource": "retrieval_rounds",
+                            "budget_exhaustion_limit": budget.max_retrieval_rounds,
+                        }
+                    )
+            elif action == VerifierAction.REWRITE:
+                try:
+                    budget.consume_rewrite_round()
+                    route = "generate"
+                    updates.update(
+                        {
+                            "generation_attempt": payload.generation_attempt + 1,
+                            "budget_state": budget.snapshot(),
+                        }
+                    )
+                except WorkflowBudgetExceeded as exc:
+                    updates.update(
+                        {
+                            "budget_state": budget.snapshot(),
+                            "budget_exhaustion_resource": exc.resource,
+                            "budget_exhaustion_limit": exc.limit,
+                        }
+                    )
+            else:
+                route = "finalize"
+        else:
+            need_more = bool(payload.generation_check.get("need_retrieve_more"))
+            citation_bound = bool(
+                section.eval_result
+                and section.eval_result.checks.get("citation_bound", False)
+            )
+            if need_more:
+                if budget.retrieval_rounds < budget.max_retrieval_rounds:
+                    route = "retrieve_more"
+                else:
+                    updates.update(
+                        {
+                            "budget_exhaustion_resource": "retrieval_rounds",
+                            "budget_exhaustion_limit": budget.max_retrieval_rounds,
+                        }
+                    )
+            elif (
+                payload.citation_required
+                and not payload.evidence_blocked
+                and not citation_bound
+                and payload.corrective_retrieval_enabled
+            ):
+                if budget.retrieval_rounds < budget.max_retrieval_rounds:
+                    route = "corrective_retrieval"
+                else:
+                    updates.update(
+                        {
+                            "budget_exhaustion_resource": "retrieval_rounds",
+                            "budget_exhaustion_limit": budget.max_retrieval_rounds,
+                        }
+                    )
         updated = payload.model_copy(update=updates, deep=True)
         return self._update(
             updated,
@@ -664,6 +1612,162 @@ class SectionExecutionGraph:
             f"[{label}] START section={title} query={query[:100]!r}",
             flush=True,
         )
+        if (
+            self.section_agent_adapter is not None
+            and self.section_agent_adapter.uses_research_tool_gateway
+        ):
+            self_rag_rounds = list(payload.self_rag_retrieval_rounds)
+            pending_self_rag_round = (
+                {
+                    "round": budget.retrieval_rounds,
+                    "query": query,
+                    "check_before": dict(payload.generation_check),
+                    "success": False,
+                }
+                if not corrective
+                else None
+            )
+            updated = payload.model_copy(
+                update={
+                    "budget_state": budget.snapshot(),
+                    "recovery_count": recovery_count,
+                },
+                deep=True,
+            )
+            call_suffix = (
+                f"section_{order:03d}_recovery_{recovery_count}"
+                if corrective
+                else f"section_{order:03d}_self_rag_{recovery_count}"
+            )
+            updated = self._invoke_research_agent(
+                updated,
+                node_name=(
+                    "corrective_retrieval" if corrective else "retrieve_more"
+                ),
+                research_mode=(
+                    "corrective_retrieval"
+                    if corrective
+                    else "self_rag_recovery"
+                ),
+                retrieval_succeeded=False,
+                retrieval_scope=scope,
+                shared_state=shared_state,
+                query=query,
+                call_suffix=call_suffix,
+                citation_registry=list(payload.citation_registry),
+            )
+            metadata = dict(updated.retrieval_metadata)
+            success = bool(
+                metadata.get("research_tool_retrieval_success")
+            )
+            route = "finalize"
+            branch_updates: dict[str, Any] = {}
+            assessment = dict(updated.active_assessment)
+            if (
+                success
+                and updated.active_context is not None
+                and updated.active_context.context_text.strip()
+                and updated.active_citations
+            ):
+                if (
+                    payload.citation_required
+                    and assessment.get("status") == "insufficient"
+                ):
+                    section = self.section_generation_service.build_insufficient_evidence_section(
+                        shared_state,
+                        project_input=payload.project_input,
+                        section_title=title,
+                        section_order=order,
+                        rag_context=updated.active_context,
+                        citations=list(updated.active_citations),
+                        assessment=assessment,
+                    )
+                    branch_updates.update(
+                        {
+                            "section": section,
+                            "evidence_blocked": True,
+                            "generation_check": {},
+                        }
+                    )
+                    if pending_self_rag_round is not None:
+                        completed_round = {
+                            **pending_self_rag_round,
+                            "error": "evidence_insufficient",
+                            "assessment": assessment,
+                            "retrieved_chunk_count": len(updated.active_chunks),
+                            "citation_count": len(updated.active_citations),
+                        }
+                        self_rag_rounds.append(completed_round)
+                        metadata["self_rag_retrieval_rounds"] = list(
+                            self_rag_rounds
+                        )
+                        metadata["self_rag_retrieve_more_success"] = False
+                        branch_updates.update(
+                            {
+                                "self_rag_retrieval_rounds": self_rag_rounds,
+                                "pending_self_rag_round": None,
+                            }
+                        )
+                else:
+                    branch_updates["generation_attempt"] = (
+                        payload.generation_attempt + 1
+                    )
+                    if pending_self_rag_round is not None:
+                        branch_updates["pending_self_rag_round"] = {
+                            **pending_self_rag_round,
+                            "retrieved_chunk_count": len(updated.active_chunks),
+                            "citation_count": len(updated.active_citations),
+                        }
+                    route = "generate"
+            elif pending_self_rag_round is not None:
+                completed_round = {
+                    **pending_self_rag_round,
+                    "error": str(
+                        metadata.get("research_tool_error")
+                        or "empty_recovered_context"
+                    ),
+                    "retrieved_chunk_count": len(updated.active_chunks),
+                    "citation_count": len(updated.active_citations),
+                }
+                self_rag_rounds.append(completed_round)
+                metadata["self_rag_retrieval_rounds"] = list(
+                    self_rag_rounds
+                )
+                metadata["self_rag_retrieve_more_success"] = False
+                branch_updates.update(
+                    {
+                        "self_rag_retrieval_rounds": self_rag_rounds,
+                        "pending_self_rag_round": None,
+                    }
+                )
+            if corrective:
+                metadata["corrective_retrieval_success"] = success
+            elif route == "generate":
+                metadata["self_rag_retrieve_more_success"] = True
+            metadata["evidence_assessment"] = assessment
+            branch_updates["retrieval_metadata"] = metadata
+            updated = updated.model_copy(update=branch_updates, deep=True)
+            if updated.research_agent_payloads:
+                action = (
+                    updated.research_agent_payloads[-1]
+                    .evidence_summary.recommended_action
+                )
+                if route == "generate" and action != ResearchRecommendedAction.WRITE:
+                    route = "finalize"
+            print(
+                f"[{label}] END   section={title} success={success} "
+                f"chunks={len(updated.active_chunks)} "
+                f"citations={len(updated.active_citations)}",
+                flush=True,
+            )
+            return self._update(
+                updated,
+                node_name=(
+                    "corrective_retrieval" if corrective else "retrieve_more"
+                ),
+                route=route,
+                shared_state=shared_state,
+            )
         result = self.evidence_service.retrieve(
             shared_state,
             payload.project_input,
@@ -842,11 +1946,29 @@ class SectionExecutionGraph:
             }
         )
         updated = payload.model_copy(update=updates, deep=True)
+        recovery_node = (
+            "corrective_retrieval" if corrective else "retrieve_more"
+        )
+        updated = self._invoke_research_agent(
+            updated,
+            node_name=recovery_node,
+            research_mode=(
+                "corrective_retrieval"
+                if corrective
+                else "self_rag_recovery"
+            ),
+            retrieval_succeeded=bool(result is not None and result.success),
+        )
+        if updated.research_agent_payloads:
+            action = (
+                updated.research_agent_payloads[-1]
+                .evidence_summary.recommended_action
+            )
+            if route == "generate" and action != ResearchRecommendedAction.WRITE:
+                route = "finalize"
         return self._update(
             updated,
-            node_name=(
-                "corrective_retrieval" if corrective else "retrieve_more"
-            ),
+            node_name=recovery_node,
             route=route,
             shared_state=shared_state,
         )
@@ -957,11 +2079,30 @@ class SectionExecutionGraph:
                 *payload.executed_nodes,
                 "finalize_section",
             ],
+            "section_agent_payload_counts": {
+                "research": len(payload.research_agent_payloads),
+                "writer": len(payload.writer_agent_payloads),
+                "verifier": len(payload.verifier_agent_payloads),
+            },
+            "section_agent_actions": {
+                "research": (
+                    payload.research_agent_payloads[-1]
+                    .evidence_summary.recommended_action.value
+                    if payload.research_agent_payloads
+                    else None
+                ),
+                "verifier": (
+                    payload.verifier_agent_payloads[-1].action.value
+                    if payload.verifier_agent_payloads
+                    else None
+                ),
+            },
         }
         self.state_writer.add_generated_section(shared_state, section.section_id)
         result = SectionExecutionResultSchema(
             section=section,
             evidence=evidence,
+            section_state=payload.section_state,
             retrieved_chunks=list(payload.retrieved_chunks),
             rag_outputs=list(payload.rag_outputs),
             citation_registry=list(payload.citation_registry),
@@ -1025,6 +2166,12 @@ class SectionExecutionGraph:
         )
         builder.add_node("evaluate_evidence_gate", self._evaluate_evidence_gate)
         builder.add_node("generate_section", self._generate_section)
+        builder.add_node(
+            "prepare_paragraph_pipeline",
+            self._prepare_paragraph_pipeline,
+        )
+        builder.add_node("persist_paragraph", self._persist_paragraph)
+        builder.add_node("precheck_paragraph", self._precheck_paragraph)
         builder.add_node("evaluate_generation", self._evaluate_generation)
         builder.add_node("retrieve_more", self._retrieve_more)
         builder.add_node("corrective_retrieval", self._corrective_retrieval)
@@ -1037,6 +2184,7 @@ class SectionExecutionGraph:
             {
                 "retrieve": "retrieve_section_evidence",
                 "evidence_gate": "evaluate_evidence_gate",
+                "finalize": "finalize_section",
             },
         )
         builder.add_edge("retrieve_section_evidence", "evaluate_evidence_gate")
@@ -1045,13 +2193,31 @@ class SectionExecutionGraph:
             self._route,
             {"generate": "generate_section", "finalize": "finalize_section"},
         )
-        builder.add_edge("generate_section", "evaluate_generation")
+        builder.add_edge("generate_section", "prepare_paragraph_pipeline")
+        builder.add_conditional_edges(
+            "prepare_paragraph_pipeline",
+            self._route,
+            {
+                "persist_paragraph": "persist_paragraph",
+                "evaluate_generation": "evaluate_generation",
+            },
+        )
+        builder.add_edge("persist_paragraph", "precheck_paragraph")
+        builder.add_conditional_edges(
+            "precheck_paragraph",
+            self._route,
+            {
+                "persist_paragraph": "persist_paragraph",
+                "evaluate_generation": "evaluate_generation",
+            },
+        )
         builder.add_conditional_edges(
             "evaluate_generation",
             self._route,
             {
                 "retrieve_more": "retrieve_more",
                 "corrective_retrieval": "corrective_retrieval",
+                "generate": "generate_section",
                 "finalize": "finalize_section",
             },
         )
@@ -1078,6 +2244,19 @@ class SectionExecutionGraph:
     ) -> SectionExecutionResultSchema:
         """Execute a serializable section subgraph and project state back."""
 
+        section_id = (
+            f"section_{shared_state.run_id}_{request.section_plan.section_order:03d}"
+        )
+        task_budget = current_task_draining_budget()
+        task_budget_exhaustion: TaskDrainingBudgetExceeded | None = None
+        task_budget_admitted = False
+        if task_budget is not None:
+            try:
+                task_budget.begin_section(section_id)
+                task_budget_admitted = True
+            except TaskDrainingBudgetExceeded as exc:
+                task_budget_exhaustion = exc
+
         initial = SectionExecutionGraphPayloadSchema(
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
@@ -1099,21 +2278,135 @@ class SectionExecutionGraph:
             parallel_isolated=request.parallel_isolated,
             budget_policy_override=dict(request.budget_policy_override),
             citation_registry=citation_registry.all(),
+            budget_exhaustion_resource=(
+                f"task_{task_budget_exhaustion.resource}"
+                if task_budget_exhaustion is not None
+                else None
+            ),
+            budget_exhaustion_limit=(
+                task_budget_exhaustion.limit
+                if task_budget_exhaustion is not None
+                else None
+            ),
+            budget_state=(
+                {
+                    "task_budget": task_budget.snapshot(),
+                    "task_draining": task_budget.draining,
+                }
+                if task_budget is not None
+                else {}
+            ),
         )
         state = self.codec.build_initial_state(initial)
         self.codec.assert_json_serializable(state)
-        section_id = f"section_{shared_state.run_id}_{request.section_plan.section_order:03d}"
+        try:
+            final = self.build_graph().invoke(
+                state,
+                config=self.checkpoint_config(
+                    workflow_namespace=workflow_namespace,
+                    run_id=shared_state.run_id,
+                    section_id=section_id,
+                ),
+            )
+        except BaseException:
+            if task_budget is not None and task_budget_admitted:
+                task_budget.abort_section(section_id)
+            raise
+        else:
+            if task_budget is not None and task_budget_admitted:
+                task_budget.finish_section(section_id)
+        payload = self.codec.restore_payload(final)
+        if payload.result is None:
+            raise RuntimeError("section subgraph completed without result")
+        restored_state = self.codec.restore_graph_state(payload)
+        self.graph_state_codec.project_onto(shared_state, restored_state)
+        citation_registry.restore(payload.citation_registry)
+        return payload.result
+
+    def replan(
+        self,
+        *,
+        workflow_namespace: str,
+        run_id: str,
+        section_id: str,
+        revised_plan: SectionPlanSchema,
+        shared_state: GraphStateSchema,
+        citation_registry: DocumentCitationRegistry,
+    ) -> SectionExecutionResultSchema:
+        """Start one superseding attempt in the existing Section namespace."""
+
+        history = self.checkpoint_history(
+            workflow_namespace=workflow_namespace,
+            run_id=run_id,
+            section_id=section_id,
+        )
+        persisted = None
+        for checkpoint_tuple in history:
+            checkpoint = getattr(checkpoint_tuple, "checkpoint", {})
+            values = (
+                checkpoint.get("channel_values", {})
+                if isinstance(checkpoint, dict)
+                else {}
+            )
+            raw = values.get("section_payload")
+            if not isinstance(raw, dict):
+                continue
+            persisted = self.codec.restore_payload(
+                {
+                    "section_graph_state_version": values.get(
+                        "section_graph_state_version",
+                        1,
+                    ),
+                    "section_payload": raw,
+                }
+            )
+            break
+        if persisted is None:
+            raise KeyError(
+                f"section checkpoint not found: run_id={run_id} section_id={section_id}"
+            )
+        replanned = MainlineReplanAttempt.prepare(
+            payload=persisted,
+            revised_plan=revised_plan,
+        )
         final = self.build_graph().invoke(
-            state,
+            self.codec.build_initial_state(replanned),
             config=self.checkpoint_config(
                 workflow_namespace=workflow_namespace,
-                run_id=shared_state.run_id,
+                run_id=run_id,
                 section_id=section_id,
             ),
         )
         payload = self.codec.restore_payload(final)
         if payload.result is None:
-            raise RuntimeError("section subgraph completed without result")
+            raise RuntimeError("replanned section subgraph completed without result")
+        restored_state = self.codec.restore_graph_state(payload)
+        self.graph_state_codec.project_onto(shared_state, restored_state)
+        citation_registry.restore(payload.citation_registry)
+        return payload.result
+
+    def resume(
+        self,
+        *,
+        workflow_namespace: str,
+        run_id: str,
+        section_id: str,
+        shared_state: GraphStateSchema,
+        citation_registry: DocumentCitationRegistry,
+    ) -> SectionExecutionResultSchema:
+        """Resume an incomplete Section graph from its latest durable cursor."""
+
+        final = self.build_graph().invoke(
+            None,
+            config=self.checkpoint_config(
+                workflow_namespace=workflow_namespace,
+                run_id=run_id,
+                section_id=section_id,
+            ),
+        )
+        payload = self.codec.restore_payload(final)
+        if payload.result is None:
+            raise RuntimeError("resumed section subgraph completed without result")
         restored_state = self.codec.restore_graph_state(payload)
         self.graph_state_codec.project_onto(shared_state, restored_state)
         citation_registry.restore(payload.citation_registry)
@@ -1136,4 +2429,45 @@ class SectionExecutionGraph:
                     section_id=section_id,
                 )
             )
+        )
+
+    def recover_running_invocation(
+        self,
+        *,
+        workflow_namespace: str,
+        run_id: str,
+        section_id: str,
+        invocation: RunningInvocationRecoveryInputSchema,
+    ):
+        """Decide recovery from the latest persisted Section checkpoint only."""
+
+        history = self.checkpoint_history(
+            workflow_namespace=workflow_namespace,
+            run_id=run_id,
+            section_id=section_id,
+        )
+        for checkpoint_tuple in history:
+            checkpoint = getattr(checkpoint_tuple, "checkpoint", {})
+            values = (
+                checkpoint.get("channel_values", {})
+                if isinstance(checkpoint, dict)
+                else {}
+            )
+            if not isinstance(values.get("section_payload"), dict):
+                continue
+            payload = self.codec.restore_payload(
+                {
+                    "section_graph_state_version": values.get(
+                        "section_graph_state_version",
+                        1,
+                    ),
+                    "section_payload": values["section_payload"],
+                }
+            )
+            return self.running_invocation_recovery.decide(
+                invocation=invocation,
+                payload=payload,
+            )
+        raise KeyError(
+            f"section checkpoint not found: run_id={run_id} section_id={section_id}"
         )

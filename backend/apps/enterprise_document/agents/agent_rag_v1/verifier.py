@@ -41,6 +41,13 @@ class VerifierAgent(StatelessBusinessAgent):
             and not invocation_input.section_id
         ):
             raise ValueError("section verifier mode requires section_id")
+        if (
+            invocation_input.section_snapshot is not None
+            and invocation_input.section_id is not None
+            and invocation_input.section_snapshot.section_id
+            != invocation_input.section_id
+        ):
+            raise ValueError("verifier section snapshot does not match invocation")
 
     def _build_patches(
         self,

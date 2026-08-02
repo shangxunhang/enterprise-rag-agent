@@ -1,9 +1,11 @@
-"""Public application entry for the standalone Multi-Agent V1 runtime."""
+"""Archived fixture application entry for the retired Standalone runtime."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import uuid4
+
+LEGACY_FIXTURE_ONLY = True
 
 from apps.enterprise_document.schemas.scheme_writer import (
     DocumentPlanSchema,

@@ -22,6 +22,11 @@ from apps.enterprise_document.quality.budget import (
     WorkflowBudget,
     activate_workflow_budget,
 )
+from apps.enterprise_document.schemas.agent_rag_v1 import (
+    ChangeSetSchema,
+    DocumentVerificationResultSchema,
+    RepairTaskStatus,
+)
 from apps.enterprise_document.schemas.scheme_generation_graph import (
     SchemeGenerationGraphPayloadSchema,
 )
@@ -33,6 +38,7 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     DocumentAssemblyRequestSchema,
     ParallelSectionExecutionEnvelopeSchema,
     ParallelSectionStateDeltaSchema,
+    PlanProjectionStatus,
     RejectedDraftArtifactSchema,
     SchemeGenerationOptionsSchema,
     SchemeWriterInputSchema,
@@ -46,6 +52,24 @@ from apps.enterprise_document.workflows.section_parallel_execution_graph import 
     SectionParallelExecutionGraph,
 )
 from apps.enterprise_document.services.document_gate import evaluate_scheme_draft
+from apps.enterprise_document.services.agent_rag_v1.assembly_validator import (
+    DocumentAssemblyValidator,
+)
+from apps.enterprise_document.services.agent_rag_v1.conflict_repair import (
+    ConflictRepairPlanService,
+)
+from apps.enterprise_document.services.agent_rag_v1.document_verifier import (
+    DocumentVerifierService,
+)
+from apps.enterprise_document.services.agent_rag_v1.final_artifact_review import (
+    FinalArtifactReviewService,
+)
+from apps.enterprise_document.services.agent_rag_v1.generation_report import (
+    GenerationReportService,
+)
+from apps.enterprise_document.services.agent_rag_v1.version_policy import (
+    VersionPolicyService,
+)
 from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.timing import MonotonicTimer, elapsed_ms
 from schemas.agent import AgentResultSchema
@@ -53,6 +77,7 @@ from schemas.common import ErrorSchema, ErrorSourceSchema, WarningSchema
 from schemas.failure import FailureCategory
 from schemas.status import ExecutionStatus
 
+from .agent_integration import MainlinePlannerAdapter, MainlinePlannerFailure
 from .capture_service import SchemeCaptureService
 from .citation_service import CitationService
 from .document_assembler import DocumentAssembler
@@ -115,6 +140,21 @@ class SchemeGenerationStageService:
         self.state_writer = SharedStateWriter()
         self.section_execution_graph: SectionExecutionGraph | None = None
         self.section_parallel_execution_graph = SectionParallelExecutionGraph()
+        self.planner_adapter: MainlinePlannerAdapter | None = None
+        self.document_verifier = DocumentVerifierService()
+        self.conflict_repair_service = ConflictRepairPlanService()
+        self.document_assembly_validator = DocumentAssemblyValidator()
+        self.final_artifact_review_service = FinalArtifactReviewService()
+        self.generation_report_service = GenerationReportService()
+        self.version_policy_service = VersionPolicyService()
+
+    def attach_planner_adapter(
+        self,
+        adapter: MainlinePlannerAdapter,
+    ) -> None:
+        """Install the production PlannerAgent adapter at the composition root."""
+
+        self.planner_adapter = adapter
 
     def attach_section_execution_graph(
         self,
@@ -180,7 +220,7 @@ class SchemeGenerationStageService:
         shared_state: SharedStateSchema,
         payload: SchemeGenerationGraphPayloadSchema,
     ) -> SchemeGenerationGraphPayloadSchema:
-        """Read normalized input and build the deterministic document plan."""
+        """Read normalized input and obtain a canonical plan through PlannerAgent."""
 
         project_input, table_analysis, structured_facts = (
             self.input_service.read_inputs(shared_state)
@@ -212,14 +252,63 @@ class SchemeGenerationStageService:
         )
         document_id = f"document_{shared_state.run_id}"
         started_at = payload.started_at or self.runtime_support.now_iso()
-        # 生成文档级计划
-        document_plan = self.document_planning_service.build_document_plan(
-            run_id=shared_state.run_id,
-            document_id=document_id,
-            project_input=project_input,
-            required_sections=required_sections,
-            created_at=started_at,
-        )
+        plan_state = payload.plan_state
+        if self.planner_adapter is not None:
+            try:
+                planner_outcome = self.planner_adapter.plan(
+                    task_id=shared_state.task_id,
+                    run_id=shared_state.run_id,
+                    project_input=project_input,
+                    required_sections=required_sections,
+                    document_id=document_id,
+                    created_at=started_at,
+                    plan_revision=max(1, plan_state.plan_revision or 1),
+                    current_plan_ref=plan_state.active_plan_revision_id,
+                )
+            except MainlinePlannerFailure as exc:
+                self.state_writer.add_error(shared_state, exc.error)
+                raise SchemeGenerationStageFailure(exc.error) from exc
+            document_plan = planner_outcome.document_plan
+            plan_state = plan_state.model_copy(
+                update={
+                    "status": PlanProjectionStatus.READY,
+                    "canonical_plan_id": document_plan.plan_id,
+                    "plan_revision": planner_outcome.plan_revision,
+                    "active_plan_revision_id": document_plan.plan_id,
+                    "input_snapshot_version": (
+                        planner_outcome.input_snapshot_version
+                    ),
+                    "section_order": [
+                        section.section_id for section in document_plan.sections
+                    ],
+                    "metadata": {
+                        **dict(plan_state.metadata),
+                        **dict(planner_outcome.metadata),
+                        "planner_agent_attached": True,
+                    },
+                },
+                deep=True,
+            )
+        else:
+            # Legacy/unit-test compatibility only. SupervisorFactory always
+            # installs the PlannerAgent adapter on the production mainline.
+            document_plan = self.document_planning_service.build_document_plan(
+                run_id=shared_state.run_id,
+                document_id=document_id,
+                project_input=project_input,
+                required_sections=required_sections,
+                created_at=started_at,
+            )
+            plan_state = plan_state.model_copy(
+                update={
+                    "metadata": {
+                        **dict(plan_state.metadata),
+                        "planner_agent_attached": False,
+                        "planning_fallback": "legacy_compatibility",
+                    }
+                },
+                deep=True,
+            )
         print(
             f"[DocumentPlan] sections={len(document_plan.sections)} "
             f"source={document_plan.planning_source}",
@@ -249,6 +338,7 @@ class SchemeGenerationStageService:
                 "generation_options": options,
                 "document_id": document_id,
                 "document_plan": document_plan,
+                "plan_state": plan_state,
                 "scheme_input": scheme_input,
             },
             deep=True,
@@ -1180,14 +1270,123 @@ class SchemeGenerationStageService:
         shared_state.context_bundle.generation.metadata[
             "parallel_section_budget"
         ] = parallel_budget.snapshot()
+        section_states = dict(payload.section_states)
+        for section_id, section_result in results_by_id.items():
+            if section_result.section_state is not None:
+                section_states[section_id] = section_result.section_state
         return payload.model_copy(
             update={
                 "sections": sections,
+                "section_states": section_states,
                 "section_evidence": section_evidence_bundles,
                 "all_retrieved_chunks": all_chunks,
                 "all_citations": citation_registry.all(),
                 "all_rag_outputs": all_rag_outputs,
             },
+            deep=True,
+        )
+
+    def document_verify(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Run full cross-section verification over canonical production state."""
+
+        del shared_state
+        project_input = self._require(
+            payload.project_input,
+            field_name="project_input",
+            node_name="document_verify",
+        )
+        verification = self.document_verifier.verify_mainline(
+            sections=list(payload.sections),
+            section_states=dict(payload.section_states),
+            project_input=project_input,
+            mode="full_logic",
+        )
+        return payload.model_copy(
+            update={
+                "document_verification": verification,
+                "conflict_repair_plan": verification.repair_plan,
+            },
+            deep=True,
+        )
+
+    def repair_document_conflicts(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Execute the repair plan strictly serially and fail closed when unresolved."""
+
+        del shared_state
+        verification = self._require(
+            payload.document_verification,
+            field_name="document_verification",
+            node_name="repair_document_conflicts",
+        )
+        plan = payload.conflict_repair_plan or verification.repair_plan
+        valid_sections = set(payload.section_states)
+
+        def resolve(task):
+            if not task.target_section_ids:
+                return RepairTaskStatus.OBSOLETE
+            if set(task.target_section_ids) - valid_sections:
+                return RepairTaskStatus.FAILED
+            # Round 7 owns the serial routing and audit trail, but does not
+            # fabricate a successful rewrite. A future successful Section resume
+            # may return RESOLVED; until then unresolved business conflicts block.
+            return RepairTaskStatus.BLOCKED
+
+        resolved_plan, history = self.conflict_repair_service.execute_serially(
+            plan,
+            resolver=resolve,
+        )
+        return payload.model_copy(
+            update={
+                "conflict_repair_plan": resolved_plan,
+                "conflict_repair_history": history,
+            },
+            deep=True,
+        )
+
+    def incremental_document_reverify(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Re-check only Sections affected by the serial repair plan."""
+
+        del shared_state
+        project_input = self._require(
+            payload.project_input,
+            field_name="project_input",
+            node_name="incremental_document_reverify",
+        )
+        changed_section_ids = {
+            section_id
+            for item in payload.conflict_repair_history
+            for section_id in list(item.get("target_section_ids") or [])
+        }
+        if changed_section_ids:
+            verification = self.document_verifier.verify_mainline(
+                sections=list(payload.sections),
+                section_states=dict(payload.section_states),
+                project_input=project_input,
+                mode="incremental_logic",
+                changed_section_ids=changed_section_ids,
+            )
+        else:
+            verification = DocumentVerificationResultSchema(
+                mode="incremental_logic",
+                checked_section_ids=[],
+                conflicts=[],
+                repair_plan=self.document_verifier._repair_plan([]),
+                passed=True,
+            )
+        return payload.model_copy(
+            update={"incremental_document_verification": verification},
             deep=True,
         )
 
@@ -1249,6 +1448,94 @@ class SchemeGenerationStageService:
             deep=True,
         )
 
+    def validate_document_assembly(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Run deterministic validation over the canonical assembled draft."""
+
+        del shared_state
+        assembly = self._require(
+            payload.assembly,
+            field_name="assembly",
+            node_name="validate_document_assembly",
+        )
+        validation = self.document_assembly_validator.validate_mainline(
+            assembly=assembly,
+            required_sections=list(payload.required_sections),
+        )
+        return payload.model_copy(
+            update={"assembly_validation": validation},
+            deep=True,
+        )
+
+    def final_artifact_review(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Review the user-visible assembled draft before the final Hard Gate."""
+
+        del shared_state
+        project_input = self._require(
+            payload.project_input,
+            field_name="project_input",
+            node_name="final_artifact_review",
+        )
+        assembly = self._require(
+            payload.assembly,
+            field_name="assembly",
+            node_name="final_artifact_review",
+        )
+        validation = self._require(
+            payload.assembly_validation,
+            field_name="assembly_validation",
+            node_name="final_artifact_review",
+        )
+        old_names = list(
+            project_input.metadata.get("old_project_names") or []
+        )
+        review = self.final_artifact_review_service.review_mainline(
+            draft=assembly.draft,
+            assembly_validation=validation,
+            old_project_names=[str(item) for item in old_names],
+        )
+        return payload.model_copy(
+            update={"final_artifact_review": review},
+            deep=True,
+        )
+
+    def decide_document_version(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Apply deterministic immutable version policy without publishing early."""
+
+        del shared_state
+        project_input = self._require(
+            payload.project_input,
+            field_name="project_input",
+            node_name="decide_document_version",
+        )
+        previous_version = str(
+            project_input.metadata.get("previous_document_version") or ""
+        ).strip() or None
+        raw_change_set = project_input.metadata.get("change_set") or {}
+        change_set = ChangeSetSchema.model_validate(raw_change_set)
+        decision = self.version_policy_service.decide(
+            previous_version=previous_version,
+            changes=change_set,
+        )
+        return payload.model_copy(
+            update={
+                "version_decision": decision,
+                "document_version": decision.next_version,
+            },
+            deep=True,
+        )
+
     def evaluate_document_gate(
         self,
         shared_state: SharedStateSchema,
@@ -1291,6 +1578,94 @@ class SchemeGenerationStageService:
             evidence_sufficient=assembly.evidence_requirements_satisfied,
             workflow_complete=True,
         )
+        verification = (
+            payload.incremental_document_verification
+            or payload.document_verification
+        )
+        repair_tasks = list(
+            (payload.conflict_repair_plan.repair_tasks)
+            if payload.conflict_repair_plan is not None
+            else []
+        )
+        repairs_resolved = all(
+            task.status
+            in {
+                RepairTaskStatus.RESOLVED,
+                RepairTaskStatus.OBSOLETE,
+            }
+            for task in repair_tasks
+        )
+        closure_checks = {
+            "document_verification_passed": bool(
+                verification is not None and verification.passed
+            ),
+            "conflict_repairs_resolved": repairs_resolved,
+            "assembly_validation_passed": bool(
+                payload.assembly_validation
+                and payload.assembly_validation.passed
+            ),
+            "final_artifact_review_passed": bool(
+                payload.final_artifact_review
+                and payload.final_artifact_review.passed
+            ),
+            "document_version_decided": bool(payload.document_version),
+        }
+        closure_failures: list[str] = []
+        if verification is None or not verification.passed:
+            closure_failures.append("document_verification_failed")
+        if not repairs_resolved:
+            closure_failures.append("document_conflict_repairs_unresolved")
+        if payload.assembly_validation is None or not payload.assembly_validation.passed:
+            closure_failures.extend(
+                list(payload.assembly_validation.failures)
+                if payload.assembly_validation is not None
+                else ["assembly_validation_missing"]
+            )
+        if payload.final_artifact_review is None or not payload.final_artifact_review.passed:
+            closure_failures.extend(
+                list(payload.final_artifact_review.issue_codes)
+                if payload.final_artifact_review is not None
+                else ["final_artifact_review_missing"]
+            )
+        if not payload.document_version:
+            closure_failures.append("document_version_missing")
+        if closure_failures:
+            hard_gate = hard_gate.model_copy(
+                update={
+                    "passed": False,
+                    "failures": list(
+                        dict.fromkeys(
+                            [*hard_gate.failures, *closure_failures]
+                        )
+                    ),
+                    "checks": {
+                        **dict(hard_gate.checks),
+                        **closure_checks,
+                    },
+                    "metadata": {
+                        **dict(hard_gate.metadata),
+                        "document_closure_round": "round7",
+                        "conflict_repair_history": list(
+                            payload.conflict_repair_history
+                        ),
+                    },
+                },
+                deep=True,
+            )
+        else:
+            hard_gate = hard_gate.model_copy(
+                update={
+                    "checks": {
+                        **dict(hard_gate.checks),
+                        **closure_checks,
+                    },
+                    "metadata": {
+                        **dict(hard_gate.metadata),
+                        "document_closure_round": "round7",
+                    },
+                },
+                deep=True,
+            )
         print(
             f"[HardGate] passed={hard_gate.passed} "
             f"failures={hard_gate.failures} warnings={hard_gate.warnings}",
@@ -1347,6 +1722,62 @@ class SchemeGenerationStageService:
                     "deliverable" if hard_gate.passed else "rejected"
                 ),
             },
+            deep=True,
+        )
+
+    def build_generation_report(
+        self,
+        shared_state: SharedStateSchema,
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> SchemeGenerationGraphPayloadSchema:
+        """Persist a typed business report in the existing top-level checkpoint."""
+
+        hard_gate = self._require(
+            payload.hard_gate,
+            field_name="hard_gate",
+            node_name="build_generation_report",
+        )
+        document_version = self._require(
+            payload.document_version,
+            field_name="document_version",
+            node_name="build_generation_report",
+        )
+        source_versions: dict[str, str] = {}
+        if payload.document_rag_context is not None:
+            contract = dict(
+                (payload.document_rag_context.extra or {}).get(
+                    "evidence_contract"
+                )
+                or {}
+            )
+            lineage = dict(contract.get("lineage") or {})
+            for key in (
+                "index_version",
+                "dataset_version",
+                "embedding_version",
+                "static_retrieval_spec_version",
+            ):
+                value = str(lineage.get(key) or "").strip()
+                if value:
+                    source_versions[key] = value
+        budget_usage = {
+            section.section_id: dict(
+                (section.extra or {}).get("workflow_budget") or {}
+            )
+            for section in payload.sections
+        }
+        report = self.generation_report_service.build_mainline(
+            task_id=shared_state.task_id,
+            run_id=shared_state.run_id,
+            sections=list(payload.sections),
+            section_states=dict(payload.section_states),
+            document_version=document_version,
+            hard_gate=hard_gate,
+            source_versions=source_versions,
+            budget_usage={"sections": budget_usage},
+        )
+        return payload.model_copy(
+            update={"generation_report": report},
             deep=True,
         )
 
@@ -1436,6 +1867,44 @@ class SchemeGenerationStageService:
                     item.model_dump()
                     for item in assembly.section_evidence_requirements
                 ],
+                "document_closure": {
+                    "document_verification": (
+                        payload.document_verification.model_dump(mode="json")
+                        if payload.document_verification is not None
+                        else None
+                    ),
+                    "incremental_document_verification": (
+                        payload.incremental_document_verification.model_dump(
+                            mode="json"
+                        )
+                        if payload.incremental_document_verification is not None
+                        else None
+                    ),
+                    "conflict_repair_history": list(
+                        payload.conflict_repair_history
+                    ),
+                    "assembly_validation": (
+                        payload.assembly_validation.model_dump(mode="json")
+                        if payload.assembly_validation is not None
+                        else None
+                    ),
+                    "final_artifact_review": (
+                        payload.final_artifact_review.model_dump(mode="json")
+                        if payload.final_artifact_review is not None
+                        else None
+                    ),
+                    "document_version": payload.document_version,
+                    "version_decision": (
+                        payload.version_decision.model_dump(mode="json")
+                        if payload.version_decision is not None
+                        else None
+                    ),
+                    "generation_report": (
+                        payload.generation_report.model_dump(mode="json")
+                        if payload.generation_report is not None
+                        else None
+                    ),
+                },
             },
         )
         enriched_rag_output = {

@@ -72,6 +72,39 @@ class StatelessBusinessAgent(ABC):
         context: AgentExecutionContextSchema,
         invocation_input: ContractSchema,
     ) -> AgentExecutionResultSchema:
+        """Run the Standalone-compatible contract including patch proposals."""
+
+        return self._run_internal(
+            context,
+            invocation_input,
+            include_patch_proposals=True,
+        )
+
+    def run_projected(
+        self,
+        context: AgentExecutionContextSchema,
+        invocation_input: ContractSchema,
+    ) -> AgentExecutionResultSchema:
+        """Run for a production node whose fixed projector owns state writes.
+
+        The reasoner and typed payload validation are identical to ``run``. The
+        result deliberately carries no ``StatePatchRequest`` so an Agent cannot
+        acquire direct authority over the production GraphState.
+        """
+
+        return self._run_internal(
+            context,
+            invocation_input,
+            include_patch_proposals=False,
+        )
+
+    def _run_internal(
+        self,
+        context: AgentExecutionContextSchema,
+        invocation_input: ContractSchema,
+        *,
+        include_patch_proposals: bool,
+    ) -> AgentExecutionResultSchema:
         tools = self.tool_gateway.session(context)
         try:
             invocation_input = self.input_schema.model_validate(invocation_input)
@@ -83,8 +116,13 @@ class StatelessBusinessAgent(ABC):
             )
             payload = self.payload_schema.model_validate(raw_payload)
             self._validate_payload(context, invocation_input, payload)
-            patches = self._build_patches(context, invocation_input, payload)
-            self._validate_patch_paths(context, patches)
+            patches = (
+                self._build_patches(context, invocation_input, payload)
+                if include_patch_proposals
+                else []
+            )
+            if include_patch_proposals:
+                self._validate_patch_paths(context, patches)
             status = self._result_status(payload)
             return AgentExecutionResultSchema(
                 invocation_id=context.invocation_id,

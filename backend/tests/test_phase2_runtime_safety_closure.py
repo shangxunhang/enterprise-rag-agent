@@ -55,8 +55,15 @@ SUCCESS_SEQUENCE = [
     "retrieve_document_evidence",
     "initialize_generation",
     "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
     "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "decide_document_version",
     "evaluate_document_gate",
+    "build_generation_report",
     "persist_deliverable",
     "finalize_workflow_result",
 ]
@@ -242,9 +249,9 @@ def test_success_path_returns_every_actual_business_node(
 ) -> None:
     execution = _execution(successful_execution)
 
-    assert len(execution["node_inputs"]) == 9
-    assert len(execution["node_outputs"]) == 9
-    assert len(execution["node_results"]) == 9
+    assert len(execution["node_inputs"]) == len(SUCCESS_SEQUENCE)
+    assert len(execution["node_outputs"]) == len(SUCCESS_SEQUENCE)
+    assert len(execution["node_results"]) == len(SUCCESS_SEQUENCE)
     assert execution["completed_node_ids"] == SUCCESS_SEQUENCE
 
 
@@ -593,8 +600,15 @@ def test_same_engine_concurrent_workflows_keep_explicit_identity() -> None:
         retrieve_document_evidence = _stage
         initialize_generation = _stage
         execute_sections = _stage
+        document_verify = _stage
+        repair_document_conflicts = _stage
+        incremental_document_reverify = _stage
         assemble_document = _stage
+        validate_document_assembly = _stage
+        final_artifact_review = _stage
+        decide_document_version = _stage
         evaluate_document_gate = _stage
+        build_generation_report = _stage
         persist_deliverable = _stage
         persist_rejected = _stage
         finalize_workflow_result = _stage
@@ -626,7 +640,7 @@ def test_same_engine_concurrent_workflows_keep_explicit_identity() -> None:
             "current_business_node": node_name,
             "business_route": (
                 "deliverable"
-                if node_name == "evaluate_document_gate"
+                if node_name == "build_generation_report"
                 else "continue"
             ),
         }
@@ -695,7 +709,7 @@ def test_same_engine_concurrent_workflows_keep_explicit_identity() -> None:
 
     assert final_a["workflow_id"] == workflow_a.workflow_id
     assert final_b["workflow_id"] == workflow_b.workflow_id
-    assert len(observed) == 18
+    assert len(observed) == 2 * len(SUCCESS_SEQUENCE)
     assert all(envelope_id == closure_id for envelope_id, closure_id, _ in observed)
     assert {
         (closure_id, run_id)

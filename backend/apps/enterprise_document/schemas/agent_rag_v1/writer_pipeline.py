@@ -39,6 +39,7 @@ class ParagraphPrecheckResultSchema(ContractSchema):
     schema_version: str = "paragraph_precheck_result_v1"
     section_id: str
     paragraph_id: str
+    paragraph_version: int = Field(default=1, ge=1)
     passed: bool
     blocking: bool
     claims: List[ClaimSchema] = Field(default_factory=list)

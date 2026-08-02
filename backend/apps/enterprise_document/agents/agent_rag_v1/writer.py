@@ -29,6 +29,11 @@ class WriterAgent(StatelessBusinessAgent):
     ) -> None:
         if payload.section_id != context.section_id:
             raise ValueError("writer payload section does not match context")
+        if (
+            payload.section_snapshot is not None
+            and payload.section_snapshot.section_id != payload.section_id
+        ):
+            raise ValueError("writer section snapshot does not match payload")
         actual_ids = [paragraph.paragraph_id for paragraph in payload.paragraphs]
         if len(actual_ids) != len(set(actual_ids)):
             raise ValueError("writer paragraph ids must be unique")

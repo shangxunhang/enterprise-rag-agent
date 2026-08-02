@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from apps.enterprise_document.schemas.agent_rag_v1 import (
     ConflictRepairPlanSchema,
     RepairTaskSchema,
@@ -49,6 +51,55 @@ class ConflictRepairPlanService:
                 task.status = RepairTaskStatus.RUNNING
                 return updated, task.model_copy(deep=True)
         return updated, None
+
+    def execute_serially(
+        self,
+        plan: ConflictRepairPlanSchema,
+        *,
+        resolver: Callable[[RepairTaskSchema], RepairTaskStatus],
+    ) -> tuple[ConflictRepairPlanSchema, list[dict[str, object]]]:
+        """Execute one repair at a time and preserve an auditable history."""
+
+        current = plan.model_copy(deep=True)
+        history: list[dict[str, object]] = []
+        while True:
+            current, task = self.start_next(current)
+            if task is None:
+                break
+            active_count = sum(
+                item.status == RepairTaskStatus.RUNNING
+                for item in current.repair_tasks
+            )
+            if active_count != 1:
+                raise ValueError("serial repair requires exactly one running task")
+            status = resolver(task.model_copy(deep=True))
+            if status not in {
+                RepairTaskStatus.RESOLVED,
+                RepairTaskStatus.OBSOLETE,
+                RepairTaskStatus.FAILED,
+                RepairTaskStatus.BLOCKED,
+            }:
+                raise ValueError("repair resolver returned a non-terminal status")
+            history.append(
+                {
+                    "sequence": len(history) + 1,
+                    "repair_id": task.repair_id,
+                    "target_section_ids": list(task.target_section_ids),
+                    "action": task.action.value,
+                    "status": status.value,
+                    "concurrent_running_count": active_count,
+                }
+            )
+            current = self.complete(
+                current,
+                repair_id=task.repair_id,
+                status=status,
+            )
+            if status in {RepairTaskStatus.FAILED, RepairTaskStatus.BLOCKED}:
+                # Dependent tasks remain pending because their prerequisite did
+                # not resolve; stop rather than fabricating concurrent progress.
+                break
+        return current, history
 
     def complete(
         self,

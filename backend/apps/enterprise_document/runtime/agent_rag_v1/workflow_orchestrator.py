@@ -1,6 +1,8 @@
-"""Standalone vertical orchestration for Agent-RAG Multi-Agent V1."""
+"""Archived fixture orchestration for the retired Standalone runtime."""
 
 from __future__ import annotations
+
+LEGACY_FIXTURE_ONLY = True
 
 from collections import defaultdict
 from typing import Any, Iterable
