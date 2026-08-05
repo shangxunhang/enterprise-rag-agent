@@ -175,11 +175,116 @@ class ContextPacker:
             fallback_page_end=result.get("page_end"),
         )
 
-    def _get_text(self, result: Dict[str, Any]) -> str:
-        """按配置字段读取生成上下文，并依次回退通用、父块和子块正文。"""
+    def _raw_text(self, result: Dict[str, Any]) -> str:
+        """按配置字段读取原始生成上下文，并依次回退父块和子块正文。"""
         if self.text_field and result.get(self.text_field):
             return _safe_str(result.get(self.text_field))
-        return _safe_str(result.get("text") or result.get("parent_text") or result.get("child_text"))
+        return _safe_str(
+            result.get("text")
+            or result.get("parent_text")
+            or result.get("child_text")
+        )
+
+    def _prompt_projection(
+        self,
+        result: Dict[str, Any],
+    ) -> tuple[str, Dict[str, Any]]:
+        """Project governed evidence into the text that the writer may see.
+
+        Retrieval and citation audit retain the raw parent/child text.  Only the
+        prompt-facing projection is restricted here, after Evidence Governance
+        has attached ``evidence_assessment_v2`` to the candidate.
+        """
+        raw_text = self._raw_text(result).strip()
+        metadata = dict(result.get("metadata") or {})
+        assessment = metadata.get("evidence_assessment_v2")
+        if not isinstance(assessment, dict):
+            return raw_text, {
+                "prompt_projection_mode": "legacy_unprojected",
+                "raw_fact_visibility": "full",
+            }
+
+        evidence_role = str(assessment.get("evidence_role") or "").strip()
+        project_relation = str(assessment.get("project_relation") or "").strip()
+        supported_claim_types = [
+            str(item).strip()
+            for item in assessment.get("supported_claim_types") or []
+            if str(item or "").strip()
+        ]
+        forbidden_claim_types = {
+            str(item).strip()
+            for item in assessment.get("forbidden_claim_types") or []
+            if str(item or "").strip()
+        }
+        current_project_claims = {
+            "current_project_fact",
+            "current_project_cost",
+            "current_project_quantity",
+            "current_project_schedule",
+            "current_project_configuration",
+        }
+
+        if (
+            evidence_role == "historical_case"
+            or project_relation == "other_project"
+        ) and forbidden_claim_types & current_project_claims:
+            title = _safe_str(
+                result.get("title") or result.get("section") or "历史案例"
+            ).strip()
+            allowed_usage = "、".join(supported_claim_types) or "reference_case"
+            projected = (
+                "【历史案例，仅供参考】\n"
+                f"来源章节：{title or '历史案例'}\n"
+                f"允许用途：{allowed_usage}。\n"
+                "该材料属于其他项目，原文中的具体数量、容量、品牌、型号、"
+                "设备配置和工期未向生成模型暴露；只能概括其方法、架构或案例经验，"
+                "不得写成本项目既定事实。"
+            )
+            return projected, {
+                "prompt_projection_mode": "historical_reference_restricted",
+                "raw_fact_visibility": "restricted",
+            }
+
+        if evidence_role == "template_style":
+            assessment_metadata = assessment.get("metadata")
+            assessment_metadata = (
+                assessment_metadata if isinstance(assessment_metadata, dict) else {}
+            )
+            structured = assessment_metadata.get("structured_evidence")
+            structured = structured if isinstance(structured, dict) else {}
+            template = structured.get("template")
+            template = template if isinstance(template, dict) else {}
+            title = _safe_str(
+                template.get("section_title")
+                or result.get("title")
+                or result.get("section")
+                or "模板章节"
+            ).strip()
+            required_fields = [
+                str(item).strip()
+                for item in template.get("required_fields") or []
+                if str(item or "").strip()
+            ]
+            style_hints = [
+                str(item).strip()
+                for item in template.get("style_hints") or []
+                if str(item or "").strip()
+            ]
+            lines = ["【模板结构，仅用于组织形式】", f"章节：{title}"]
+            if required_fields:
+                lines.append(f"建议字段：{'、'.join(required_fields)}")
+            if style_hints:
+                lines.append(f"写作提示：{'、'.join(style_hints)}")
+            lines.append("模板示例内容不得作为项目事实或技术依据。")
+            return "\n".join(lines), {
+                "prompt_projection_mode": "template_structure_only",
+                "raw_fact_visibility": "restricted",
+            }
+
+        return raw_text, {
+            "prompt_projection_mode": "governed_full_text",
+            "raw_fact_visibility": "full",
+        }
 
     @staticmethod
     def _lost_in_middle_reorder(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -282,6 +387,7 @@ class ContextPacker:
         """复制候选并写入明确的上下文丢弃原因，不污染原结果。"""
         dropped = dict(result)
         dropped.pop("_pack_text", None)
+        dropped.pop("_prompt_projection_metadata", None)
         metadata = dict(dropped.get("metadata") or {})
         metadata["context_drop_reason"] = reason
         dropped["metadata"] = metadata
@@ -313,13 +419,15 @@ class ContextPacker:
                 dropped.append(self._mark_dropped(result, "duplicate_parent"))
                 continue
 
-            text = self._get_text(result).strip()
+            text, projection_metadata = self._prompt_projection(result)
+            text = text.strip()
             if not text:
                 dropped.append(self._mark_dropped(result, "empty_text"))
                 continue
 
             normalized = dict(result)
             normalized["_pack_text"] = text
+            normalized["_prompt_projection_metadata"] = projection_metadata
             candidates.append(normalized)
 
             if parent_id:
@@ -454,12 +562,31 @@ class ContextPacker:
 
             clean_result = dict(result)
             clean_result.pop("_pack_text", None)
+            projection_metadata = dict(
+                clean_result.pop("_prompt_projection_metadata", {}) or {}
+            )
             original_rank = clean_result.get("rank")
             metadata = dict(clean_result.get("metadata") or {})
+            metadata.update(projection_metadata)
             metadata.setdefault("pre_context_rank", original_rank)
+            metadata["context_truncated"] = was_truncated
+            metadata["prompt_citation_ids"] = list(item_citation_ids)
+            metadata["prompt_visible_char_count"] = len(packed_text)
+            metadata["prompt_visible_token_count"] = (
+                DeterministicTokenEstimator.estimate(packed_text)
+            )
             if was_truncated:
-                metadata["context_truncated"] = True
-                clean_result["context_text"] = packed_text
+                metadata["truncated_source_id"] = _safe_str(
+                    result.get("parent_chunk_id")
+                    or result.get("child_chunk_id")
+                    or result.get("chunk_id")
+                )
+                metadata["truncation_reason"] = "token_or_character_budget"
+            clean_result["prompt_visible_text"] = packed_text
+            # ``context_text`` is the compatibility projection consumed by
+            # EvidenceMapper.  It must equal the text actually visible in the
+            # prompt, never the full parent chunk retained for retrieval audit.
+            clean_result["context_text"] = packed_text
             clean_result["metadata"] = metadata
             clean_result["pre_context_rank"] = original_rank
             clean_result["context_rank"] = context_rank

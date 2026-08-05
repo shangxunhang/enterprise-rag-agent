@@ -46,6 +46,28 @@ def test_full_selected_record_preserves_child_and_parent_text() -> None:
     assert chunks[0].match_text != chunks[0].context_text
 
 
+def test_evidence_mapper_prefers_governed_prompt_visible_text() -> None:
+    mapper = EvidenceMapper()
+    chunks = mapper.chunks(
+        [
+            {
+                "rank": 1,
+                "child_chunk_id": "history-child",
+                "parent_chunk_id": "history-parent",
+                "doc_id": "history-doc",
+                "child_text": "历史项目容量为324.2TB。",
+                "parent_text": "历史项目容量为324.2TB并配置8台服务器。",
+                "prompt_visible_text": "【历史案例，仅供参考】仅可概括容量测算方法。",
+                "metadata": {},
+            }
+        ]
+    )
+
+    assert chunks[0].context_text == "【历史案例，仅供参考】仅可概括容量测算方法。"
+    assert "324.2TB" not in chunks[0].context_text
+    assert chunks[0].match_text == "历史项目容量为324.2TB。"
+
+
 # 阅读注释（函数）：处理 测试 citations expand all matched 子块 证据 相关逻辑。
 def test_citations_expand_all_matched_child_evidence() -> None:
     """处理 测试 citations expand all matched 子块 证据 相关逻辑。

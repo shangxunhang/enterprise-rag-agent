@@ -7,6 +7,7 @@ import inspect
 from typing import Any
 
 from core.runtime.execution_control import checkpoint_current_execution
+from rag.application.retrieval_scope import resolve_canonical_retrieval_scope
 from rag.planning.retrieval_planner import RetrievalPlannerPort
 from rag.ports.pipeline import RerankerPort
 from rag.ports.quality import (
@@ -79,6 +80,84 @@ class ParentChildRetrievalPipeline:
                 f"{component.__class__.__module__}.{component.__class__.__qualname__}"
             ),
         }
+
+    @staticmethod
+    def _candidate_ids(result: dict[str, Any]) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in (
+                    result.get("parent_chunk_id"),
+                    result.get("context_chunk_id"),
+                    result.get("child_chunk_id"),
+                    result.get("matched_chunk_id"),
+                    result.get("chunk_id"),
+                    result.get("doc_id"),
+                )
+                if str(value or "").strip()
+            )
+        )
+
+    @classmethod
+    def _apply_final_assessment(
+        cls,
+        *,
+        results: list[dict[str, Any]],
+        assessment: EvidenceAssessment,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        judgement_by_id = {
+            str(item.evidence_id).strip(): item
+            for item in assessment.item_judgements
+            if str(item.evidence_id or "").strip()
+        }
+        annotated: list[dict[str, Any]] = []
+        selected: list[dict[str, Any]] = []
+        rejected_ids: list[str] = []
+        unjudged_ids: list[str] = []
+
+        for raw in results:
+            item = dict(raw)
+            metadata = dict(item.get("metadata") or {})
+            candidate_ids = cls._candidate_ids(item)
+            judgement = next(
+                (
+                    judgement_by_id[candidate_id]
+                    for candidate_id in candidate_ids
+                    if candidate_id in judgement_by_id
+                ),
+                None,
+            )
+            metadata["crag_final_assessment_sufficient"] = bool(
+                assessment.sufficient
+            )
+            if judgement is None:
+                primary_id = candidate_ids[0] if candidate_ids else ""
+                if primary_id:
+                    unjudged_ids.append(primary_id)
+                metadata["crag_final_judgement"] = None
+                item["metadata"] = metadata
+                annotated.append(item)
+                selected.append(item)
+                continue
+
+            judgement_payload = judgement.to_dict()
+            metadata["crag_final_judgement"] = judgement_payload
+            item["metadata"] = metadata
+            annotated.append(item)
+            if str(judgement.relevance).strip().lower() == "irrelevant":
+                rejected_ids.append(str(judgement.evidence_id))
+                continue
+            selected.append(item)
+
+        filter_report = {
+            "applied": bool(judgement_by_id),
+            "assessment_sufficient": bool(assessment.sufficient),
+            "input_count": len(results),
+            "output_count": len(selected),
+            "rejected_irrelevant_ids": list(dict.fromkeys(rejected_ids)),
+            "unjudged_ids": list(dict.fromkeys(unjudged_ids)),
+        }
+        return annotated, selected, filter_report
 
     def _retrieve_one_query(
         self,
@@ -280,12 +359,26 @@ class ParentChildRetrievalPipeline:
         filter_expr: str | None,
         keyword_doc_ids: list[str] | None,
         keyword_scope: dict[str, Any] | None = None,
+        access_scope_enforced: bool = False,
         extra_metadata: dict[str, Any] | None = None,
     ) -> RetrievalStageResult:
         checkpoint_current_execution()
+        canonical_scope = resolve_canonical_retrieval_scope(
+            filter_expr=filter_expr,
+            keyword_scope=keyword_scope,
+            keyword_doc_ids=keyword_doc_ids,
+            access_scope_enforced=bool(access_scope_enforced),
+        )
+        canonical_filter_expr = canonical_scope.to_filter_expr()
+        canonical_keyword_scope = canonical_scope.to_keyword_scope()
+        canonical_keyword_doc_ids = list(canonical_scope.doc_ids)
+        request_context = {
+            **dict(extra_metadata or {}),
+            "canonical_retrieval_scope": canonical_scope.fingerprint_payload(),
+        }
         plan = self.retrieval_planner.plan(
             query=query,
-            request_context=extra_metadata,
+            request_context=request_context,
         )
         checkpoint_current_execution()
         retrieval_plan = plan.to_dict()
@@ -295,7 +388,7 @@ class ParentChildRetrievalPipeline:
             expansion = transform(
                 query,
                 mode=plan.query_transform_mode,
-                runtime_context=dict(extra_metadata or {}),
+                runtime_context=request_context,
             )
         else:
             # Compatibility for narrow test/legacy selector ports. Production
@@ -312,9 +405,9 @@ class ParentChildRetrievalPipeline:
                 retrieval_query=retrieval_query,
                 query_label=f"q{index}",
                 query_index=index,
-                filter_expr=filter_expr,
-                keyword_doc_ids=keyword_doc_ids,
-                keyword_scope=keyword_scope,
+                filter_expr=canonical_filter_expr,
+                keyword_doc_ids=canonical_keyword_doc_ids,
+                keyword_scope=canonical_keyword_scope,
                 stage="initial_retrieval",
             )
             query_candidate_sets.append(candidate_set)
@@ -347,17 +440,17 @@ class ParentChildRetrievalPipeline:
             query=query,
             results=reranked,
             correction_round=0,
-            request_context=extra_metadata,
+            request_context=request_context,
         )
         final_reranked, final_assessment, correction_trace = self._run_correction(
             query=query,
             initial_reranked=reranked,
             initial_assessment=initial_assessment,
             correction_budget=plan.correction_budget,
-            filter_expr=filter_expr,
-            keyword_doc_ids=keyword_doc_ids,
-            keyword_scope=keyword_scope,
-            request_context=extra_metadata,
+            filter_expr=canonical_filter_expr,
+            keyword_doc_ids=canonical_keyword_doc_ids,
+            keyword_scope=canonical_keyword_scope,
+            request_context=request_context,
         )
         checkpoint_current_execution()
         expansion.metadata["configured_evidence_assessor"] = {
@@ -375,18 +468,28 @@ class ParentChildRetrievalPipeline:
             **self._metadata(self.corrective_query_planner),
             **dict(self.corrective_query_planner.execution_metadata() or {}),
         }
+        (
+            annotated_final_reranked,
+            final_results,
+            crag_final_filter,
+        ) = self._apply_final_assessment(
+            results=list(final_reranked),
+            assessment=final_assessment,
+        )
         quality_report = {
             **dict(final_assessment.report),
+            "canonical_retrieval_scope": canonical_scope.fingerprint_payload(),
             "initial_assessment": initial_assessment.to_dict(),
             "final_assessment": final_assessment.to_dict(),
             "corrective_retrieval": correction_trace,
+            "crag_final_filter": crag_final_filter,
         }
         return RetrievalStageResult(
             retrieval_plan=retrieval_plan,
             query_expansion=expansion,
             p2_results=fused_results,
-            reranked_results=list(final_reranked),
-            results=list(final_reranked),
+            reranked_results=annotated_final_reranked,
+            results=final_results,
             evidence_quality=quality_report,
             correction_triggered=bool(correction_trace.get("triggered")),
         )
