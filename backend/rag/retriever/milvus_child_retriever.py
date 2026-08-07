@@ -19,6 +19,7 @@ except ImportError:  # Optional local-rag dependency; fail only on real use.
     MilvusClient = None  # type: ignore[assignment,misc]
 
 from rag.configs.SchemaConfig import DEFAULT_EMBEDDING_VERSION, DEFAULT_VECTOR_DB
+from rag.schema.structured_evidence import build_structured_evidence
 from rag.embed.embedding_service import (
     encode_query_with_hash,
     encode_query_with_model,
@@ -36,6 +37,12 @@ DEFAULT_CHILD_OUTPUT_FIELDS = [
     "kb_id",
     "file_id",
     "doc_id",
+    "document_type",
+    "evidence_role",
+    "project_relation",
+    "project_id",
+    "authority_level",
+    "extra_json",
     "source_type",
     "indexed_granularity",
     "text",
@@ -92,6 +99,23 @@ def _parse_json_list(value: Any) -> List[Any]:
     return parsed if isinstance(parsed, list) else [parsed]
 
 
+def _parse_extra_json(value: Any) -> tuple[Dict[str, Any], str | None]:
+    """恢复 Stage C ``extra_json``，失败时保留显式错误而不是静默丢 Profile。"""
+    if value is None or value == "":
+        return {}, "missing_extra_json"
+    if isinstance(value, dict):
+        return dict(value), None
+    if not isinstance(value, str):
+        return {}, "extra_json_not_string_or_object"
+    try:
+        parsed = json.loads(value)
+    except Exception as exc:
+        return {}, f"invalid_extra_json:{type(exc).__name__}"
+    if not isinstance(parsed, dict):
+        return {}, "extra_json_root_not_object"
+    return dict(parsed), None
+
+
 def normalize_milvus_child_hit(hit: Dict[str, Any], rank: int) -> Dict[str, Any]:
     """把一个 ``MilvusClient.search`` Hit 规范为稳定子块候选。
 
@@ -110,6 +134,20 @@ def normalize_milvus_child_hit(hit: Dict[str, Any], rank: int) -> Dict[str, Any]
     child_chunk["chunk_id"] = str(chunk_id) if chunk_id is not None else ""
     child_chunk["child_chunk_id"] = str(child_chunk_id) if child_chunk_id is not None else child_chunk["chunk_id"]
     child_chunk["source_unit_ids"] = _parse_json_list(entity.get("source_unit_ids_json"))
+    parsed_extra, profile_parse_error = _parse_extra_json(entity.get("extra_json"))
+    child_chunk["extra"] = parsed_extra
+    if profile_parse_error:
+        child_chunk["profile_parse_error"] = profile_parse_error
+    document_profile = parsed_extra.get("document_profile")
+    if isinstance(document_profile, dict):
+        child_chunk["document_profile"] = dict(document_profile)
+    type_aware = parsed_extra.get("type_aware_chunking")
+    if isinstance(type_aware, dict):
+        child_chunk["type_aware_chunking"] = dict(type_aware)
+    structured = build_structured_evidence(child_chunk)
+    child_chunk["structured_evidence"] = structured.model_dump(
+        mode="json", exclude_none=True
+    )
 
     return {
         "rank": rank,
@@ -123,6 +161,25 @@ def normalize_milvus_child_hit(hit: Dict[str, Any], rank: int) -> Dict[str, Any]
         "kb_id": str(entity.get("kb_id") or ""),
         "file_id": str(entity.get("file_id") or ""),
         "doc_id": str(entity.get("doc_id") or ""),
+        "document_type": str(entity.get("document_type") or ""),
+        "evidence_role": str(entity.get("evidence_role") or ""),
+        "project_relation": str(entity.get("project_relation") or ""),
+        "project_id": str(entity.get("project_id") or ""),
+        "authority_level": str(entity.get("authority_level") or ""),
+        "document_profile": (
+            dict(child_chunk.get("document_profile") or {})
+            if isinstance(child_chunk.get("document_profile"), dict)
+            else {}
+        ),
+        "type_aware_chunking": (
+            dict(child_chunk.get("type_aware_chunking") or {})
+            if isinstance(child_chunk.get("type_aware_chunking"), dict)
+            else {}
+        ),
+        "structured_evidence": dict(
+            child_chunk.get("structured_evidence") or {}
+        ),
+        "profile_parse_error": child_chunk.get("profile_parse_error"),
         "child_chunk": child_chunk,
         "raw_hit": hit,
     }

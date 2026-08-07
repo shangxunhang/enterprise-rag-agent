@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from rag.catalog.document_profile_projection import project_source_record
+from rag.catalog.document_profile_registry import DocumentProfileRegistry
 from rag.config.static_retrieval import ComponentConfig
 from rag.embed.embedding_service import (
     encode_texts_with_hash,
@@ -35,6 +37,7 @@ from rag.offline.manifest import (
 from rag.registry.default_registrations import (
     build_default_component_registry,
 )
+from rag.schema.BM25Record_Schema import build_bm25_record_v1
 from rag.schema.VectorIndexRecord_Schema import (
     build_vector_index_record_v2,
 )
@@ -42,7 +45,7 @@ from rag.schema.cleaned_text_unit import (
     CleanedTextUnitSchema,
     migrate_legacy_cleaned_text_unit_payload,
 )
-from rag.store.parent_chunk_store import load_jsonl_dicts
+from rag.util.jsonl_utils import iter_jsonl_paths, load_jsonl_dicts
 
 
 def _json_hash(payload: Any) -> str:
@@ -55,6 +58,121 @@ def _json_hash(payload: Any) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _source_dataset_hash(path: Path) -> str:
+    """Hash exactly the JSON/JSONL files consumed from a source path."""
+
+    if path.is_file():
+        return sha256_file(path)
+
+    candidates = list(iter_jsonl_paths(path))
+    if not candidates:
+        raise ValueError(
+            f"cleaned unit source directory contains no JSON data files: {path}"
+        )
+
+    digest = hashlib.sha256()
+    for item in candidates:
+        relative = item.relative_to(path).as_posix().encode("utf-8")
+        content_hash = sha256_file(item).encode("ascii")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(item.stat().st_size.to_bytes(16, "big", signed=False))
+        digest.update(content_hash)
+    return digest.hexdigest()
+
+
+def _recursive_assets_hash(path: Path) -> str:
+    """Hash all files under a structured-asset root in stable relative order."""
+
+    if not path.is_dir():
+        raise FileNotFoundError(f"structured assets root not found: {path}")
+    files = sorted(item for item in path.rglob("*") if item.is_file())
+    if not files:
+        raise ValueError(f"structured assets root contains no files: {path}")
+    digest = hashlib.sha256()
+    for item in files:
+        relative = item.relative_to(path).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(item.stat().st_size.to_bytes(16, "big", signed=False))
+        digest.update(sha256_file(item).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _profile_aware_source_hash(
+    source_path: Path,
+    document_profiles_path: Path | None,
+    structured_assets_root: Path | None = None,
+) -> str:
+    """Hash cleaned source, reviewed catalog and structured assets together."""
+
+    dataset_hash = _source_dataset_hash(source_path)
+    if document_profiles_path is None and structured_assets_root is None:
+        return dataset_hash
+
+    payload: dict[str, Any] = {"cleaned_source_sha256": dataset_hash}
+    if document_profiles_path is not None:
+        payload["document_profiles_sha256"] = sha256_file(
+            document_profiles_path
+        )
+    if structured_assets_root is not None:
+        payload["structured_assets_sha256"] = _recursive_assets_hash(
+            structured_assets_root
+        )
+    return _json_hash(payload)
+
+
+def _attach_structured_asset(
+    record: dict[str, Any],
+    *,
+    structured_assets_root: Path | None,
+) -> dict[str, Any]:
+    """Attach a referenced table JSON to one profiled CleanedTextUnit."""
+
+    if structured_assets_root is None or record.get("unit_type") != "table":
+        return record
+    extra = dict(record.get("extra") or {})
+    table_uri = extra.get("table_uri")
+    if table_uri in (None, ""):
+        producer = extra.get("producer_top_level_extensions")
+        if isinstance(producer, dict):
+            table_uri = producer.get("table_uri")
+    if table_uri in (None, ""):
+        raise ValueError(
+            "structured table unit is missing table_uri; "
+            f"unit_id={record.get('unit_id')!r}"
+        )
+    relative = Path(str(table_uri))
+    # PDF parsers may expose an image URI for a table region.  Only reviewed
+    # relative JSON assets participate in deterministic row reconstruction.
+    if relative.suffix.lower() != ".json":
+        return record
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"unsafe structured table JSON URI: {table_uri!r}")
+    asset_path = (structured_assets_root / relative).resolve()
+    root = structured_assets_root.resolve()
+    try:
+        asset_path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"structured table URI escapes root: {table_uri!r}") from exc
+    if not asset_path.is_file():
+        raise FileNotFoundError(
+            "structured table asset not found; "
+            f"unit_id={record.get('unit_id')!r} path={asset_path}"
+        )
+    payload = json.loads(asset_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        raise ValueError(f"invalid structured table asset: {asset_path}")
+    extra["structured_table"] = payload
+    extra["structured_table_asset"] = {
+        "uri": relative.as_posix(),
+        "sha256": sha256_file(asset_path),
+    }
+    projected = dict(record)
+    projected["extra"] = extra
+    return projected
 
 
 def _is_explicit_local_model_path(value: str) -> bool:
@@ -201,7 +319,35 @@ class OfflineIndexBuilder:
                 f"cleaned unit source not found: {source_path}"
             )
 
-        # 第二步：真实模型模式中，仅对明确本地路径做前置存在性检查。
+        # 第二步：Profile-aware 构建必须绑定存在且可严格加载的目录文件。
+        document_profiles_path: Path | None = None
+        if config.source.document_profiles_path is not None:
+            document_profiles_path = self.resolve(
+                config.source.document_profiles_path
+            )
+            if not document_profiles_path.is_file():
+                raise FileNotFoundError(
+                    "document profile catalog not found: "
+                    f"{document_profiles_path}"
+                )
+            DocumentProfileRegistry.from_jsonl(document_profiles_path)
+        elif config.source.require_document_profiles:
+            raise ValueError(
+                "strict profile-aware build requires document_profiles_path"
+            )
+
+        structured_assets_root: Path | None = None
+        if config.source.structured_assets_root is not None:
+            structured_assets_root = self.resolve(
+                config.source.structured_assets_root
+            )
+            if not structured_assets_root.is_dir():
+                raise FileNotFoundError(
+                    "structured assets root not found: "
+                    f"{structured_assets_root}"
+                )
+
+        # 第三步：真实模型模式中，仅对明确本地路径做前置存在性检查。
         if config.embedding.mode == "model":
             model_name = str(
                 config.embedding.model_name or ""
@@ -214,7 +360,7 @@ class OfflineIndexBuilder:
                     f"embedding model path not found: {model_name}"
                 )
 
-        # 第三步：Chunker 必须以名称和版本精确注册，不能隐式回退其他实现。
+        # 第四步：Chunker 必须以名称和版本精确注册，不能隐式回退其他实现。
         if not self.registry.contains(
             category="chunker",
             name=config.chunker.name,
@@ -232,7 +378,7 @@ class OfflineIndexBuilder:
                 f"available={available}"
             )
 
-        # 第四步：推导索引版本、版本目录和源内容哈希，不产生写入副作用。
+        # 第五步：推导索引版本、版本目录和复合源内容哈希，不产生写入副作用。
         index_version = config.index_version()
         output_dir = (
             self.resolve(config.outputs.root_dir) / index_version
@@ -241,7 +387,11 @@ class OfflineIndexBuilder:
             status="success",
             index_version=index_version,
             config_hash=config.config_hash(),
-            source_hash=sha256_file(source_path),
+            source_hash=_profile_aware_source_hash(
+                source_path,
+                document_profiles_path,
+                structured_assets_root,
+            ),
             output_dir=str(output_dir),
             manifest_path=None,
             document_count=0,
@@ -305,17 +455,113 @@ class OfflineIndexBuilder:
             )
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 第四步：读取 JSONL 源记录，显式迁移旧 cleaned-text-unit 后再进入 canonical 边界。
+        # 第四步：读取全部源记录；Stage C 可由 reviewed profile catalog 接管治理与作用域。
         source_records = load_jsonl_dicts(source_path)
+        document_profiles_path = (
+            self.resolve(config.source.document_profiles_path)
+            if config.source.document_profiles_path is not None
+            else None
+        )
+        profile_registry = (
+            DocumentProfileRegistry.from_jsonl(document_profiles_path)
+            if document_profiles_path is not None
+            else None
+        )
+        profile_catalog_sha256 = (
+            sha256_file(document_profiles_path)
+            if document_profiles_path is not None
+            else None
+        )
+        structured_assets_root = (
+            self.resolve(config.source.structured_assets_root)
+            if config.source.structured_assets_root is not None
+            else None
+        )
+        structured_assets_sha256 = (
+            _recursive_assets_hash(structured_assets_root)
+            if structured_assets_root is not None
+            else None
+        )
+
         records: list[dict[str, Any]] = []
+        source_document_ids: set[str] = set()
         for source_record in source_records:
-            migrated = migrate_legacy_cleaned_text_unit_payload(
-                source_record
-            )
+            if profile_registry is not None:
+                document_id = str(source_record.get("doc_id") or "").strip()
+                if not document_id:
+                    raise ValueError(
+                        "profile-aware index source contains a record without doc_id; "
+                        f"unit_id={source_record.get('unit_id')!r}"
+                    )
+                source_document_ids.add(document_id)
+                try:
+                    profile = profile_registry.get(document_id)
+                except KeyError as exc:
+                    raise ValueError(
+                        "index source contains an unprofiled document; "
+                        f"document_id={document_id!r}"
+                    ) from exc
+                projected = project_source_record(
+                    source_record,
+                    profile=profile,
+                    catalog_sha256=str(profile_catalog_sha256),
+                )
+                if projected is not None:
+                    records.append(
+                        _attach_structured_asset(
+                            projected,
+                            structured_assets_root=structured_assets_root,
+                        )
+                    )
+                continue
+
+            raw_should_index = source_record.get("should_index", True)
+            raw_is_gold = source_record.get("is_gold_reference", False)
+            if not isinstance(raw_should_index, bool):
+                raise TypeError(
+                    "should_index must be a boolean when present; "
+                    f"unit_id={source_record.get('unit_id')!r}"
+                )
+            if not isinstance(raw_is_gold, bool):
+                raise TypeError(
+                    "is_gold_reference must be a boolean when present; "
+                    f"unit_id={source_record.get('unit_id')!r}"
+                )
+            if raw_is_gold and raw_should_index:
+                raise ValueError(
+                    "gold reference records must not enter the retrieval index; "
+                    f"unit_id={source_record.get('unit_id')!r}"
+                )
+
+            migrated = migrate_legacy_cleaned_text_unit_payload(source_record)
             CleanedTextUnitSchema.model_validate(migrated)
+            if not raw_should_index:
+                continue
             records.append(migrated)
 
-        # 第五步：canonical 校验后补充 RAG 检索作用域；记录级值优先于数据集默认值。
+        if profile_registry is not None:
+            profile_document_ids = {
+                profile.document_id for profile in profile_registry.all()
+            }
+            missing_source_documents = sorted(
+                profile_document_ids - source_document_ids
+            )
+            if missing_source_documents:
+                raise ValueError(
+                    "document profile catalog contains documents absent from "
+                    "the cleaned source: "
+                    + ", ".join(missing_source_documents)
+                )
+
+        # Profile-aware CleanedTextUnit is itself an immutable Stage C artifact.
+        profiled_units_path: Path | None = None
+        if profile_registry is not None:
+            profiled_units_path = (
+                output_dir / "profiled_cleaned_text_units.jsonl"
+            )
+            _write_jsonl(profiled_units_path, records)
+
+        # 第五步：补充检索作用域；Profile-aware 记录已由目录值覆盖旧默认值。
         doc_scopes: dict[str, tuple[str, str]] = {}
         for record in records:
             record["tenant_id"] = (
@@ -391,6 +637,24 @@ class OfflineIndexBuilder:
         current_config_hash = config.config_hash()
         for record in [*parents, *children]:
             extra = dict(record.get("extra") or {})
+            if profile_registry is not None:
+                profile = extra.get("document_profile")
+                if not isinstance(profile, dict):
+                    raise ValueError(
+                        "all Stage C parent/child chunks require document_profile; "
+                        f"chunk_id={record.get('child_chunk_id') or record.get('parent_chunk_id')!r}"
+                    )
+                if str(profile.get("document_id") or "") != str(record.get("doc_id") or ""):
+                    raise ValueError("chunk document identity conflicts with document_profile")
+                if str(profile.get("kb_id") or "") != str(record.get("kb_id") or ""):
+                    raise ValueError("chunk kb_id conflicts with document_profile")
+                if record.get("child_chunk_id") and not isinstance(
+                    extra.get("type_aware_chunking"), dict
+                ):
+                    raise ValueError(
+                        "all Stage C child chunks require type_aware_chunking; "
+                        f"child_chunk_id={record.get('child_chunk_id')!r}"
+                    )
             extra.update(
                 {
                     "offline_index_version": index_version,
@@ -471,6 +735,7 @@ class OfflineIndexBuilder:
                 extra={
                     "dataset_version": config.dataset_version,
                     "offline_index_config_hash": current_config_hash,
+                    "_require_profile_lineage": profile_registry is not None,
                 },
             )
             for child in children
@@ -480,6 +745,21 @@ class OfflineIndexBuilder:
         )
         _write_jsonl(vector_records_path, vector_records)
 
+        # Dense and BM25 use one metadata contract derived from the same ChildChunk.
+        bm25_records: list[dict[str, Any]] = []
+        bm25_records_path: Path | None = None
+        if profile_registry is not None:
+            bm25_records = [
+                build_bm25_record_v1(
+                    child_chunk=child,
+                    dataset_version=config.dataset_version,
+                    offline_index_config_hash=current_config_hash,
+                )
+                for child in children
+            ]
+            bm25_records_path = output_dir / "bm25_records.jsonl"
+            _write_jsonl(bm25_records_path, bm25_records)
+
         # 第十四步：可选创建 Milvus Lite 在线存储，并在关闭重开后校验持久化行数。
         milvus_path: Path | None = None
         if config.index.backend == "milvus_lite":
@@ -487,9 +767,11 @@ class OfflineIndexBuilder:
             from rag.vector_store.milvus_child_chunk_store import (
                 build_milvus_child_chunk_record,
                 create_or_reset_child_chunk_collection,
+                ensure_milvus_lite_windows_manifest_replace_compatibility,
                 insert_child_chunk_records,
             )
 
+            ensure_milvus_lite_windows_manifest_replace_compatibility()
             milvus_path = output_dir / "milvus.db"
             client = MilvusClient(str(milvus_path))
             create_or_reset_child_chunk_collection(
@@ -599,6 +881,18 @@ class OfflineIndexBuilder:
                 record_count=len(vector_records),
             ),
         }
+        if profiled_units_path is not None:
+            artifacts["profiled_cleaned_text_units"] = ArtifactRecord(
+                path=str(profiled_units_path),
+                sha256=sha256_file(profiled_units_path),
+                record_count=len(records),
+            )
+        if bm25_records_path is not None:
+            artifacts["bm25_records"] = ArtifactRecord(
+                path=str(bm25_records_path),
+                sha256=sha256_file(bm25_records_path),
+                record_count=len(bm25_records),
+            )
 
         # 第十六步：Milvus 使用逻辑语义指纹，不依赖会被运行时改写的数据库字节。
         if milvus_path is not None and milvus_path.exists():
@@ -635,20 +929,62 @@ class OfflineIndexBuilder:
             },
         }
 
-        # 第十八步：固化组件实现、执行 metadata、模型协议、计数和产物清单。
+        # 第十八步：固化源数据与 Profile Catalog 的独立哈希和过滤计数。
+        source_metadata: dict[str, Any] = {
+            "path": str(source_path),
+            "format": config.source.format,
+            "sha256": validated.source_hash,
+            "cleaned_source_sha256": _source_dataset_hash(source_path),
+            "input_record_count": len(source_records),
+            "record_count": len(records),
+        }
+        if document_profiles_path is not None:
+            source_metadata.update(
+                {
+                    "document_profiles_path": str(document_profiles_path),
+                    "document_profiles_sha256": str(
+                        profile_catalog_sha256
+                    ),
+                    "profile_document_count": len(
+                        profile_registry.all()
+                        if profile_registry is not None
+                        else []
+                    ),
+                    "profiled_source_document_count": len(
+                        source_document_ids
+                    ),
+                }
+            )
+        if structured_assets_root is not None:
+            source_metadata.update(
+                {
+                    "structured_assets_root": str(structured_assets_root),
+                    "structured_assets_sha256": str(
+                        structured_assets_sha256
+                    ),
+                }
+            )
+
+        # 第十九步：固化组件实现、执行 metadata、模型协议、计数和产物清单。
         plugin_metadata = getattr(chunker, "plugin_metadata", None)
+        index_metadata = {
+            **config.index.model_dump(mode="json"),
+            "index_name": index_name,
+            "output_dir": str(output_dir),
+        }
+        if bm25_records_path is not None:
+            index_metadata["bm25_records_path"] = str(bm25_records_path)
+        if profiled_units_path is not None:
+            index_metadata["profiled_cleaned_text_units_path"] = str(
+                profiled_units_path
+            )
         manifest = IndexManifest(
             index_version=index_version,
             build_id=config.build_id,
             dataset_version=config.dataset_version,
             config_hash=current_config_hash,
             source_hash=validated.source_hash,
-            source={
-                "path": str(source_path),
-                "format": config.source.format,
-                "sha256": validated.source_hash,
-                "record_count": len(records),
-            },
+            source=source_metadata,
             chunker={
                 "name": config.chunker.name,
                 "version": config.chunker.version,
@@ -670,11 +1006,7 @@ class OfflineIndexBuilder:
                 "batch_size": config.embedding.batch_size,
                 "normalize_embeddings": True,
             },
-            index={
-                **config.index.model_dump(mode="json"),
-                "index_name": index_name,
-                "output_dir": str(output_dir),
-            },
+            index=index_metadata,
             document_count=len(
                 {
                     str(item.get("doc_id"))
@@ -692,10 +1024,10 @@ class OfflineIndexBuilder:
             notes=config.notes,
         )
 
-        # 第十九步：Manifest 原子发布表示该版本构建完成；此前目录都视为未完成私有产物。
+        # 第二十步：Manifest 原子发布表示该版本构建完成；此前目录都视为未完成私有产物。
         manifest.write(manifest_path)
 
-        # 第二十步：返回构建结果，但不更新 active pointer。
+        # 第二十一步：返回构建结果，但不更新 active pointer。
         return OfflineIndexBuildResult(
             status="success",
             index_version=index_version,

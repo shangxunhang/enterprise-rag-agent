@@ -246,6 +246,8 @@ def test_stale_human_review_decision_keeps_durable_interrupt_paused(
                 graph_state,
                 {
                     "decision": "approved",
+                    "task_id": summary["task_id"],
+                    "run_id": summary["run_id"],
                     "input_snapshot_version": "sha256:stale-human-decision",
                 },
             )
@@ -259,6 +261,8 @@ def test_stale_human_review_decision_keeps_durable_interrupt_paused(
             graph_state,
             {
                 "decision": "approved",
+                "task_id": summary["task_id"],
+                "run_id": summary["run_id"],
                 "input_snapshot_version": snapshot,
                 "reviewer_id": "round8-reviewer",
             },

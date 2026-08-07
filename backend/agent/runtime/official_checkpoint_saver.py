@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import sqlite3
 from threading import Lock
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 import weakref
+import zlib
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -145,21 +146,172 @@ def _validate_existing_database(database_path: Path) -> None:
         )
 
 
-def _checkpoint_serde() -> JsonPlusSerializer:
-    """创建禁止 pickle 回退的检查点序列化器。
+CHECKPOINT_COMPRESSION_PREFIX = "zlib+"
+DEFAULT_CHECKPOINT_COMPRESSION_MIN_BYTES = 64 * 1024
+DEFAULT_CHECKPOINT_COMPRESSION_LEVEL = 6
 
-    Returns:
-        只允许内置 msgpack 安全值的 ``JsonPlusSerializer``。
 
-    禁止 pickle 可避免持久化数据在反序列化阶段执行任意 Python 对象构造逻辑。
+class CompressedJsonPlusSerializer:
+    """安全 JSON+/msgpack 序列化器，按阈值压缩大型检查点载荷。
+
+    类型标签使用 ``zlib+<delegate_type>``，因此同一数据库可以同时读取历史未压缩
+    行与新压缩行。压缩只包裹官方 ``JsonPlusSerializer`` 产生的安全字节，不引入
+    pickle，也不改变 LangGraph 的检查点、pending writes 或恢复协议。
     """
 
-    return JsonPlusSerializer(
-        # 不允许无法编码的对象自动转为 pickle。
-        pickle_fallback=False,
-        # 不允许通过 msgpack 扩展加载额外 Python 模块类型。
-        allowed_msgpack_modules=(),
-    )
+    def __init__(
+        self,
+        *,
+        min_bytes: int = DEFAULT_CHECKPOINT_COMPRESSION_MIN_BYTES,
+        compression_level: int = DEFAULT_CHECKPOINT_COMPRESSION_LEVEL,
+    ) -> None:
+        if min_bytes < 0:
+            raise ValueError("checkpoint compression min_bytes must be non-negative")
+        if not 0 <= compression_level <= 9:
+            raise ValueError("checkpoint compression level must be between 0 and 9")
+        self.min_bytes = int(min_bytes)
+        self.compression_level = int(compression_level)
+        self.delegate = JsonPlusSerializer(
+            pickle_fallback=False,
+            allowed_msgpack_modules=(),
+        )
+
+    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
+        type_name, payload = self.delegate.dumps_typed(obj)
+        if len(payload) < self.min_bytes:
+            return type_name, payload
+        compressed = zlib.compress(payload, self.compression_level)
+        if len(compressed) >= len(payload):
+            return type_name, payload
+        return f"{CHECKPOINT_COMPRESSION_PREFIX}{type_name}", compressed
+
+    def loads_typed(self, data: tuple[str, bytes]) -> Any:
+        type_name, payload = data
+        if type_name.startswith(CHECKPOINT_COMPRESSION_PREFIX):
+            delegate_type = type_name[len(CHECKPOINT_COMPRESSION_PREFIX) :]
+            if not delegate_type:
+                raise ValueError("compressed checkpoint type is missing delegate type")
+            payload = zlib.decompress(payload)
+            type_name = delegate_type
+        return self.delegate.loads_typed((type_name, payload))
+
+
+def _checkpoint_serde() -> CompressedJsonPlusSerializer:
+    """创建禁止 pickle 回退且压缩大型载荷的检查点序列化器。"""
+
+    return CompressedJsonPlusSerializer()
+
+
+def compact_official_checkpoint_database(
+    path: str | Path,
+    *,
+    min_bytes: int = DEFAULT_CHECKPOINT_COMPRESSION_MIN_BYTES,
+    compression_level: int = DEFAULT_CHECKPOINT_COMPRESSION_LEVEL,
+    batch_size: int = 64,
+    vacuum: bool = True,
+) -> dict[str, int]:
+    """原地压缩官方 SQLite saver 中尚未压缩的大型 checkpoint/write BLOB。
+
+    该操作不反序列化业务对象，只压缩官方 serializer 已生成的字节并更新类型标签，
+    因此不会改变对象语义。调用前必须确保没有运行时持有该数据库连接。
+    """
+
+    database_path = Path(path).expanduser().resolve()
+    if not database_path.is_file():
+        raise FileNotFoundError(f"checkpoint database not found: {database_path}")
+    _validate_existing_database(database_path)
+    if min_bytes < 0:
+        raise ValueError("checkpoint compression min_bytes must be non-negative")
+    if not 0 <= compression_level <= 9:
+        raise ValueError("checkpoint compression level must be between 0 and 9")
+    if batch_size <= 0:
+        raise ValueError("checkpoint compaction batch_size must be positive")
+
+    bytes_before = database_path.stat().st_size
+    checkpoint_rows_compressed = 0
+    write_rows_compressed = 0
+    payload_bytes_before = 0
+    payload_bytes_after = 0
+
+    connection = sqlite3.connect(str(database_path), check_same_thread=False)
+    try:
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("BEGIN IMMEDIATE")
+        for table_name, blob_column in (
+            ("checkpoints", "checkpoint"),
+            ("writes", "value"),
+        ):
+            read_cursor = connection.execute(
+                f"SELECT rowid, type, {blob_column} FROM {table_name} "
+                "ORDER BY rowid"
+            )
+            write_cursor = connection.cursor()
+            try:
+                while rows := read_cursor.fetchmany(batch_size):
+                    for rowid, type_name, payload in rows:
+                        raw_type = str(type_name or "")
+                        raw_payload = bytes(payload or b"")
+                        payload_bytes_before += len(raw_payload)
+                        if (
+                            raw_type.startswith(CHECKPOINT_COMPRESSION_PREFIX)
+                            or len(raw_payload) < min_bytes
+                        ):
+                            payload_bytes_after += len(raw_payload)
+                            continue
+                        compressed = zlib.compress(raw_payload, compression_level)
+                        if len(compressed) >= len(raw_payload):
+                            payload_bytes_after += len(raw_payload)
+                            continue
+                        write_cursor.execute(
+                            f"UPDATE {table_name} SET type = ?, {blob_column} = ? "
+                            "WHERE rowid = ?",
+                            (
+                                f"{CHECKPOINT_COMPRESSION_PREFIX}{raw_type}",
+                                compressed,
+                                rowid,
+                            ),
+                        )
+                        payload_bytes_after += len(compressed)
+                        if table_name == "checkpoints":
+                            checkpoint_rows_compressed += 1
+                        else:
+                            write_rows_compressed += 1
+            finally:
+                read_cursor.close()
+                write_cursor.close()
+        connection.commit()
+
+        serializer = CompressedJsonPlusSerializer(
+            min_bytes=min_bytes,
+            compression_level=compression_level,
+        )
+        for table_name, blob_column in (
+            ("checkpoints", "checkpoint"),
+            ("writes", "value"),
+        ):
+            for type_name, payload in connection.execute(
+                f"SELECT type, {blob_column} FROM {table_name} "
+                "WHERE type LIKE ?",
+                (f"{CHECKPOINT_COMPRESSION_PREFIX}%",),
+            ):
+                serializer.loads_typed((str(type_name), bytes(payload)))
+
+        if vacuum:
+            connection.execute("VACUUM")
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    return {
+        "checkpoint_rows_compressed": checkpoint_rows_compressed,
+        "write_rows_compressed": write_rows_compressed,
+        "payload_bytes_before": payload_bytes_before,
+        "payload_bytes_after": payload_bytes_after,
+        "database_bytes_before": bytes_before,
+        "database_bytes_after": database_path.stat().st_size,
+    }
 
 
 def create_sqlite_checkpoint_resource(

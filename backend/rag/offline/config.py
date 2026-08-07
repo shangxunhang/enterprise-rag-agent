@@ -72,6 +72,9 @@ class SourceDatasetConfig(BaseModel):
     format: Literal["jsonl"] = "jsonl"
     tenant_id: str = "default"
     kb_id: str = "default"
+    document_profiles_path: str | None = None
+    require_document_profiles: bool = False
+    structured_assets_root: str | None = None
 
     @field_validator("path")
     @classmethod
@@ -82,6 +85,29 @@ class SourceDatasetConfig(BaseModel):
         if not normalized:
             raise ValueError("source.path cannot be blank")
         return normalized
+
+    @field_validator("document_profiles_path")
+    @classmethod
+    def profiles_path_not_blank(cls, value: str | None) -> str | None:
+        """Normalize the optional Stage C document-profile catalog path."""
+
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("source.document_profiles_path cannot be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_profile_path_when_enabled(self) -> "SourceDatasetConfig":
+        """A strict profile-aware build must name its reviewed catalog."""
+
+        if self.require_document_profiles and self.document_profiles_path is None:
+            raise ValueError(
+                "source.document_profiles_path is required when "
+                "require_document_profiles=true"
+            )
+        return self
 
 
 class EmbeddingBuildConfig(BaseModel):

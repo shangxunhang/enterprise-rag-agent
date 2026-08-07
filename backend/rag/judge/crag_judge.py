@@ -312,10 +312,15 @@ class CRAGJudge:
         runtime_context: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         prompt = (
-            "请判断检索片段是否适合用于回答用户问题。\n"
+            "C-RAG 只判断片段是否与当前问题或章节主题相关。\n"
+            "不要判断片段能否证明当前项目事实，也不要判断它是否具备当前项目声明权限。\n"
+            "不是当前项目事实，不等于与当前章节无关。\n"
+            "历史案例、技术参考或模板材料，如果能够支持通用方法、架构思路、"
+            "参考经验或章节组织，应判为 relevant 或 partial。\n"
+            "只有与当前主题没有实际可用关系时，才判为 irrelevant。\n"
             "输出 JSON 字段：relevance_label(relevant/partial/irrelevant), "
             "score(0到1), reason。\n"
-            "只做质量标注，不决定删除、降权或重排证据。\n\n"
+            "只做相关性和检索完整性标注，不决定证据身份、声明权限、删除、降权或重排。\n\n"
             f"用户问题：{query}\n"
             f"片段标题：{_safe_str(result.get('title'))}\n"
             f"片段内容：{_clip(_result_text(result), 1200)}"

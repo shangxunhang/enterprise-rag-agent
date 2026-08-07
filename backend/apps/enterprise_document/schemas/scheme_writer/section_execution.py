@@ -46,6 +46,7 @@ class SectionExecutionRequestSchema(SchemaBase):
     document_rag_context: RAGContextSchema
     document_retrieved_chunks: List[RetrievedChunkSchema] = Field(default_factory=list)
     document_citations: List[CitationSchema] = Field(default_factory=list)
+    document_rag_output: Dict[str, Any] = Field(default_factory=dict)
     document_evidence_assessment: Dict[str, Any] = Field(default_factory=dict)
     document_tool_call_ids: List[str] = Field(default_factory=list)
 

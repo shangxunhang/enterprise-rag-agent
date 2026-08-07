@@ -1,0 +1,83 @@
+{
+  "schema_version": "project_input_v1",
+  "task_id": "task_gov_cloud_framework_e2e",
+  "tenant_id": "default",
+  "project_name": "政务云建设项目",
+  "task_type": "scheme_generation",
+  "user_query": "请基于知识库中的现有材料，生成一份政务云建设方案。方案至少包括项目背景、建设目标、总体架构、计算资源建设方案、存储资源建设方案、网络资源建设方案、安全设计、实施与验收建议。所有项目事实、技术参数和建设结论必须遵守证据边界；知识库没有明确支持的具体数量、型号、品牌和金额不得编造；缺少项目特定信息时明确标记为待确认项；采用知识库证据的内容必须保留有效引用。",
+  "generation_requirements": {
+    "required_sections": [
+      "项目背景",
+      "建设目标",
+      "总体架构",
+      "计算资源建设方案",
+      "存储资源建设方案",
+      "网络资源建设方案",
+      "安全设计",
+      "实施与验收建议"
+    ],
+    "need_citation": true,
+    "citation_required_sections": [
+      "项目背景",
+      "建设目标",
+      "总体架构",
+      "计算资源建设方案",
+      "存储资源建设方案",
+      "网络资源建设方案",
+      "安全设计",
+      "实施与验收建议"
+    ],
+    "need_human_review": true,
+    "min_section_chars": 80,
+    "max_section_retries": 1,
+    "max_context_chars": 6000,
+    "max_tokens_per_section": 1024,
+    "citation_style": "citation_id",
+    "language": "zh-CN",
+    "tone": "formal",
+    "extra": {}
+  },
+  "output_schema": {
+    "document_title": "政务云建设方案",
+    "output_format": "markdown",
+    "required_sections": [
+      "项目背景",
+      "建设目标",
+      "总体架构",
+      "计算资源建设方案",
+      "存储资源建设方案",
+      "网络资源建设方案",
+      "安全设计",
+      "实施与验收建议"
+    ],
+    "required_fields": [],
+    "heading_style": "numbered_chinese",
+    "extra": {}
+  },
+  "metadata": {
+    "allow_demo_defaults": false,
+    "fixture_purpose": "formal_gov_cloud_e2e",
+    "baseline_run_id": "manual_gov_cloud_e2e_20260805_1200"
+  },
+  "project_type": "government_cloud",
+  "customer_type": "government",
+  "business_goal": "在证据边界内生成政务云建设方案，并对缺失项目事实明确标记为待确认项。",
+  "target_documents": [
+    "政务云建设方案"
+  ],
+  "target_templates": [],
+  "policy_requirements": [],
+  "manual_boundaries": [],
+  "missing_information": [
+    "项目现状",
+    "用户规模",
+    "计算资源数量",
+    "存储容量",
+    "网络带宽",
+    "设备品牌型号",
+    "投资金额",
+    "实施工期"
+  ],
+  "conflicting_information": [],
+  "extra": {}
+}

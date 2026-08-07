@@ -8,11 +8,20 @@ import pytest
 from pydantic import ValidationError
 
 from application.run_workspace import RunWorkspace
+from apps.enterprise_document.schemas.gate_decision import (
+    ClaimRiskLevel,
+    DeliveryMode,
+    GateDecisionSchema,
+)
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeDraftSchema,
     SchemeSectionSchema,
 )
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
 from apps.enterprise_document.services.document_gate import evaluate_scheme_draft
+from apps.enterprise_document.services.scheme_writer.writer_governance import (
+    WriterClaimAuditor,
+)
 from core.runtime.execution_control import (
     WorkflowExecutionControl,
     activate_execution_control,
@@ -23,6 +32,7 @@ from rag.config.static_retrieval import ComponentConfig
 from rag.data_capture.jsonl_writer import JsonlWriter
 from rag.data_capture.rag_run_capture import RagRunCapture
 from rag.mapping.request_mapper import RAGRequestMapper
+from rag.schema.evidence_assessment_v2 import EvidenceStatus
 from rag.offline.builder import OfflineIndexBuilder
 from rag.offline.config import (
     EmbeddingBuildConfig,
@@ -394,13 +404,48 @@ def _binding(
 
 
 def _citation_draft(binding: CitationBindingSchema) -> SchemeDraftSchema:
+    content = f"verified claim [{binding.citation_id}]"
+    writer_binding = WriterGateBindingSchema(
+        section_id="section1",
+        section_title="Section",
+        section_order=1,
+        document_id="document1",
+        run_id="run1",
+        gate_decision=GateDecisionSchema(
+            policy_id="p1_citation_lineage_fixture_v1",
+            evidence_status=EvidenceStatus.SUFFICIENT,
+            delivery_mode=DeliveryMode.GROUNDED,
+            claim_risk_level=ClaimRiskLevel.LOW,
+            allowed_claim_types=["general_method", "style_guidance"],
+            forbidden_claim_types=[],
+            required_qualifiers=[],
+            covered_topics=["Section"],
+            missing_topics=[],
+            human_review_required=False,
+            reason_codes=["p1_citation_lineage_fixture"],
+        ),
+        generation_allowed=True,
+        evidence_contract_sha256="a" * 64,
+        prompt_evidence_contract_sha256="b" * 64,
+    )
+    audit = WriterClaimAuditor().audit(content, binding=writer_binding)
     section = SchemeSectionSchema(
         section_id="section1",
         section_title="Section",
         section_order=1,
-        content=f"verified claim [{binding.citation_id}]",
+        content=content,
         status=ExecutionStatus.SUCCESS,
         citation_bindings=[binding],
+        extra={
+            "writer_gate_binding": writer_binding.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "writer_execution_status": writer_binding.execution_status.value,
+            "claim_audit": audit.model_dump(mode="json", exclude_none=True),
+            "required_qualifiers_applied": [],
+            "formal_deliverable_eligible": audit.passed,
+            "need_human_review": False,
+        },
     )
     return SchemeDraftSchema(
         draft_id="draft1",

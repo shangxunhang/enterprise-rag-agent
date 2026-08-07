@@ -44,6 +44,9 @@ data/runtime/
 data/raw/
 data/processed/
 data/chunks/
+/raw_data/
+/data/parsed/
+/document_ingestion/contracts/*.mineru.parsed.jsonl
 
 # Vector indexes and databases
 data/vector_index/

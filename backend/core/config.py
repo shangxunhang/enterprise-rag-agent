@@ -175,6 +175,9 @@ class AppSettings:
     # 评测输出被认为具有最小有效内容所需的字符数。
     min_eval_output_chars: int
 
+    # 同一 durable run 允许进入受控恢复的最大次数。
+    max_recovery_attempts: int
+
     # 是否允许 Supervisor 使用模型进行工作流路由。
     enable_llm_routing: bool
     # Supervisor 路由角色使用的模型注册名。
@@ -265,6 +268,7 @@ class AppSettings:
             "trace_enabled": self.trace_enabled,
             "data_capture_enabled": self.data_capture_enabled,
             "min_eval_output_chars": self.min_eval_output_chars,
+            "max_recovery_attempts": self.max_recovery_attempts,
             "enable_llm_routing": self.enable_llm_routing,
             "supervisor_model_name": self.supervisor_model_name,
             "local_qwen_model_name": self.local_qwen_model_name,
@@ -324,6 +328,7 @@ def get_settings(reload: bool = False) -> AppSettings:
         trace_enabled=_to_bool(_get_env("TRACE_ENABLED", "true")),
         data_capture_enabled=_to_bool(_get_env("DATA_CAPTURE_ENABLED", "true")),
         min_eval_output_chars=_to_int(_get_env("MIN_EVAL_OUTPUT_CHARS", "100")),
+        max_recovery_attempts=_to_int(_get_env("MAX_RECOVERY_ATTEMPTS", "3")),
         enable_llm_routing=_to_bool(_get_env("ENABLE_LLM_ROUTING", "true")),
         supervisor_model_name=_get_env(
             "SUPERVISOR_MODEL_NAME",

@@ -36,6 +36,9 @@ test = [
 dev = [
     "pytest==9.1.1",
 ]
+document-ingestion = [
+    "pywin32==312; platform_system == 'Windows'",
+]
 
 [tool.setuptools]
 package-dir = {"" = "backend"}
@@ -50,6 +53,7 @@ testpaths = ["backend/tests"]
 addopts = "-ra"
 markers = [
     "real_provider: opt-in tests that make billable external provider calls",
+    "word_com: opt-in tests that require Microsoft Word COM automation",
 ]
 
 [tool.uv]

@@ -168,6 +168,35 @@ def build_vector_index_record_v2(
         index_version=index_version_value,
     )
 
+    child_extra = (
+        dict(child_chunk.get("extra") or {})
+        if isinstance(child_chunk.get("extra"), dict)
+        else {}
+    )
+    provided_extra = dict(extra or {})
+    require_profile_lineage = bool(
+        provided_extra.pop("_require_profile_lineage", False)
+    )
+    lineage_present = any(
+        isinstance(child_extra.get(key), dict)
+        for key in ("document_profile", "type_aware_chunking")
+    )
+    if require_profile_lineage or lineage_present:
+        for lineage_key in ("document_profile", "type_aware_chunking"):
+            lineage_value = child_extra.get(lineage_key)
+            if not isinstance(lineage_value, dict):
+                raise ValueError(
+                    "vector index records require child extra lineage; "
+                    f"missing={lineage_key!r} child_chunk_id={chunk_id!r}"
+                )
+            existing = provided_extra.get(lineage_key)
+            if existing is not None and existing != lineage_value:
+                raise ValueError(
+                    "vector extra conflicts with child lineage; "
+                    f"key={lineage_key!r} child_chunk_id={chunk_id!r}"
+                )
+            provided_extra[lineage_key] = deepcopy(lineage_value)
+
     record.update({
         "vector_id": vector_id_value,
         "indexed_chunk_id": indexed_chunk_id,
@@ -202,6 +231,6 @@ def build_vector_index_record_v2(
         "created_at": created_at or current_time_str(),
         "updated_at": updated_at,
         "deleted_at": deleted_at,
-        "extra": extra or {},
+        "extra": provided_extra,
     })
     return record

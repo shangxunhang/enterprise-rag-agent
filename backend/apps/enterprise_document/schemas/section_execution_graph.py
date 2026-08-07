@@ -21,6 +21,7 @@ from apps.enterprise_document.schemas.agent_rag_v1.writer_pipeline import (
     ParagraphPrecheckResultSchema,
 )
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     AttemptStatus,
     ClaimProjectionStatus,
@@ -58,6 +59,7 @@ class SectionGraphExecutionRequestSchema(SchemaBase):
     document_rag_context: RAGContextSchema
     document_retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
     document_citations: list[CitationSchema] = Field(default_factory=list)
+    document_rag_output: dict[str, Any] = Field(default_factory=dict)
     document_evidence_assessment: dict[str, Any] = Field(default_factory=dict)
     document_tool_call_ids: list[str] = Field(default_factory=list)
     section_retrieval_enabled: bool = True
@@ -89,6 +91,7 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
     document_rag_context: RAGContextSchema
     document_retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
     document_citations: list[CitationSchema] = Field(default_factory=list)
+    document_rag_output: dict[str, Any] = Field(default_factory=dict)
     document_evidence_assessment: dict[str, Any] = Field(default_factory=dict)
     document_tool_call_ids: list[str] = Field(default_factory=list)
     section_retrieval_enabled: bool = True
@@ -110,6 +113,7 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
     active_query: str = ""
     active_scope: str = "document"
     active_assessment: dict[str, Any] = Field(default_factory=dict)
+    active_writer_gate: WriterGateBindingSchema | None = None
     tool_call_ids: list[str] = Field(default_factory=list)
     retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
     rag_outputs: list[dict[str, Any]] = Field(default_factory=list)

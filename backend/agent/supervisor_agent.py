@@ -44,6 +44,7 @@ class SupervisorAgent:
 
     agent_name = "SupervisorAgent"
     agent_type = "supervisor"
+    SHUTDOWN_IDLE_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -87,6 +88,8 @@ class SupervisorAgent:
         self._resource_close_lock = threading.Lock()
         self._resource_close_requested = False
         self._resources_closed = False
+        self._resource_close_event = threading.Event()
+        self._resource_close_event.set()
         self._shutdown_diagnostics: list[dict[str, Any]] = []
         self._prior_model_usage: Dict[str, Any] = {}
 
@@ -114,28 +117,65 @@ class SupervisorAgent:
         return False
 
     def close(self) -> None:
-        """Release resources only after timed-out node workers physically exit.
+        """Bound shutdown and return only after owned resources are closed."""
 
-        A workflow timeout can return while a native model/RAG call is still
-        unwinding.  Closing those dependencies immediately creates a shutdown
-        race.  Runtimes that expose ``defer_until_idle`` own that boundary;
-        other WorkflowEnginePort implementations retain synchronous shutdown.
-        """
-
+        wait_for_concurrent_close = False
         with self._resource_close_lock:
-            if self._resource_close_requested:
+            if self._resources_closed:
                 return
-            self._resource_close_requested = True
+            if self._resource_close_requested:
+                wait_for_concurrent_close = True
+            else:
+                self._resource_close_requested = True
+                self._resource_close_event.clear()
 
-        cancel_active = getattr(self.workflow_engine, "cancel_active_workers", None)
-        if callable(cancel_active):
-            cancel_active("supervisor_close")
+        if wait_for_concurrent_close:
+            if not self._resource_close_event.wait(
+                timeout=self.SHUTDOWN_IDLE_TIMEOUT_SECONDS
+            ):
+                raise TimeoutError("concurrent Supervisor shutdown did not finish")
+            with self._resource_close_lock:
+                if self._resources_closed:
+                    return
+            raise RuntimeError("concurrent Supervisor shutdown failed")
 
-        defer_until_idle = getattr(self.workflow_engine, "defer_until_idle", None)
-        if callable(defer_until_idle):
-            defer_until_idle(self._close_owned_resources)
-            return
-        self._close_owned_resources()
+        try:
+            cancel_active = getattr(
+                self.workflow_engine,
+                "cancel_active_workers",
+                None,
+            )
+            if callable(cancel_active):
+                cancel_active("supervisor_close")
+
+            wait_for_idle = getattr(self.workflow_engine, "wait_for_idle", None)
+            if callable(wait_for_idle) and not wait_for_idle(
+                self.SHUTDOWN_IDLE_TIMEOUT_SECONDS
+            ):
+                # Never destructively close a dependency while a timed-out
+                # native worker may still be using it.  The engine owns the
+                # idle boundary and will run this idempotent finalizer as soon
+                # as the last worker physically exits.
+                defer_until_idle = getattr(
+                    self.workflow_engine,
+                    "defer_until_idle",
+                    None,
+                )
+                if callable(defer_until_idle):
+                    defer_until_idle(self._close_owned_resources)
+                raise TimeoutError(
+                    "workflow workers did not become idle before shutdown; "
+                    "resource closure was deferred until idle"
+                )
+
+            failures = self._close_owned_resources()
+            if failures:
+                raise failures[0]
+        finally:
+            with self._resource_close_lock:
+                if not self._resources_closed:
+                    self._resource_close_requested = False
+                self._resource_close_event.set()
 
     @property
     def shutdown_diagnostics(self) -> tuple[dict[str, Any], ...]:
@@ -144,15 +184,16 @@ class SupervisorAgent:
         with self._resource_close_lock:
             return tuple(dict(item) for item in self._shutdown_diagnostics)
 
-    def _close_owned_resources(self) -> None:
+    def _close_owned_resources(self) -> tuple[Exception, ...]:
         """Idempotently close resources after the workflow engine is idle."""
 
         with self._resource_close_lock:
             if self._resources_closed:
-                return
+                return ()
 
         seen: set[int] = set()
-        failures: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, Any]] = []
+        failures: list[Exception] = []
         for resource in reversed(self._owned_resources):
             if resource is None or id(resource) in seen:
                 continue
@@ -168,7 +209,8 @@ class SupervisorAgent:
                         "error_type": type(exc).__name__,
                         "error_message": str(exc),
                     }
-                    failures.append(diagnostic)
+                    diagnostics.append(diagnostic)
+                    failures.append(exc)
                     logger.warning(
                         "owned resource close failed: resource_type=%s",
                         type(resource).__name__,
@@ -176,11 +218,12 @@ class SupervisorAgent:
                     )
 
         with self._resource_close_lock:
-            self._shutdown_diagnostics.extend(failures)
+            self._shutdown_diagnostics.extend(diagnostics)
             # A failed resource remains owned and may still be recovered by its
             # own finalizer.  Successful shutdown is published only when every
             # unique resource accepted close without an exception.
             self._resources_closed = not failures
+        return tuple(failures)
 
     def inspect(
         self,
@@ -325,6 +368,12 @@ class SupervisorAgent:
         cancel: bool,
     ) -> AgentResultSchema:
         workflow, inspection, state = self._prepare_paused_continuation(task)
+        self._validate_human_review_binding(
+            task=task,
+            inspection=inspection,
+            resume_value=resume_value,
+            cancel=cancel,
+        )
 
         run_span = self.trace.start_run(task=task, component_name=self.agent_name)
         workflow_span = self.trace.start_workflow(
@@ -386,6 +435,48 @@ class SupervisorAgent:
                 result=result,
             )
             return result
+
+    @staticmethod
+    def _validate_human_review_binding(
+        *,
+        task: TaskSchema,
+        inspection: dict[str, Any],
+        resume_value: dict[str, Any],
+        cancel: bool,
+    ) -> None:
+        """Reject stale decisions before the task lifecycle enters RUNNING."""
+
+        if cancel:
+            return
+        expected_snapshot = ""
+        for interrupt_item in inspection.get("interrupts") or []:
+            value = (
+                interrupt_item.get("value")
+                if isinstance(interrupt_item, dict)
+                else None
+            )
+            if not isinstance(value, dict):
+                continue
+            metadata = value.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            expected_snapshot = str(
+                value.get("input_snapshot_version")
+                or metadata.get("input_snapshot_version")
+                or ""
+            )
+            if expected_snapshot:
+                break
+        if not expected_snapshot:
+            raise ValueError("durable human review snapshot is unavailable")
+        if resume_value.get("task_id") != task.task_id:
+            raise ValueError("human review task identity mismatch")
+        if resume_value.get("run_id") != task.run_id:
+            raise ValueError("human review run identity mismatch")
+        provided_snapshot = resume_value.get("input_snapshot_version")
+        if not isinstance(provided_snapshot, str) or not provided_snapshot:
+            raise ValueError("human review input_snapshot_version is required")
+        if provided_snapshot != expected_snapshot:
+            raise ValueError("human review decision snapshot is stale")
 
     def _prepare_paused_continuation(
         self,
@@ -840,6 +931,12 @@ class SupervisorAgent:
                 f"{self.workflow_engine.engine_name} does not support streaming"
             )
         workflow, inspection, state = self._prepare_paused_continuation(task)
+        self._validate_human_review_binding(
+            task=task,
+            inspection=inspection,
+            resume_value=resume_value,
+            cancel=cancel,
+        )
         run_span = self.trace.start_run(task=task, component_name=self.agent_name)
         workflow_span = self.trace.start_workflow(
             task=task,
@@ -892,6 +989,7 @@ class SupervisorAgent:
         task: TaskSchema,
         *,
         decision: str,
+        input_snapshot_version: str,
         feedback: str | None = None,
         reviewer_id: str | None = None,
     ) -> AgentResultSchema:
@@ -900,10 +998,18 @@ class SupervisorAgent:
         normalized = str(decision).strip().lower()
         if normalized not in {"approved", "rejected"}:
             raise ValueError("resume decision must be approved or rejected")
+        if (
+            not isinstance(input_snapshot_version, str)
+            or not input_snapshot_version.strip()
+        ):
+            raise ValueError("input_snapshot_version is required")
         return self._continue_paused(
             task,
             resume_value={
                 "decision": normalized,
+                "task_id": task.task_id,
+                "run_id": task.run_id,
+                "input_snapshot_version": input_snapshot_version,
                 "feedback": feedback,
                 "reviewer_id": reviewer_id,
             },
@@ -927,11 +1033,154 @@ class SupervisorAgent:
             cancel=True,
         )
 
+    def recovery_plan(self, task: TaskSchema) -> dict[str, Any]:
+        """Preflight durable recovery without mutating task or checkpoint state."""
+
+        workflow = self.catalog.get(task.task_type)
+        plan = getattr(self.workflow_engine, "recovery_plan", None)
+        if not callable(plan):
+            raise RuntimeError(
+                f"{self.workflow_engine.engine_name} does not support recovery"
+            )
+        return dict(plan(workflow, run_id=task.run_id))
+
+    def recover(
+        self,
+        task: TaskSchema,
+        *,
+        recovery_attempt: int,
+        recovery_reason: str,
+        recovery_policy: str,
+    ) -> AgentResultSchema:
+        """Continue an authorized durable checkpoint after its CAS event."""
+
+        workflow = self.catalog.get(task.task_type)
+        recover = getattr(self.workflow_engine, "recover", None)
+        if not callable(recover):
+            raise RuntimeError(
+                f"{self.workflow_engine.engine_name} does not support recovery"
+            )
+
+        run_span = self.trace.start_run(task=task, component_name=self.agent_name)
+        workflow_span = self.trace.start_workflow(
+            task=task,
+            workflow=workflow,
+            payload={
+                "recovery": True,
+                "recovery_attempt": recovery_attempt,
+                "recovery_reason": recovery_reason,
+                "recovery_policy": recovery_policy,
+            },
+        )
+        with activate_span(run_span):
+            try:
+                inspection = self.inspect(
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                    task_type=task.task_type,
+                )
+                if inspection.get("interrupts"):
+                    raise ValueError(
+                        "human review is waiting; inspect the run and use resume_run"
+                    )
+                raw_state = inspection.get("graph_state")
+                if not isinstance(raw_state, dict):
+                    raise RuntimeError(
+                        "durable checkpoint does not contain graph state"
+                    )
+                state = GraphStateSchema.model_validate(raw_state)
+                with activate_span(workflow_span):
+                    execution = recover(
+                        workflow,
+                        state,
+                        recovery_attempt=recovery_attempt,
+                        recovery_reason=recovery_reason,
+                        recovery_policy=recovery_policy,
+                    )
+                result = self._result_from_continuation(
+                    task=task,
+                    workflow=workflow,
+                    state=state,
+                    execution=execution,
+                    resumed=True,
+                )
+                result = result.model_copy(
+                    update={
+                        "metadata": {
+                            **dict(result.metadata),
+                            "recovered": True,
+                            "recovery_attempt": recovery_attempt,
+                            "recovery_reason": recovery_reason,
+                            "recovery_policy": recovery_policy,
+                        }
+                    },
+                    deep=True,
+                )
+            except Exception as exc:
+                failure_category = classify_failure(exc)
+                retryable = self.retry_policy.should_retry(failure_category)
+                error = self.error_factory.create(
+                    error_code="WORKFLOW_RECOVERY_FAILED",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    user_visible_message="任务恢复失败。",
+                    recoverable=retryable,
+                    retryable=retryable,
+                    failure_category=failure_category,
+                    failed_node=self.agent_name,
+                    component=self.agent_name,
+                    agent_name=self.agent_name,
+                    stack_trace=traceback.format_exc(),
+                )
+                result = AgentResultSchema(
+                    result_id=(
+                        f"result_{task.run_id}_supervisor_recovery_"
+                        f"{recovery_attempt}_failed"
+                    ),
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                    agent_name=self.agent_name,
+                    agent_type=self.agent_type,
+                    status=(
+                        ExecutionStatus.RETRYABLE_FAILED
+                        if retryable
+                        else ExecutionStatus.FAILED
+                    ),
+                    result_type="workflow_result",
+                    result={"model_usage": self.model_usage_snapshot()},
+                    error=error,
+                    error_message=error.message,
+                    human_review_required=False,
+                    human_review_recommended=bool(error.requires_human),
+                    human_review_status=HumanReviewStatus.NOT_REQUIRED,
+                    metadata={
+                        "recovered": True,
+                        "recovery_attempt": recovery_attempt,
+                        "recovery_reason": recovery_reason,
+                        "recovery_policy": recovery_policy,
+                    },
+                )
+            self.lifecycle.mark_terminal(task, result)
+            self.trace.finish_workflow(
+                task=task,
+                workflow=workflow,
+                handle=workflow_span,
+                result=result,
+            )
+            self.trace.finish_run(
+                task=task,
+                component_name=self.agent_name,
+                handle=run_span,
+                result=result,
+            )
+            return result
+
     def stream_resume(
         self,
         task: TaskSchema,
         *,
         decision: str,
+        input_snapshot_version: str,
         feedback: str | None = None,
         reviewer_id: str | None = None,
         runnable_config: dict[str, Any] | None = None,
@@ -941,10 +1190,18 @@ class SupervisorAgent:
         normalized = str(decision).strip().lower()
         if normalized not in {"approved", "rejected"}:
             raise ValueError("resume decision must be approved or rejected")
+        if (
+            not isinstance(input_snapshot_version, str)
+            or not input_snapshot_version.strip()
+        ):
+            raise ValueError("input_snapshot_version is required")
         return self._stream_continue_paused(
             task,
             resume_value={
                 "decision": normalized,
+                "task_id": task.task_id,
+                "run_id": task.run_id,
+                "input_snapshot_version": input_snapshot_version,
                 "feedback": feedback,
                 "reviewer_id": reviewer_id,
             },

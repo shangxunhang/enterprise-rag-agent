@@ -6,6 +6,25 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
+def prompt_visible_citation_text(citation: Any) -> str:
+    """Return only an explicitly governed text projection for Writer prompts.
+
+    ``CitationSchema.quote_text`` remains the raw grounding/audit span.  Prompt
+    rendering must never silently fall back to that raw span because it may
+    contain historical quantities, brands, models, or other facts removed by
+    Evidence Governance.
+    """
+
+    extra = getattr(citation, "extra", None)
+    extra = dict(extra) if isinstance(extra, Mapping) else {}
+    direct = str(extra.get("prompt_visible_text") or "").strip()
+    if direct:
+        return direct
+    candidate = extra.get("prompt_evidence_candidate_v1")
+    candidate = dict(candidate) if isinstance(candidate, Mapping) else {}
+    return str(candidate.get("prompt_visible_text") or "").strip()
+
+
 @dataclass(frozen=True)
 class CitationSource:
     """One child-level source that can ground a parent-level context item."""

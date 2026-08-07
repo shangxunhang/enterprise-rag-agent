@@ -22,6 +22,13 @@ from rag.configs.SchemaConfig import (
     DEFAULT_SOURCE_TYPE,
 )
 from rag.ports.chunking import ParentChildChunkResult
+from rag.plugins.chunkers.heading_parent_paragraph_child import (
+    HeadingParagraphChunker,
+)
+from rag.plugins.chunkers.policy_article_clause import PolicyArticleClauseChunker
+from rag.plugins.chunkers.project_fact_record import ProjectFactRecordChunker
+from rag.plugins.chunkers.table_row_record import TableRowRecordChunker
+from rag.plugins.chunkers.template_section import TemplateSectionChunker
 from rag.schema.Chunk_Schema import build_child_chunk_v1, build_parent_chunk_v1
 from rag.util.text_utils import unique_keep_order
 
@@ -62,12 +69,28 @@ def _bounds(items: Sequence[dict[str, Any]], key: str, *, maximum: bool) -> int 
 
 
 def _unit_extra(units: Sequence[dict[str, Any]], *, text: str, chunker_name: str) -> dict[str, Any]:
-    """聚合来源、语言、质量、单元类型和正文长度血缘。"""
+    """聚合来源、质量和 Stage C document-profile 血缘。"""
     flags: list[Any] = []
     for unit in units:
         flags.extend(unit.get("quality_flags") or [])
     scores = [unit.get("quality_score") for unit in units if unit.get("quality_score") is not None]
-    return {
+
+    document_profile: dict[str, Any] | None = None
+    for unit in units:
+        unit_extra = unit.get("extra")
+        if not isinstance(unit_extra, dict):
+            continue
+        candidate = unit_extra.get("document_profile")
+        if isinstance(candidate, dict):
+            if document_profile is None:
+                document_profile = dict(candidate)
+            elif document_profile != candidate:
+                raise ValueError(
+                    "one chunk cannot combine conflicting document profiles; "
+                    f"doc_id={unit.get('doc_id')!r}"
+                )
+
+    result = {
         "chunker_name": chunker_name,
         "source_uri": _first(units, "source_uri"),
         "source_name": _first(units, "source_name"),
@@ -80,6 +103,9 @@ def _unit_extra(units: Sequence[dict[str, Any]], *, text: str, chunker_name: str
         "source_unit_types": unique_keep_order([u.get("unit_type") for u in units]),
         "text_length": len(text),
     }
+    if document_profile is not None:
+        result["document_profile"] = document_profile
+    return result
 
 
 class FixedParentChildChunkerPlugin:
@@ -412,3 +438,230 @@ class FixedStructuredParentChildChunkerPlugin(StructuredParentChildChunkerPlugin
 
     STRATEGY = "fixed"
     FLAT_CHUNKER = FixedSizeChunker
+
+
+class TypeAwareParentChildChunkerPlugin:
+    """Route each reviewed document to a profile-selected parent strategy.
+
+    The Stage C catalog stores a stable ``chunk_strategy`` per document.  This
+    plugin groups records by ``doc_id``, rejects missing/conflicting profile
+    metadata, and delegates each document to an existing deterministic
+    parent/child implementation with strategy-specific budgets.
+    """
+
+    ROUTES = {
+        "heading_parent_paragraph_child": HeadingParagraphChunker,
+        "policy_article_clause": PolicyArticleClauseChunker,
+        "fact_record": ProjectFactRecordChunker,
+        "table_row_record": TableRowRecordChunker,
+        "template_section": TemplateSectionChunker,
+        "fixed_token_fallback": RecursiveParentChildChunkerPlugin,
+    }
+
+    DEFAULT_STRATEGY_PARAMS: dict[str, dict[str, int]] = {
+        "heading_parent_paragraph_child": {
+            "parent_chunk_size": 1800,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 520,
+            "child_chunk_overlap": 0,
+        },
+        "policy_article_clause": {
+            "parent_chunk_size": 2400,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 900,
+            "child_chunk_overlap": 0,
+        },
+        "fact_record": {
+            "parent_chunk_size": 2400,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 1000,
+            "child_chunk_overlap": 0,
+        },
+        "table_row_record": {
+            "parent_chunk_size": 4096,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 4096,
+            "child_chunk_overlap": 0,
+        },
+        "template_section": {
+            "parent_chunk_size": 2600,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 900,
+            "child_chunk_overlap": 0,
+        },
+        "fixed_token_fallback": {
+            "parent_chunk_size": 1200,
+            "parent_chunk_overlap": 100,
+            "child_chunk_size": 400,
+            "child_chunk_overlap": 40,
+        },
+    }
+
+    def __init__(
+        self,
+        *,
+        strategy_params: dict[str, dict[str, int]] | None = None,
+        unit: str = "char",
+        parent_chunk_version: str = DEFAULT_PARENT_CHUNK_VERSION,
+        child_chunk_version: str = DEFAULT_CHILD_CHUNK_VERSION,
+        deterministic_created_at: str | None = None,
+        require_document_profile: bool = True,
+        semantic_revision: str = "stage_c_final_v2_r1",
+        chunker_name: str = "type_aware_parent_child",
+        build_context: Any = None,
+    ) -> None:
+        self.unit = str(unit or "char").strip().lower()
+        if self.unit not in {"char", "token"}:
+            raise ValueError("unit must be exactly 'char' or 'token'")
+        self.parent_chunk_version = str(parent_chunk_version)
+        self.child_chunk_version = str(child_chunk_version)
+        self.created_at = deterministic_created_at
+        self.require_document_profile = bool(require_document_profile)
+        self.semantic_revision = str(semantic_revision or "").strip()
+        if not self.semantic_revision:
+            raise ValueError("semantic_revision cannot be blank")
+        self.chunker_name = str(chunker_name or "type_aware_parent_child")
+
+        merged = {
+            key: dict(value)
+            for key, value in self.DEFAULT_STRATEGY_PARAMS.items()
+        }
+        for strategy, params in dict(strategy_params or {}).items():
+            if strategy not in self.ROUTES:
+                raise ValueError(
+                    "unsupported type-aware chunk strategy override: "
+                    f"{strategy!r}"
+                )
+            if not isinstance(params, dict):
+                raise TypeError(
+                    "strategy_params values must be objects; "
+                    f"strategy={strategy!r}"
+                )
+            merged[strategy].update(params)
+        self.strategy_params = merged
+        self._last_route_counts: dict[str, int] = {}
+
+    @staticmethod
+    def _profile_strategy(record: dict[str, Any]) -> str | None:
+        extra = record.get("extra")
+        if not isinstance(extra, dict):
+            return None
+        profile = extra.get("document_profile")
+        if not isinstance(profile, dict):
+            return None
+        parsing = profile.get("parsing")
+        value = (
+            parsing.get("chunk_strategy")
+            if isinstance(parsing, dict)
+            else profile.get("chunk_strategy")
+        )
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    def _build_delegate(self, strategy: str) -> Any:
+        try:
+            delegate_type = self.ROUTES[strategy]
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported document profile chunk_strategy={strategy!r}"
+            ) from exc
+        params = dict(self.strategy_params[strategy])
+        return delegate_type(
+            **params,
+            unit=self.unit,
+            parent_chunk_version=self.parent_chunk_version,
+            child_chunk_version=self.child_chunk_version,
+            deterministic_created_at=self.created_at,
+            chunker_name=f"{self.chunker_name}:{strategy}",
+        )
+
+    def chunk_records(
+        self,
+        records: Iterable[dict[str, Any]],
+    ) -> ParentChildChunkResult:
+        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for raw in records:
+            record = dict(raw)
+            document_id = str(record.get("doc_id") or "").strip()
+            if not document_id:
+                raise ValueError("type-aware chunking requires doc_id")
+            groups[document_id].append(record)
+
+        parents: list[dict[str, Any]] = []
+        children: list[dict[str, Any]] = []
+        route_counts: dict[str, int] = defaultdict(int)
+
+        for document_id in sorted(groups):
+            document_records = groups[document_id]
+            strategies = {
+                strategy
+                for strategy in (
+                    self._profile_strategy(item)
+                    for item in document_records
+                )
+                if strategy is not None
+            }
+            if not strategies:
+                if self.require_document_profile:
+                    raise ValueError(
+                        "type-aware chunking requires document_profile metadata; "
+                        f"document_id={document_id!r}"
+                    )
+                strategies = {"fixed_token_fallback"}
+            if len(strategies) != 1:
+                raise ValueError(
+                    "one document cannot declare multiple chunk strategies; "
+                    f"document_id={document_id!r} strategies={sorted(strategies)!r}"
+                )
+            strategy = next(iter(strategies))
+            delegate = self._build_delegate(strategy)
+            result = delegate.chunk_records(document_records)
+            route_counts[strategy] += 1
+
+            plugin = getattr(self, "plugin_metadata", None)
+            plugin_dict = plugin.to_dict() if plugin is not None else {}
+            for record in [*result.parents, *result.children]:
+                extra = dict(record.get("extra") or {})
+                routing = dict(extra.get("type_aware_chunking") or {})
+                routing.update(
+                    {
+                        "selected_profile_strategy": strategy,
+                        "delegate": delegate.__class__.__name__,
+                        "parameters": dict(self.strategy_params[strategy]),
+                    }
+                )
+                extra["type_aware_chunking"] = routing
+                if plugin_dict:
+                    extra["chunker_plugin"] = plugin_dict
+                record["extra"] = extra
+            parents.extend(result.parents)
+            children.extend(result.children)
+
+        # Delegates are invoked per document, so normalize the global child
+        # sequence after deterministic document/chunk ordering.
+        parents = sorted(
+            parents,
+            key=lambda item: str(item.get("parent_chunk_id") or ""),
+        )
+        children = sorted(
+            children,
+            key=lambda item: str(item.get("child_chunk_id") or ""),
+        )
+        for index, child in enumerate(children, start=1):
+            child["child_chunk_index"] = index
+
+        self._last_route_counts = dict(sorted(route_counts.items()))
+        return ParentChildChunkResult(parents=parents, children=children)
+
+    def execution_metadata(self) -> dict[str, Any]:
+        return {
+            "routing_field": "extra.document_profile.parsing.chunk_strategy",
+            "require_document_profile": self.require_document_profile,
+            "semantic_revision": self.semantic_revision,
+            "unit": self.unit,
+            "strategy_params": {
+                key: dict(value)
+                for key, value in sorted(self.strategy_params.items())
+            },
+            "route_document_counts": dict(self._last_route_counts),
+        }

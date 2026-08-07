@@ -69,8 +69,8 @@ class FakeRAGTool(BaseTool):
         section = "总体架构"
         mock_evidence = (
             "建设内容包括企业知识库构建、RAG 检索、Agent 工作流、引用追溯和运行数据沉淀。"
-            "技术方案采用 SupervisorAgent、SubAgent、ToolRegistry、RAGTool、"
-            "ModelGateway、RunTrace 和 DataCapture 等模块。"
+            "典型方案可采用分层架构，组件可包括 SupervisorAgent、SubAgent、ToolRegistry、"
+            "RAGTool、ModelGateway、RunTrace 和 DataCapture 等模块。"
             "安全设计应满足法律法规和合规要求，并包含访问控制、操作审计及敏感数据保护。"
         )
 
@@ -88,13 +88,13 @@ class FakeRAGTool(BaseTool):
             section = section_title or "总体架构"
             if scope == "recovery":
                 mock_evidence = (
-                    "政务云安全设计应采用统一身份认证、最小权限访问控制、传输与存储加密、"
-                    "敏感数据脱敏、完整操作审计、输入校验和接口鉴权，并保留可追溯记录。"
+                    "政务云安全设计应满足等级保护和合规要求，并采用统一身份认证、最小权限访问控制、"
+                    "传输与存储加密、敏感数据脱敏、完整操作审计、输入校验和接口鉴权，并保留可追溯记录。"
                 )
             elif section_title == "安全设计":
                 mock_evidence = (
-                    "安全设计应覆盖身份认证、访问控制、最小权限、数据加密、敏感数据保护、"
-                    "日志审计、等级保护、输入校验和接口安全。"
+                    "安全设计应满足等级保护要求，并覆盖身份认证、访问控制、最小权限、数据加密、"
+                    "敏感数据保护、日志审计、输入校验和接口安全。"
                 )
             elif section_title == "技术方案":
                 mock_evidence = (
@@ -162,6 +162,7 @@ class FakeRAGTool(BaseTool):
                 "is_mock": True,
                 "scenario": scenario,
                 "retrieval_scope": scope,
+                "prompt_visible_text": retrieved_chunk.context_text,
             },
         )
 
@@ -214,6 +215,51 @@ class FakeRAGTool(BaseTool):
         # can make that semantic assertion explicitly.
         evidence.assessment.status = EvidenceAssessmentStatus.SUFFICIENT
         evidence.assessment.reason_codes = ["fake_fixture_semantically_sufficient"]
+        # Stage E requires the exact final Stage D gate even in deterministic
+        # mainline fixtures. Keep this fixture broad so legacy Agent/recovery
+        # tests continue testing their own concern under an explicit writer
+        # authorization contract rather than bypassing governance.
+        evidence.extra = {
+            **dict(evidence.extra or {}),
+            "gate_decision": {
+                "schema_version": "gate_decision_v1",
+                "policy_id": "fake_fixture_writer_gate_v1",
+                "evidence_status": "sufficient",
+                "delivery_mode": "grounded",
+                "claim_risk_level": "low",
+                "allowed_claim_types": [
+                    "general_method",
+                    "typical_architecture",
+                    "reference_case",
+                    "current_project_fact",
+                    "current_project_cost",
+                    "current_project_quantity",
+                    "current_project_schedule",
+                    "current_project_configuration",
+                    "policy_requirement",
+                    "technical_specification",
+                    "procurement_requirement",
+                    "template_structure",
+                    "style_guidance",
+                ],
+                "forbidden_claim_types": [],
+                "required_qualifiers": [],
+                "covered_topics": [section_title or "企业级 RAG-Agent 架构"],
+                "missing_topics": [],
+                "human_review_required": False,
+                "reason_codes": ["fake_fixture_semantically_sufficient"],
+                "metadata": {"fixture": True, "scenario": scenario},
+            },
+            "generation_allowed": True,
+            "prompt_evidence_source": "fake_fixture_selected_evidence",
+            "prompt_evidence_contract": {
+                "schema_version": "prompt_evidence_contract_v1",
+                "source": "fake_fixture_selected_evidence",
+                "contract_missing": False,
+                "candidate_count": 1,
+                "candidate_errors": [],
+            },
+        }
         rag_context, projected_chunks, projected_citations = (
             RAGEvidenceContractReader.projections(evidence)
         )

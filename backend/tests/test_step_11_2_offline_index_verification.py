@@ -665,6 +665,9 @@ def test_builder_milvus_path_closes_reopens_and_verifies_count(tmp_path: Path, m
 
     fake_store = types.ModuleType("rag.vector_store.milvus_child_chunk_store")
     fake_store.create_or_reset_child_chunk_collection = lambda **kwargs: None
+    fake_store.ensure_milvus_lite_windows_manifest_replace_compatibility = (
+        lambda: False
+    )
     fake_store.build_milvus_child_chunk_record = lambda child_chunk, vector, **kwargs: {
         "chunk_id": child_chunk["child_chunk_id"],
         "vector": vector.tolist(),

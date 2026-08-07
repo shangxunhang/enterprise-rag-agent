@@ -17,6 +17,7 @@ from rag.configs.SchemaConfig import (
     DEFAULT_VECTOR_DB,
     DEFAULT_EMBEDDING_VERSION,
 )
+from rag.schema.structured_evidence import build_structured_evidence
 
 
 def _safe_str(value: Any, default: str = "") -> str:
@@ -67,6 +68,16 @@ def build_retrieval_result(
     return result
 
 
+def _nested_dict(record: Dict[str, Any], key: str) -> Dict[str, Any]:
+    direct = record.get(key)
+    if isinstance(direct, dict):
+        return deepcopy(direct)
+    extra = record.get("extra")
+    if isinstance(extra, dict) and isinstance(extra.get(key), dict):
+        return deepcopy(extra[key])
+    return {}
+
+
 def build_retrieval_result_v2(
     *,
     child_chunk: Dict[str, Any],
@@ -98,8 +109,72 @@ def build_retrieval_result_v2(
     parent_text = _safe_str(parent_chunk.get("text"))
     context_text = parent_text if context_granularity == "parent" and parent_text else child_text
 
+    document_profile = (
+        _nested_dict(child_chunk, "document_profile")
+        or _nested_dict(parent_chunk, "document_profile")
+    )
+    type_aware_chunking = (
+        _nested_dict(child_chunk, "type_aware_chunking")
+        or _nested_dict(parent_chunk, "type_aware_chunking")
+    )
+    structured_evidence = build_structured_evidence(child_chunk).model_dump(
+        mode="json", exclude_none=True
+    )
+    effective_metadata = dict(metadata or {})
+    effective_extra = dict(extra or {})
+    if document_profile:
+        effective_metadata["document_profile"] = deepcopy(document_profile)
+        effective_extra["document_profile"] = deepcopy(document_profile)
+    if type_aware_chunking:
+        effective_metadata["type_aware_chunking"] = deepcopy(type_aware_chunking)
+        effective_extra["type_aware_chunking"] = deepcopy(type_aware_chunking)
+    effective_metadata["structured_evidence"] = deepcopy(structured_evidence)
+    effective_extra["structured_evidence"] = deepcopy(structured_evidence)
+
     result = deepcopy(RETRIEVAL_RESULT_V2_TEMPLATE)
     result.update({
+        "tenant_id": _safe_str(child_chunk.get("tenant_id") or parent_chunk.get("tenant_id")),
+        "kb_id": _safe_str(child_chunk.get("kb_id") or parent_chunk.get("kb_id")),
+        "file_id": _safe_str(child_chunk.get("file_id") or parent_chunk.get("file_id")) or None,
+        "document_type": _safe_str(
+            child_chunk.get("document_type")
+            or parent_chunk.get("document_type")
+            or document_profile.get("document_type")
+        ),
+        "evidence_role": _safe_str(
+            child_chunk.get("evidence_role")
+            or parent_chunk.get("evidence_role")
+            or document_profile.get("evidence_role")
+        ),
+        "project_relation": _safe_str(
+            child_chunk.get("project_relation")
+            or parent_chunk.get("project_relation")
+            or (
+                document_profile.get("project_relation", {}).get("relation")
+                if isinstance(document_profile.get("project_relation"), dict)
+                else document_profile.get("project_relation")
+            )
+        ),
+        "project_id": _safe_str(
+            child_chunk.get("project_id")
+            or parent_chunk.get("project_id")
+            or document_profile.get("project_id")
+            or (
+                document_profile.get("project_relation", {}).get("project_id")
+                if isinstance(document_profile.get("project_relation"), dict)
+                else None
+            )
+        ) or None,
+        "structured_evidence": deepcopy(structured_evidence),
+        "authority_level": _safe_str(
+            child_chunk.get("authority_level")
+            or parent_chunk.get("authority_level")
+            or (
+                document_profile.get("authority", {}).get("level")
+                if isinstance(document_profile.get("authority"), dict)
+                else None
+            )
+        ),
         "rank": rank,
         "score": score,
         "rerank_score": rerank_score,
@@ -129,7 +204,26 @@ def build_retrieval_result_v2(
         "embedding_version": embedding_version,
         "index_name": index_name,
         "vector_db": vector_db,
-        "metadata": metadata or {},
-        "extra": extra or {},
+        "metadata": effective_metadata,
+        "extra": effective_extra,
     })
+    if document_profile:
+        try:
+            from rag.schema.retrieval_candidate_v2 import build_retrieval_candidate_v2
+
+            candidate = build_retrieval_candidate_v2(result)
+            result["metadata"]["retrieval_candidate_v2"] = candidate.model_dump(
+                mode="json",
+                exclude_none=True,
+            )
+        except Exception as exc:
+            result["metadata"]["retrieval_candidate_v2_error"] = {
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            }
+    else:
+        result["metadata"]["retrieval_candidate_v2_error"] = {
+            "error_type": "MissingDocumentProfile",
+            "message": "retrieval candidate has no Stage C document_profile",
+        }
     return result

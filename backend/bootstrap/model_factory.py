@@ -113,15 +113,15 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
         ),
         RoutingPolicy(
             role=ModelRole.SECTION_GENERATION,
-            candidates=["local_3b", "local_1_5b", "deepseek"],
-        ),
-        RoutingPolicy(
-            role=ModelRole.SEMANTIC_GATE,
             candidates=["local_1_5b", "local_3b", "deepseek"],
         ),
         RoutingPolicy(
-            role=ModelRole.REPAIR,
+            role=ModelRole.SEMANTIC_GATE,
             candidates=["local_3b", "local_1_5b", "deepseek"],
+        ),
+        RoutingPolicy(
+            role=ModelRole.REPAIR,
+            candidates=["local_1_5b", "local_3b", "deepseek"],
         ),
     ]
     return ModelRoutingConfig(profiles=profiles, policies=policies)

@@ -15,6 +15,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 
+from rag.schema.structured_evidence import build_structured_evidence
+
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_\-\.]+|[\u4e00-\u9fff]+", re.UNICODE)
 
 
@@ -123,6 +125,10 @@ def normalize_child_chunk_record(record: Dict[str, Any]) -> Dict[str, Any]:
     child["doc_id"] = str(child.get("doc_id") or "")
     if "source_unit_ids" not in child:
         child["source_unit_ids"] = _parse_json_list(child.get("source_unit_ids_json"))
+    structured = build_structured_evidence(child)
+    child["structured_evidence"] = structured.model_dump(
+        mode="json", exclude_none=True
+    )
     return child
 
 
@@ -272,6 +278,15 @@ class BM25ChildRetriever:
                 "kb_id": child.get("kb_id"),
                 "file_id": child.get("file_id"),
                 "doc_id": child.get("doc_id"),
+                "document_profile": dict(
+                    (child.get("extra") or {}).get("document_profile") or {}
+                ),
+                "type_aware_chunking": dict(
+                    (child.get("extra") or {}).get("type_aware_chunking") or {}
+                ),
+                "structured_evidence": dict(
+                    child.get("structured_evidence") or {}
+                ),
                 "child_chunk": child,
                 "raw_hit": {
                     "bm25_score": _safe_float(score),

@@ -14,6 +14,7 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 from apps.enterprise_document.schemas.scheme_writer_schema import SchemeSectionSchema
 from schemas.citation import CitationSchema
 from schemas.context import ContextBuildRequestSchema, ContextItemSchema
+from rag.evidence.citation_sources import prompt_visible_citation_text
 from schemas.rag import RAGContextSchema, RAGEvidenceContractSchema
 
 
@@ -290,7 +291,10 @@ class SectionGenerationContextPolicy:
                 max_chars=80,
             )
             section = cls._compact_text(item.section or "", max_chars=48)
-            quote = cls._compact_text(item.quote_text or "", max_chars=max_quote_chars)
+            quote = cls._compact_text(
+                prompt_visible_citation_text(item),
+                max_chars=max_quote_chars,
+            )
             parts = [f"[{citation_id}]", f"来源：{title}"]
             if section:
                 parts.append(f"位置：{section}")

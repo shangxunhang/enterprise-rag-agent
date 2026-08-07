@@ -18,6 +18,7 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 from schemas.citation import CitationSchema
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
+from rag.evidence.citation_sources import prompt_visible_citation_text
 from context_manager import LLMContextManager
 from model_gateway.call_boundary import ModelCallBoundary, infer_model_role
 from model_gateway.model_gateway import ModelGateway
@@ -254,23 +255,91 @@ class SectionModelService:
 
         divisor = max(2, retry_index + 1)
         reduced_chars = max(800, rag_context.max_context_chars // divisor)
-        reduced_context = rag_context.context_text[:reduced_chars]
         target_chars = self.prompt_service.target_section_chars(project_input)
         compact_target_chars = min(800, max(480, int(target_chars * 0.68)))
         contract = self.prompt_service.section_generation_contract(
             section_title, project_input
         )
-        prompt = (
+
+        project_payload = project_input.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        project_fact_fields = (
+            "project_name",
+            "project_type",
+            "customer_type",
+            "business_goal",
+            "total_staff",
+            "functional_department_count",
+            "business_department_count",
+            "department_groups",
+            "hardware_resources",
+            "policy_requirements",
+            "manual_boundaries",
+            "missing_information",
+            "conflicting_information",
+            "extra",
+        )
+        project_facts = {
+            field_name: project_payload[field_name]
+            for field_name in project_fact_fields
+            if field_name in project_payload
+            and project_payload[field_name] not in (None, "", [], {})
+        }
+        compact_project_facts = json.dumps(
+            project_facts,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(compact_project_facts) > 1200:
+            compact_project_facts = compact_project_facts[:1199].rstrip() + "…"
+
+        citation_catalog = []
+        for item in citations:
+            quote_text = prompt_visible_citation_text(item)
+            if len(quote_text) > 240:
+                quote_text = quote_text[:239].rstrip() + "…"
+            rendered = {
+                "marker": f"[{item.citation_id}]",
+                "quote_text": quote_text,
+            }
+            if item.title:
+                rendered["title"] = item.title
+            if item.section:
+                rendered["section"] = item.section
+            citation_catalog.append(rendered)
+        compact_citation_catalog = json.dumps(
+            citation_catalog,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(compact_citation_catalog) > 1800:
+            compact_citation_catalog = compact_citation_catalog[:1799].rstrip() + "…"
+
+        prompt_prefix = (
             f"“{section_title}”章节此前因达到输出上限而未完整结束。请从头生成一版完整短稿。\n"
             f"强制要求：正文控制在 {compact_target_chars} 个汉字以内，最多使用 4 至 6 个要点；"
             "每个要点只保留核心结论，不得续接旧稿，不得重复其他章节，"
             "不得输出章节标题、Markdown 分隔线或无关扩展；最后必须以完整句子结束；"
             "输入缺失时写待补充或需项目方确认。\n"
             f"章节边界：{contract}\n\n"
-            f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
-            f"缩短后的证据上下文：\n{reduced_context}\n\n"
-            f"可用引用：\n{self.prompt_service.citation_catalog(citations)}"
+            f"项目事实：\n{compact_project_facts}\n\n"
+            "缩短后的证据上下文：\n"
         )
+        prompt_suffix = f"\n\n可用引用：\n{compact_citation_catalog}"
+        max_prompt_chars = int(
+            project_input.generation_requirements.max_context_chars
+        )
+        available_context_chars = max(
+            0,
+            max_prompt_chars - len(prompt_prefix) - len(prompt_suffix),
+        )
+        reduced_context = rag_context.context_text[
+            : min(reduced_chars, available_context_chars)
+        ]
+        prompt = f"{prompt_prefix}{reduced_context}{prompt_suffix}"
         return self.call_model(
             shared_state,
             prompt=prompt,

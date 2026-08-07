@@ -19,6 +19,10 @@ from core.runtime.execution_control import (
     WorkflowExecutionCancelled,
     current_execution_control,
 )
+from core.runtime.recovery import (
+    activate_durable_recovery,
+    current_durable_recovery,
+)
 
 
 class _ParallelSectionState(TypedDict):
@@ -128,6 +132,7 @@ class SectionParallelExecutionGraph:
                 )
 
         cancellation_requested = Event()
+        recovery_context = current_durable_recovery()
         builder = StateGraph(_ParallelSectionState)
         for index, section_plan in enumerate(section_plans, start=1):
             node_name = f"parallel_section_{index:03d}"
@@ -149,7 +154,13 @@ class SectionParallelExecutionGraph:
                         "parallel section batch cancelled before branch start"
                     )
                 try:
-                    envelope = execute(plan)
+                    if recovery_context is None:
+                        envelope = execute(plan)
+                    else:
+                        # LangGraph may schedule branches on worker threads;
+                        # explicitly carry the recovery boundary into each one.
+                        with activate_durable_recovery(recovery_context):
+                            envelope = execute(plan)
                     if (
                         execution_control is not None
                         and execution_control.should_stop

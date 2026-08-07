@@ -17,6 +17,7 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 from contracts.rag import RAGServicePort
 from model_gateway.model_contract import ModelRole
 from rag.evidence.contract import RAGEvidenceContractReader
+from rag.evidence.governance_v2 import resolve_evidence_requirements_v2
 from schemas.citation import CitationSchema
 from schemas.rag import (
     EvidenceBundleSchema,
@@ -151,8 +152,20 @@ class SchemeEvidenceService:
             requested_reserved_tokens,
             safe_output_tokens + 512,
         )
+        evidence_requirements = resolve_evidence_requirements_v2(
+            query=resolved_query,
+            runtime_context={
+                "section_id": section_id or scope,
+                "section_title": section_title or resolved_query,
+                "section_type": section_id or scope,
+                "retrieval_scope": scope,
+            },
+        )
         extra_metadata = {
             "task_type": project_input.task_type,
+            "evidence_requirements": evidence_requirements.model_dump(
+                mode="json"
+            ),
             "retrieval_scope": scope,
             "section_id": section_id,
             "section_title": section_title,

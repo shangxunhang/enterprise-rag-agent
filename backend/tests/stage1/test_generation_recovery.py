@@ -331,3 +331,77 @@ def test_truncated_compact_retry_can_recover_complete_prefix() -> None:
     assert section.content == "第一项内容完整。第二项内容也完整。"
     assert section.extra["truncation_recovery_strategy"] == "complete_sentence_prefix"
     assert "truncation_recovered:complete_sentence_prefix" in section.eval_result.warnings
+
+
+def test_truncated_retry_prompt_stays_within_context_budget() -> None:
+    """A compact retry must not fail before model invocation on the 6000-char gate."""
+    from types import SimpleNamespace
+
+    from apps.enterprise_document.services.scheme_writer.model_service import (
+        SectionModelService,
+    )
+    from schemas.model import ModelResponseSchema
+    from schemas.rag import RAGContextSchema
+
+    captured: dict[str, str] = {}
+
+    class PromptStub:
+        @staticmethod
+        def target_section_chars(project_input):
+            return 1200
+
+        @staticmethod
+        def section_generation_contract(section_title, project_input):
+            return "只写当前章节；未知事实必须降级为待补充或需项目方确认。"
+
+    class ServiceStub(SectionModelService):
+        def __init__(self) -> None:
+            self.prompt_service = PromptStub()
+
+        def call_model(self, shared_state, *, prompt, **kwargs):  # type: ignore[override]
+            captured["prompt"] = prompt
+            return ModelResponseSchema(
+                model_call_id="retry_budget",
+                task_id="task_retry_budget",
+                run_id="run_retry_budget",
+                model_name="stub",
+                success=True,
+                content="压缩后的完整正文。",
+                finish_reason="stop",
+                created_at=NOW,
+            )
+
+    project_input = ProjectInputSchema.model_validate(
+        {
+            "task_id": "task_retry_budget",
+            "task_type": "scheme_generation",
+            "user_query": "生成完整章节",
+            "generation_requirements": {
+                "required_sections": ["正文"],
+                "citation_required_sections": [],
+                "min_section_chars": 10,
+                "max_section_retries": 1,
+                "max_context_chars": 6000,
+                "max_tokens_per_section": 1024,
+            },
+            "output_schema": {"required_sections": ["正文"]},
+            "extra": {"oversized_project_fact": "项目事实" * 1600},
+        }
+    )
+
+    ServiceStub().retry_truncated_section(
+        SimpleNamespace(run_id="run_retry_budget", task_id="task_retry_budget"),
+        section_id="section_retry_budget",
+        section_title="正文",
+        project_input=project_input,
+        citations=[],
+        rag_context=RAGContextSchema(
+            context_text="证据上下文" * 1600,
+            max_context_chars=6000,
+        ),
+        retry_index=1,
+    )
+
+    assert len(captured["prompt"]) <= 6000
+    assert "项目事实" in captured["prompt"]
+    assert "缩短后的证据上下文" in captured["prompt"]

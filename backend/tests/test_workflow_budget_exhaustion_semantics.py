@@ -165,6 +165,31 @@ def _request(state: SharedStateSchema) -> SectionExecutionRequestSchema:
         document_retrieved_chunks=[],
         document_citations=[],
         document_evidence_assessment={"status": "sufficient"},
+        document_rag_output={
+            "evidence": {
+                "schema_version": "evidence_bundle_test_v1",
+                "extra": {
+                    "gate_decision": {
+                        "policy_id": "budget_exhaustion_fixture_v1",
+                        "evidence_status": "sufficient",
+                        "delivery_mode": "grounded",
+                        "claim_risk_level": "low",
+                        "allowed_claim_types": ["general_method"],
+                        "forbidden_claim_types": [],
+                        "required_qualifiers": [],
+                        "covered_topics": ["技术方案"],
+                        "missing_topics": [],
+                        "human_review_required": False,
+                        "reason_codes": ["budget_exhaustion_fixture"],
+                    },
+                    "generation_allowed": True,
+                    "prompt_evidence_source": "budget_fixture_context",
+                    "prompt_evidence_contract": {
+                        "selected_evidence_ids": ["budget_fixture_evidence"]
+                    },
+                },
+            }
+        },
         document_tool_call_ids=["rag_document"],
         section_retrieval_enabled=False,
         corrective_retrieval_enabled=False,

@@ -404,9 +404,19 @@ class OfflineIndexVerifier:
         )
 
         # 第四步：检查必需不可变产物；Milvus 后端还要求数据库产物。
+        profile_lineage_contract = (
+            str(manifest.chunker.get("name") or "")
+            == "type_aware_parent_child"
+            and str(manifest.chunker.get("version") or "") == "v2"
+        )
+        required_artifacts = list(self.REQUIRED_ARTIFACTS)
+        if profile_lineage_contract:
+            required_artifacts.extend(
+                ["profiled_cleaned_text_units", "bm25_records"]
+            )
         missing = [
             name
-            for name in self.REQUIRED_ARTIFACTS
+            for name in required_artifacts
             if name not in manifest.artifacts
         ]
         if (
@@ -539,7 +549,12 @@ class OfflineIndexVerifier:
                 },
             )
 
-        # 第七步：加载父块、子块、向量索引记录和 NumPy 向量矩阵。
+        # 第七步：加载 Profiled Unit、父子块、Dense/BM25 记录和向量矩阵。
+        profiled_units = (
+            load_jsonl_dicts(artifact_paths["profiled_cleaned_text_units"])
+            if "profiled_cleaned_text_units" in artifact_paths
+            else []
+        )
         parents = load_jsonl_dicts(
             artifact_paths["parent_chunks"]
         )
@@ -549,6 +564,11 @@ class OfflineIndexVerifier:
         vector_records = load_jsonl_dicts(
             artifact_paths["vector_index_records"]
         )
+        bm25_records = (
+            load_jsonl_dicts(artifact_paths["bm25_records"])
+            if "bm25_records" in artifact_paths
+            else []
+        )
         vectors = np.load(
             artifact_paths["vectors"],
             allow_pickle=False,
@@ -556,18 +576,46 @@ class OfflineIndexVerifier:
 
         # 第八步：检查所有行数都与 Manifest child/parent 计数一致。
         actual_counts = {
+            **(
+                {"profiled_cleaned_text_units": len(profiled_units)}
+                if profile_lineage_contract
+                else {}
+            ),
             "parent_chunks": len(parents),
             "child_chunks": len(children),
             "vector_records": len(vector_records),
+            **(
+                {"bm25_records": len(bm25_records)}
+                if profile_lineage_contract
+                else {}
+            ),
             "vector_rows": (
                 int(vectors.shape[0]) if vectors.ndim >= 1 else 0
             ),
         }
         metrics["actual_counts"] = actual_counts
         expected_counts = {
+            **(
+                {
+                    "profiled_cleaned_text_units": int(
+                        manifest.artifacts[
+                            "profiled_cleaned_text_units"
+                        ].record_count
+                        or manifest.source.get("record_count")
+                        or 0
+                    )
+                }
+                if profile_lineage_contract
+                else {}
+            ),
             "parent_chunks": manifest.parent_chunk_count,
             "child_chunks": manifest.child_chunk_count,
             "vector_records": manifest.child_chunk_count,
+            **(
+                {"bm25_records": manifest.child_chunk_count}
+                if profile_lineage_contract
+                else {}
+            ),
             "vector_rows": manifest.child_chunk_count,
         }
         self._check(
@@ -707,6 +755,245 @@ class OfflineIndexVerifier:
             },
         )
 
+        def record_profile(record: dict[str, Any]) -> dict[str, Any] | None:
+            extra = record.get("extra")
+            if isinstance(extra, dict) and isinstance(
+                extra.get("document_profile"), dict
+            ):
+                return extra["document_profile"]
+            direct = record.get("document_profile")
+            return direct if isinstance(direct, dict) else None
+
+        required_profile_fields = {
+            "schema_version",
+            "document_id",
+            "source_sha256",
+            "document_type",
+            "evidence_role",
+            "kb_id",
+            "tenant_id",
+            "project_relation",
+            "project_id",
+            "authority",
+            "content_capabilities",
+            "parsing",
+            "classification",
+            "source_document_form",
+            "taxonomy_mapping",
+            "should_index",
+            "is_gold_reference",
+            "profile_sha256",
+            "catalog_sha256",
+        }
+        profile_artifacts = {
+            "profiled_cleaned_text_units": profiled_units,
+            "parent_chunks": parents,
+            "child_chunks": children,
+            "vector_index_records": vector_records,
+            "bm25_records": bm25_records,
+        }
+        profile_missing: dict[str, int] = {}
+        profile_field_missing: dict[str, int] = {}
+        authority_missing: dict[str, int] = {}
+        for artifact_name, artifact_records in profile_artifacts.items():
+            profile_missing[artifact_name] = 0
+            profile_field_missing[artifact_name] = 0
+            authority_missing[artifact_name] = 0
+            for record in artifact_records:
+                profile = record_profile(record)
+                if profile is None:
+                    profile_missing[artifact_name] += 1
+                    continue
+                if not required_profile_fields.issubset(profile):
+                    profile_field_missing[artifact_name] += 1
+                authority = profile.get("authority")
+                if not isinstance(authority, dict) or not {
+                    "level",
+                    "issuer",
+                    "version",
+                    "effective_date",
+                    "expiration_date",
+                }.issubset(authority):
+                    authority_missing[artifact_name] += 1
+        profile_integrity_ok = not any(profile_missing.values()) and not any(
+            profile_field_missing.values()
+        ) and not any(authority_missing.values())
+        metrics["profile_integrity"] = {
+            "missing_profile": profile_missing,
+            "missing_required_fields": profile_field_missing,
+            "missing_authority_contract": authority_missing,
+        }
+        self._check(
+            checks,
+            name="document_profile_completeness",
+            condition=(not profile_lineage_contract or profile_integrity_ok),
+            details=metrics["profile_integrity"],
+        )
+
+        vector_ids = [
+            str(item.get("child_chunk_id") or item.get("indexed_chunk_id") or "")
+            for item in vector_records
+        ]
+        bm25_ids = [
+            str(item.get("child_chunk_id") or item.get("child_id") or "")
+            for item in bm25_records
+        ]
+        child_id_set = set(child_ids)
+        vector_id_set = set(vector_ids)
+        bm25_id_set = set(bm25_ids)
+        artifact_identity_ok = (
+            all(vector_ids)
+            and all(bm25_ids)
+            and len(vector_id_set) == len(vector_ids)
+            and len(bm25_id_set) == len(bm25_ids)
+            and vector_id_set == child_id_set
+            and bm25_id_set == child_id_set
+        )
+        self._check(
+            checks,
+            name="dense_bm25_child_identity",
+            condition=(not profile_lineage_contract or artifact_identity_ok),
+            details={
+                "child_count": len(child_id_set),
+                "vector_count": len(vector_id_set),
+                "bm25_count": len(bm25_id_set),
+                "orphan_vector_ids": sorted(vector_id_set - child_id_set)[:10],
+                "missing_vector_ids": sorted(child_id_set - vector_id_set)[:10],
+                "orphan_bm25_ids": sorted(bm25_id_set - child_id_set)[:10],
+                "missing_bm25_ids": sorted(child_id_set - bm25_id_set)[:10],
+            },
+        )
+
+        parent_profile_sha = {
+            str(item.get("parent_chunk_id") or ""): str(
+                (record_profile(item) or {}).get("profile_sha256") or ""
+            )
+            for item in parents
+        }
+        child_profile_sha = {
+            child_ids[index]: str(
+                (record_profile(child) or {}).get("profile_sha256") or ""
+            )
+            for index, child in enumerate(children)
+        }
+        vector_profile_sha = {
+            vector_ids[index]: str(
+                (record_profile(item) or {}).get("profile_sha256") or ""
+            )
+            for index, item in enumerate(vector_records)
+        }
+        bm25_profile_sha = {
+            bm25_ids[index]: str(
+                (record_profile(item) or {}).get("profile_sha256") or ""
+            )
+            for index, item in enumerate(bm25_records)
+        }
+        profile_sha_mismatches: list[str] = []
+        for index, child in enumerate(children):
+            child_id = child_ids[index]
+            parent_id = str(child.get("parent_chunk_id") or "")
+            expected_sha = child_profile_sha.get(child_id, "")
+            if (
+                not expected_sha
+                or parent_profile_sha.get(parent_id) != expected_sha
+                or vector_profile_sha.get(child_id) != expected_sha
+                or bm25_profile_sha.get(child_id) != expected_sha
+            ):
+                profile_sha_mismatches.append(child_id)
+        self._check(
+            checks,
+            name="profile_sha256_lineage",
+            condition=(
+                not profile_lineage_contract or not profile_sha_mismatches
+            ),
+            details={
+                "mismatch_count": len(profile_sha_mismatches),
+                "sample": profile_sha_mismatches[:10],
+            },
+        )
+
+        type_aware_missing = 0
+        undisclosed_fallback = 0
+        invalid_structured_representation = 0
+        fallback_reason_counts: dict[str, int] = {}
+        for child in children:
+            extra = child.get("extra")
+            chunking = (
+                extra.get("type_aware_chunking")
+                if isinstance(extra, dict)
+                else None
+            )
+            if not isinstance(chunking, dict):
+                type_aware_missing += 1
+                continue
+            required_chunking_fields = {
+                "strategy",
+                "representation_type",
+                "parser_version",
+                "chunker_version",
+                "structure_path",
+                "fallback_used",
+                "fallback_reason",
+                "fallback_strategy",
+                "original_strategy",
+                "actual_strategy",
+            }
+            if not required_chunking_fields.issubset(chunking):
+                type_aware_missing += 1
+                continue
+            original = str(chunking.get("original_strategy") or "")
+            actual = str(chunking.get("actual_strategy") or "")
+            fallback_used = bool(chunking.get("fallback_used"))
+            if original != actual and not fallback_used:
+                undisclosed_fallback += 1
+            if fallback_used:
+                reason = str(chunking.get("fallback_reason") or "missing_reason")
+                fallback_reason_counts[reason] = fallback_reason_counts.get(reason, 0) + 1
+            representation = str(chunking.get("representation_type") or "")
+            if original == "policy_article_clause" and not fallback_used:
+                if representation != "policy_clause" or bool(
+                    (extra or {}).get("is_table_of_contents")
+                ):
+                    invalid_structured_representation += 1
+            elif original == "table_row_record" and not fallback_used:
+                if representation != "table_row" or "row_index" not in (extra or {}):
+                    invalid_structured_representation += 1
+            elif original == "fact_record" and not fallback_used:
+                if representation != "fact_record" or not {
+                    "record_id",
+                    "fact_status",
+                    "value",
+                    "source_span",
+                }.issubset(extra or {}):
+                    invalid_structured_representation += 1
+            elif original == "template_section" and not fallback_used:
+                if representation != "template_section" or not {
+                    "required_fields",
+                    "placeholder_fields",
+                    "style_hints",
+                    "is_example_content",
+                }.issubset(extra or {}):
+                    invalid_structured_representation += 1
+        metrics["fallback_audit"] = {
+            "type_aware_missing": type_aware_missing,
+            "undisclosed_fallback": undisclosed_fallback,
+            "fallback_reason_counts": fallback_reason_counts,
+            "invalid_structured_representation": invalid_structured_representation,
+        }
+        self._check(
+            checks,
+            name="type_aware_structure_and_fallback",
+            condition=(
+                not profile_lineage_contract
+                or (
+                type_aware_missing == 0
+                and undisclosed_fallback == 0
+                and invalid_structured_representation == 0
+                )
+            ),
+            details=metrics["fallback_audit"],
+        )
+
         # 第十五步：按后端决定是否执行 Milvus 语义验证或记录不适用。
         if (
             verify_milvus
@@ -807,6 +1094,109 @@ class OfflineIndexVerifier:
                     "actual": row_count,
                 },
             )
+
+            # Full-row metadata audit is performed when the client exposes
+            # scalar query.  It validates canonical JSON and filter mirrors.
+            query_method = getattr(client, "query", None)
+            profile_lineage_contract = (
+                str(manifest.chunker.get("name") or "")
+                == "type_aware_parent_child"
+                and str(manifest.chunker.get("version") or "") == "v2"
+            )
+            if profile_lineage_contract and callable(query_method):
+                milvus_rows = query_method(
+                    collection_name=collection_name,
+                    filter='child_chunk_id != ""',
+                    output_fields=[
+                        "child_chunk_id",
+                        "doc_id",
+                        "kb_id",
+                        "document_type",
+                        "evidence_role",
+                        "project_relation",
+                        "project_id",
+                        "authority_level",
+                        "extra_json",
+                    ],
+                    limit=max(1, manifest.child_chunk_count),
+                )
+                expected_by_id = {
+                    str(
+                        child.get("child_chunk_id")
+                        or child.get("chunk_id")
+                        or ""
+                    ): child
+                    for child in children
+                }
+                missing_profile = 0
+                missing_chunking = 0
+                profile_sha_mismatch = 0
+                scalar_mismatch = 0
+                returned_ids: set[str] = set()
+                for row in milvus_rows or []:
+                    child_id = str(row.get("child_chunk_id") or "")
+                    returned_ids.add(child_id)
+                    try:
+                        extra = json.loads(str(row.get("extra_json") or "{}"))
+                    except Exception:
+                        extra = {}
+                    profile = extra.get("document_profile")
+                    chunking = extra.get("type_aware_chunking")
+                    if not isinstance(profile, dict):
+                        missing_profile += 1
+                        continue
+                    if not isinstance(chunking, dict):
+                        missing_chunking += 1
+                    expected_child = expected_by_id.get(child_id) or {}
+                    expected_profile = (
+                        (expected_child.get("extra") or {}).get(
+                            "document_profile"
+                        )
+                        if isinstance(expected_child.get("extra"), dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(expected_profile, dict)
+                        or profile.get("profile_sha256")
+                        != expected_profile.get("profile_sha256")
+                    ):
+                        profile_sha_mismatch += 1
+                    mirrors = {
+                        "doc_id": profile.get("document_id"),
+                        "kb_id": profile.get("kb_id"),
+                        "document_type": profile.get("document_type"),
+                        "evidence_role": profile.get("evidence_role"),
+                        "project_relation": profile.get("project_relation"),
+                        "project_id": profile.get("project_id") or "",
+                        "authority_level": (
+                            profile.get("authority") or {}
+                        ).get("level"),
+                    }
+                    if any(str(row.get(key) or "") != str(value or "") for key, value in mirrors.items()):
+                        scalar_mismatch += 1
+                missing_ids = set(expected_by_id) - returned_ids
+                milvus_profile_ok = (
+                    len(milvus_rows or []) == manifest.child_chunk_count
+                    and not missing_ids
+                    and missing_profile == 0
+                    and missing_chunking == 0
+                    and profile_sha_mismatch == 0
+                    and scalar_mismatch == 0
+                )
+                metrics["milvus_profile_audit"] = {
+                    "row_count": len(milvus_rows or []),
+                    "missing_child_ids": len(missing_ids),
+                    "missing_document_profile": missing_profile,
+                    "missing_type_aware_chunking": missing_chunking,
+                    "profile_sha_mismatch": profile_sha_mismatch,
+                    "scalar_mismatch": scalar_mismatch,
+                }
+                self._check(
+                    checks,
+                    name="milvus_profile_lineage",
+                    condition=milvus_profile_ok,
+                    details=metrics["milvus_profile_audit"],
+                )
 
             # 第五步：从头、中、尾等位置等距选择向量做自检索。
             sample_indices = _pick_evenly_spaced_indices(

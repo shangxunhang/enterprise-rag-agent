@@ -57,6 +57,11 @@ class EvidenceMapper:
                 "pre_output_rank",
                 item.get("pre_context_rank", item.get("rank")),
             )
+            prompt_visible_text = str(
+                item.get("prompt_visible_text") or ""
+            ).strip()
+            if prompt_visible_text:
+                metadata["prompt_visible_text"] = prompt_visible_text
             sources = (
                 metadata.get("retrieval_sources")
                 or item.get("retrieval_sources")
@@ -173,7 +178,18 @@ class EvidenceMapper:
                     extra={
                         "expanded_from_parent_match": (
                             source.expanded_from_parent_match
-                        )
+                        ),
+                        **(
+                            {
+                                "prompt_visible_text": str(
+                                    chunk.metadata.get("prompt_visible_text") or ""
+                                ).strip()
+                            }
+                            if str(
+                                chunk.metadata.get("prompt_visible_text") or ""
+                            ).strip()
+                            else {}
+                        ),
                     },
                 )
         return citations

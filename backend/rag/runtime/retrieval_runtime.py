@@ -318,6 +318,9 @@ class RetrievalRuntime:
                 filter_expr=str(request.get("filter_expr") or "").strip() or None,
                 keyword_doc_ids=split_csv(request.get("keyword_doc_ids")),
                 keyword_scope=dict(request.get("keyword_scope") or {}),
+                access_scope_enforced=bool(
+                    request.get("access_scope_enforced")
+                ),
                 extra_metadata={
                     **request_context,
                     "request_context": request_context,

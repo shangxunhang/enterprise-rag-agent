@@ -9,8 +9,7 @@ from pathlib import Path
 import sqlite3
 from unittest.mock import patch
 
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
+from agent.runtime.official_checkpoint_saver import CompressedJsonPlusSerializer
 from application.mainline_service import MainlineApplicationService
 from apps.enterprise_document.schemas.agent_rag_v1 import (
     ConflictRepairPlanSchema,
@@ -91,7 +90,7 @@ def _run_fake(output_root: Path, *, run_id: str, patchers=()):
 
 
 def _latest_top_payload(database: Path) -> dict:
-    serializer = JsonPlusSerializer()
+    serializer = CompressedJsonPlusSerializer()
     with closing(sqlite3.connect(database)) as connection:
         row = connection.execute(
             "SELECT type, checkpoint FROM checkpoints "

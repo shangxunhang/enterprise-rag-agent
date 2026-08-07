@@ -11,6 +11,7 @@ from rag.application.parent_child_retrieval import ParentChildRetrievalPipeline
 from rag.application.run_record import RAGRunRecordBuilder
 from rag.context.context_gate import ContextGate, ContextRequirements
 from rag.evaluation.retrieval_metrics import evaluate_retrieval_results_v2
+from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.planning.retrieval_planner import (
     AdaptiveRetrievalPlanner,
     RetrievalPlannerPort,
@@ -60,6 +61,7 @@ class ParentChildRAGEngine:
         pipeline_name: str = "parent_child_hybrid_rag",
         pipeline_version: str = "v1.0",
         retrieval_evaluator: Any = evaluate_retrieval_results_v2,
+        evidence_governance_v2: OnlineEvidenceGovernanceV2 | None = None,
         record_builder: RAGRunRecordBuilder | None = None,
         resource_pool: Any | None = None,
         clock: Clock | None = None,
@@ -92,6 +94,9 @@ class ParentChildRAGEngine:
         self.pipeline_name = pipeline_name
         self.pipeline_version = pipeline_version
         self.retrieval_evaluator = retrieval_evaluator
+        self.evidence_governance_v2 = (
+            evidence_governance_v2 or OnlineEvidenceGovernanceV2()
+        )
         self.record_builder = record_builder or RAGRunRecordBuilder()
         self.resource_pool = resource_pool
         self.clock = clock or SystemClock()
@@ -153,6 +158,7 @@ class ParentChildRAGEngine:
         filter_expr: Optional[str] = None,
         keyword_doc_ids: Optional[List[str]] = None,
         keyword_scope: Optional[Dict[str, Any]] = None,
+        access_scope_enforced: bool = False,
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         checkpoint_current_execution()
@@ -213,16 +219,46 @@ class ParentChildRAGEngine:
             filter_expr=filter_expr,
             keyword_doc_ids=keyword_doc_ids,
             keyword_scope=keyword_scope,
+            access_scope_enforced=access_scope_enforced,
             extra_metadata=runtime_metadata,
         )
         checkpoint_current_execution()
         request_context = dict(runtime_metadata)
+        governance_pre_context = self.evidence_governance_v2.evaluate(
+            query=query,
+            results=list(retrieval.results),
+            runtime_context=request_context,
+        )
+        governance_payload = governance_pre_context.to_dict()
+        eligible_ids = set(governance_pre_context.eligible_candidate_ids)
+        assessment_by_id = {
+            item.evidence_id: item.model_dump(mode="json", exclude_none=True)
+            for item in governance_pre_context.item_assessments
+        }
+        eligible_results: list[dict[str, Any]] = []
+        for raw in retrieval.results:
+            item = dict(raw)
+            candidate_id = str(
+                item.get("child_chunk_id") or item.get("chunk_id") or ""
+            )
+            metadata = dict(item.get("metadata") or {})
+            if candidate_id in assessment_by_id:
+                metadata["evidence_assessment_v2"] = assessment_by_id[candidate_id]
+            metadata["evidence_eligibility_v2"] = candidate_id in eligible_ids
+            item["metadata"] = metadata
+            if candidate_id in eligible_ids:
+                eligible_results.append(item)
+        retrieval.evidence_quality["governance_v2_pre_context"] = governance_payload
+        retrieval.evidence_quality["eligible_result_count"] = len(eligible_results)
+        retrieval.evidence_quality["rejected_result_count"] = (
+            len(retrieval.results) - len(eligible_results)
+        )
         context_requirements = ContextRequirements.from_mapping(
             request_context.get("context_requirements"),
             defaults=self.context_gate.default_requirements,
         )
         context_pack = self.context_gate.pack(
-            retrieval.results,
+            eligible_results,
             requirements=context_requirements,
         )
         checkpoint_current_execution()
@@ -288,6 +324,8 @@ class ParentChildRAGEngine:
                 else None
             ),
             "retrieval_results": retrieval.results,
+            "eligible_retrieval_results": eligible_results,
+            "evidence_governance_v2": governance_payload,
             "context_pack": context_pack.to_dict(),
             "context_requirements": context_requirements.to_dict(),
             "packed_context": context_pack.context,

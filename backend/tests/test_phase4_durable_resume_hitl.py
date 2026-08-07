@@ -133,6 +133,13 @@ def _run_paused(output_root: Path, *, run_id: str):
     return summary, factory
 
 
+def _review_snapshot(summary: dict) -> str:
+    execution = summary["supervisor_result"]["result"]["workflow_execution"]
+    return execution["metadata"]["interrupts"][0]["metadata"][
+        "input_snapshot_version"
+    ]
+
+
 def test_sqlite_saver_survives_new_instance(tmp_path) -> None:
     from langgraph.graph import END, START, StateGraph
     from typing import TypedDict
@@ -245,6 +252,9 @@ def test_new_engine_resumes_without_replaying_completed_nodes(tmp_path) -> None:
             shared_state,
             {
                 "decision": "approved",
+                "task_id": summary["task_id"],
+                "run_id": summary["run_id"],
+                "input_snapshot_version": _review_snapshot(summary),
                 "feedback": "approved in durable-resume acceptance test",
             },
         )
@@ -359,6 +369,7 @@ def test_application_service_inspects_and_approves_across_new_instance(
             task_id=summary["task_id"],
             run_id=summary["run_id"],
             decision="approved",
+            input_snapshot_version=inspection["input_snapshot_version"],
             feedback="approved by application acceptance",
             reviewer_id="reviewer-1",
             output_root=tmp_path,
@@ -412,6 +423,7 @@ def test_application_service_rejects_and_cancels_through_durable_graph(
             if action == "rejected":
                 result = service.resume_run(
                     decision="rejected",
+                    input_snapshot_version=_review_snapshot(summary),
                     feedback="quality owner rejected the draft",
                     reviewer_id="reviewer-2",
                     **common,

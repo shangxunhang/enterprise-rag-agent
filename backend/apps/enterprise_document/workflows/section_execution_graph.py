@@ -356,6 +356,20 @@ class SectionExecutionGraph:
         }
         retrieval = outcome.retrieval
         if retrieval is not None:
+            writer_gate = self.coordinator._writer_gate_binding(
+                dict(retrieval.normalized),
+                section_id=str(payload.section_id),
+                section_title=str(
+                    payload.section_title or payload.section_plan.section_title
+                ),
+                section_order=(
+                    int(payload.section_order)
+                    if payload.section_order is not None
+                    else None
+                ),
+                document_id=payload.document_id,
+                run_id=payload.run_id,
+            )
             tool_call_ids = list(payload.tool_call_ids)
             if retrieval.retrieval_trace_id:
                 tool_call_ids.append(retrieval.retrieval_trace_id)
@@ -367,12 +381,19 @@ class SectionExecutionGraph:
                         "status", "not_assessed"
                     ),
                     "evidence_assessment": dict(retrieval.assessment),
+                    "writer_gate_bound": bool(writer_gate is not None),
+                    "writer_gate_binding": (
+                        writer_gate.model_dump(mode="json", exclude_none=True)
+                        if writer_gate is not None
+                        else None
+                    ),
                 }
             )
             updates.update(
                 {
                     "tool_call_ids": list(dict.fromkeys(tool_call_ids)),
                     "active_assessment": dict(retrieval.assessment),
+                    "active_writer_gate": writer_gate,
                     "retrieval_metadata": metadata,
                 }
             )
@@ -393,7 +414,6 @@ class SectionExecutionGraph:
                 if (
                     retrieval.context is not None
                     and retrieval.context.context_text.strip()
-                    and retrieval.citations
                 ):
                     updates.update(
                         {
@@ -578,6 +598,7 @@ class SectionExecutionGraph:
             document_rag_context=payload.document_rag_context,
             document_retrieved_chunks=list(payload.document_retrieved_chunks),
             document_citations=list(payload.document_citations),
+            document_rag_output=dict(payload.document_rag_output),
             document_evidence_assessment=dict(
                 payload.document_evidence_assessment
             ),
@@ -622,6 +643,14 @@ class SectionExecutionGraph:
         )
         task_budget = current_task_draining_budget()
         task_budget_snapshot = task_budget.snapshot() if task_budget else {}
+        document_writer_gate = self.coordinator._writer_gate_binding(
+            dict(payload.document_rag_output),
+            section_id=section_id,
+            section_title=plan.section_title,
+            section_order=plan.section_order,
+            document_id=payload.document_id,
+            run_id=payload.run_id,
+        )
         updated = payload.model_copy(
             update={
                 "section_id": section_id,
@@ -638,6 +667,7 @@ class SectionExecutionGraph:
                 "active_assessment": dict(
                     payload.document_evidence_assessment
                 ),
+                "active_writer_gate": document_writer_gate,
                 "tool_call_ids": list(payload.document_tool_call_ids),
                 "retrieval_metadata": {
                     "section_retrieval_enabled": (
@@ -648,6 +678,14 @@ class SectionExecutionGraph:
                         payload.document_evidence_assessment.get(
                             "status", "not_assessed"
                         )
+                    ),
+                    "writer_gate_bound": bool(document_writer_gate is not None),
+                    "writer_gate_binding": (
+                        document_writer_gate.model_dump(
+                            mode="json", exclude_none=True
+                        )
+                        if document_writer_gate is not None
+                        else None
                     ),
                 },
                 "budget_state": {
@@ -814,6 +852,14 @@ class SectionExecutionGraph:
                 query=query,
             )
             assessment = self._assessment(normalized)
+            writer_gate = self.coordinator._writer_gate_binding(
+                normalized,
+                section_id=section_id,
+                section_title=title,
+                section_order=int(payload.section_order or 0) or None,
+                document_id=payload.document_id,
+                run_id=payload.run_id,
+            )
             metadata.update(
                 {
                     "section_retrieval_success": True,
@@ -822,6 +868,12 @@ class SectionExecutionGraph:
                         "status", "not_assessed"
                     ),
                     "evidence_assessment": assessment,
+                    "writer_gate_bound": bool(writer_gate is not None),
+                    "writer_gate_binding": (
+                        writer_gate.model_dump(mode="json", exclude_none=True)
+                        if writer_gate is not None
+                        else None
+                    ),
                 }
             )
             updates.update(
@@ -830,9 +882,10 @@ class SectionExecutionGraph:
                     "retrieved_chunks": [*payload.retrieved_chunks, *chunks],
                     "rag_outputs": [*payload.rag_outputs, normalized],
                     "active_assessment": assessment,
+                    "active_writer_gate": writer_gate,
                 }
             )
-            if citations and context.context_text.strip():
+            if context.context_text.strip():
                 updates.update(
                     {
                         "active_context": context,
@@ -899,39 +952,67 @@ class SectionExecutionGraph:
             if payload.research_agent_payloads
             else None
         )
+        writer_gate = payload.active_writer_gate
         blocked = bool(
-            payload.citation_required
-            and payload.active_assessment.get("status") == "insufficient"
+            writer_gate is None
+            or not writer_gate.ordinary_generation_permitted
         )
-        if (
-            research_action
-            in {
-                ResearchRecommendedAction.HUMAN_REVIEW,
-                ResearchRecommendedAction.PARTIAL_DELIVERY,
-            }
-            and payload.active_assessment.get("status") == "insufficient"
-        ):
+        if research_action is ResearchRecommendedAction.HUMAN_REVIEW:
             blocked = True
         updates: dict[str, Any] = {"evidence_blocked": blocked}
         route = "generate"
         if blocked:
             title = str(payload.section_title)
             metadata = dict(payload.retrieval_metadata)
+            block_reason = (
+                "writer_gate_missing"
+                if writer_gate is None
+                else (
+                    "legacy_writer_artifact_incomplete"
+                    if writer_gate.legacy_artifact_incomplete
+                    else (
+                        "writer_human_review_required"
+                        if writer_gate.gate_decision.human_review_required
+                        else "writer_generation_blocked"
+                    )
+                )
+            )
             metadata.update(
                 {
                     "normal_generation_blocked": True,
-                    "generation_block_reason": "evidence_insufficient",
+                    "generation_block_reason": block_reason,
                 }
             )
-            section = self.section_generation_service.build_insufficient_evidence_section(
-                shared_state,
-                project_input=payload.project_input,
-                section_title=title,
-                section_order=int(payload.section_order or 0),
-                rag_context=payload.active_context or payload.document_rag_context,
-                citations=list(payload.active_citations),
-                assessment=dict(payload.active_assessment),
-            )
+            if writer_gate is not None:
+                section = self.section_generation_service.build_gate_blocked_section(
+                    shared_state,
+                    project_input=payload.project_input,
+                    section_title=title,
+                    section_order=int(payload.section_order or 0),
+                    rag_context=payload.active_context or payload.document_rag_context,
+                    citations=list(payload.active_citations),
+                    writer_gate_binding=writer_gate,
+                )
+            else:
+                section = self.section_generation_service.build_insufficient_evidence_section(
+                    shared_state,
+                    project_input=payload.project_input,
+                    section_title=title,
+                    section_order=int(payload.section_order or 0),
+                    rag_context=payload.active_context or payload.document_rag_context,
+                    citations=list(payload.active_citations),
+                    assessment={
+                        **dict(payload.active_assessment),
+                        "status": "not_assessed",
+                        "reason": "final writer gate binding is missing",
+                    },
+                )
+                section.extra = {
+                    **dict(section.extra or {}),
+                    "generation_block_reason": block_reason,
+                    "writer_execution_status": "not_assessed",
+                    "formal_deliverable_eligible": False,
+                }
             updates.update(
                 {
                     "section": section,
@@ -941,8 +1022,7 @@ class SectionExecutionGraph:
             )
             route = "finalize"
             print(
-                f"[EvidenceGate] BLOCK section={title} "
-                "reason=evidence_insufficient",
+                f"[WriterGate] BLOCK section={title} reason={block_reason}",
                 flush=True,
             )
         updated = payload.model_copy(update=updates, deep=True)
@@ -973,6 +1053,7 @@ class SectionExecutionGraph:
                     structured_facts=list(payload.structured_facts),
                     previous_sections=list(payload.previous_sections),
                     generation_attempt=payload.generation_attempt,
+                    writer_gate_binding=payload.active_writer_gate,
                 )
             exhaustion_resource = None
             exhaustion_limit = None
@@ -1663,25 +1744,65 @@ class SectionExecutionGraph:
             route = "finalize"
             branch_updates: dict[str, Any] = {}
             assessment = dict(updated.active_assessment)
+            writer_gate = updated.active_writer_gate
             if (
                 success
                 and updated.active_context is not None
-                and updated.active_context.context_text.strip()
-                and updated.active_citations
+                and (
+                    updated.active_context.context_text.strip()
+                    or (
+                        writer_gate is not None
+                        and not writer_gate.ordinary_generation_permitted
+                    )
+                )
             ):
                 if (
-                    payload.citation_required
-                    and assessment.get("status") == "insufficient"
+                    writer_gate is None
+                    or not writer_gate.ordinary_generation_permitted
                 ):
-                    section = self.section_generation_service.build_insufficient_evidence_section(
-                        shared_state,
-                        project_input=payload.project_input,
-                        section_title=title,
-                        section_order=order,
-                        rag_context=updated.active_context,
-                        citations=list(updated.active_citations),
-                        assessment=assessment,
+                    block_reason = (
+                        "writer_gate_missing_after_research_tool_retrieval"
+                        if writer_gate is None
+                        else (
+                            "legacy_writer_artifact_incomplete_after_research_tool_retrieval"
+                            if writer_gate.legacy_artifact_incomplete
+                            else (
+                                "writer_human_review_required_after_research_tool_retrieval"
+                                if writer_gate.gate_decision.human_review_required
+                                else "writer_generation_blocked_after_research_tool_retrieval"
+                            )
+                        )
                     )
+                    if writer_gate is not None:
+                        section = self.section_generation_service.build_gate_blocked_section(
+                            shared_state,
+                            project_input=payload.project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=updated.active_context,
+                            citations=list(updated.active_citations),
+                            writer_gate_binding=writer_gate,
+                        )
+                    else:
+                        section = self.section_generation_service.build_insufficient_evidence_section(
+                            shared_state,
+                            project_input=payload.project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=updated.active_context,
+                            citations=list(updated.active_citations),
+                            assessment={
+                                **assessment,
+                                "status": "not_assessed",
+                                "reason": "final writer gate binding is missing",
+                            },
+                        )
+                        section.extra = {
+                            **dict(section.extra or {}),
+                            "generation_block_reason": block_reason,
+                            "writer_execution_status": "not_assessed",
+                            "formal_deliverable_eligible": False,
+                        }
                     branch_updates.update(
                         {
                             "section": section,
@@ -1692,7 +1813,7 @@ class SectionExecutionGraph:
                     if pending_self_rag_round is not None:
                         completed_round = {
                             **pending_self_rag_round,
-                            "error": "evidence_insufficient",
+                            "error": block_reason,
                             "assessment": assessment,
                             "retrieved_chunk_count": len(updated.active_chunks),
                             "citation_count": len(updated.active_citations),
@@ -1817,15 +1938,33 @@ class SectionExecutionGraph:
                 query=query,
             )
             assessment = self._assessment(normalized)
+            writer_gate = self.coordinator._writer_gate_binding(
+                normalized,
+                section_id=str(payload.section_id),
+                section_title=title,
+                section_order=int(payload.section_order or 0) or None,
+                document_id=payload.document_id,
+                run_id=payload.run_id,
+            )
             updates.update(
                 {
                     "citation_registry": registry.all(),
                     "retrieved_chunks": [*payload.retrieved_chunks, *chunks],
                     "rag_outputs": [*payload.rag_outputs, normalized],
                     "active_assessment": assessment,
+                    "active_writer_gate": writer_gate,
                 }
             )
-            if citations and context.context_text.strip():
+            metadata["writer_gate_bound"] = bool(writer_gate is not None)
+            metadata["writer_gate_binding"] = (
+                writer_gate.model_dump(mode="json", exclude_none=True)
+                if writer_gate is not None
+                else None
+            )
+            if context.context_text.strip() or (
+                writer_gate is not None
+                and not writer_gate.ordinary_generation_permitted
+            ):
                 updates.update(
                     {
                         "active_context": context,
@@ -1836,18 +1975,52 @@ class SectionExecutionGraph:
                     }
                 )
                 if (
-                    payload.citation_required
-                    and assessment.get("status") == "insufficient"
+                    writer_gate is None
+                    or not writer_gate.ordinary_generation_permitted
                 ):
-                    section = self.section_generation_service.build_insufficient_evidence_section(
-                        shared_state,
-                        project_input=payload.project_input,
-                        section_title=title,
-                        section_order=order,
-                        rag_context=context,
-                        citations=list(citations),
-                        assessment=assessment,
+                    block_reason = (
+                        "writer_gate_missing_after_retrieval"
+                        if writer_gate is None
+                        else (
+                            "legacy_writer_artifact_incomplete_after_retrieval"
+                            if writer_gate.legacy_artifact_incomplete
+                            else (
+                                "writer_human_review_required_after_retrieval"
+                                if writer_gate.gate_decision.human_review_required
+                                else "writer_generation_blocked_after_retrieval"
+                            )
+                        )
                     )
+                    if writer_gate is not None:
+                        section = self.section_generation_service.build_gate_blocked_section(
+                            shared_state,
+                            project_input=payload.project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=context,
+                            citations=list(citations),
+                            writer_gate_binding=writer_gate,
+                        )
+                    else:
+                        section = self.section_generation_service.build_insufficient_evidence_section(
+                            shared_state,
+                            project_input=payload.project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=context,
+                            citations=list(citations),
+                            assessment={
+                                **dict(assessment),
+                                "status": "not_assessed",
+                                "reason": "final writer gate binding is missing",
+                            },
+                        )
+                        section.extra = {
+                            **dict(section.extra or {}),
+                            "generation_block_reason": block_reason,
+                            "writer_execution_status": "not_assessed",
+                            "formal_deliverable_eligible": False,
+                        }
                     updates.update(
                         {
                             "section": section,
@@ -1858,7 +2031,7 @@ class SectionExecutionGraph:
                     if pending_self_rag_round is not None:
                         completed_round = {
                             **pending_self_rag_round,
-                            "error": "evidence_insufficient",
+                            "error": block_reason,
                             "assessment": assessment,
                             "retrieved_chunk_count": len(chunks),
                             "citation_count": len(citations),
@@ -2063,6 +2236,18 @@ class SectionExecutionGraph:
             citations=list(payload.active_citations),
             recovery_count=payload.recovery_count,
             evidence_contract_sha256=contract_sha,
+            writer_gate_binding=(
+                payload.active_writer_gate.model_dump(
+                    mode="json", exclude_none=True
+                )
+                if payload.active_writer_gate is not None
+                else None
+            ),
+            generation_allowed=(
+                payload.active_writer_gate.ordinary_generation_permitted
+                if payload.active_writer_gate is not None
+                else False
+            ),
             metadata=metadata,
         )
         budget_usage = budget.snapshot()
@@ -2075,6 +2260,18 @@ class SectionExecutionGraph:
             "evidence_contract_sha256": contract_sha,
             "corrective_retrieval_count": payload.recovery_count,
             "workflow_budget": budget_usage,
+            "writer_gate_binding": (
+                payload.active_writer_gate.model_dump(
+                    mode="json", exclude_none=True
+                )
+                if payload.active_writer_gate is not None
+                else None
+            ),
+            "writer_execution_status": (
+                payload.active_writer_gate.execution_status.value
+                if payload.active_writer_gate is not None
+                else "not_assessed"
+            ),
             "section_subgraph_nodes": [
                 *payload.executed_nodes,
                 "finalize_section",
@@ -2108,8 +2305,21 @@ class SectionExecutionGraph:
             citation_registry=list(payload.citation_registry),
             budget_usage=budget_usage,
             need_human_review=bool(
-                payload.budget_exhaustion_resource is not None
-                and budget.human_review_on_exhaustion
+                (
+                    payload.budget_exhaustion_resource is not None
+                    and budget.human_review_on_exhaustion
+                )
+                or (
+                    payload.active_writer_gate is not None
+                    and payload.active_writer_gate.gate_decision.human_review_required
+                )
+                or payload.active_writer_gate is None
+                or bool(
+                    isinstance((section.extra or {}).get("claim_audit"), dict)
+                    and not (section.extra or {}).get("claim_audit", {}).get(
+                        "passed", False
+                    )
+                )
             ),
             warnings=list(section.warnings),
             error=section.error,
@@ -2269,6 +2479,7 @@ class SectionExecutionGraph:
             document_rag_context=request.document_rag_context,
             document_retrieved_chunks=list(request.document_retrieved_chunks),
             document_citations=list(request.document_citations),
+            document_rag_output=dict(request.document_rag_output),
             document_evidence_assessment=dict(
                 request.document_evidence_assessment
             ),
@@ -2411,6 +2622,87 @@ class SectionExecutionGraph:
         self.graph_state_codec.project_onto(shared_state, restored_state)
         citation_registry.restore(payload.citation_registry)
         return payload.result
+
+    def recover_or_reuse(
+        self,
+        *,
+        workflow_namespace: str,
+        task_id: str,
+        run_id: str,
+        document_id: str,
+        section_id: str,
+        project_input,
+        section_plan: SectionPlanSchema,
+        shared_state: GraphStateSchema,
+        citation_registry: DocumentCitationRegistry,
+    ) -> SectionExecutionResultSchema | None:
+        """Reuse a completed Section or resume its exact durable cursor."""
+
+        history = self.checkpoint_history(
+            workflow_namespace=workflow_namespace,
+            run_id=run_id,
+            section_id=section_id,
+        )
+        persisted = None
+        for checkpoint_tuple in history:
+            checkpoint = getattr(checkpoint_tuple, "checkpoint", {})
+            values = (
+                checkpoint.get("channel_values", {})
+                if isinstance(checkpoint, dict)
+                else {}
+            )
+            if not isinstance(values.get("section_payload"), dict):
+                continue
+            persisted = self.codec.restore_payload(
+                {
+                    "section_graph_state_version": values.get(
+                        "section_graph_state_version",
+                        1,
+                    ),
+                    "section_payload": values["section_payload"],
+                }
+            )
+            break
+        if persisted is None:
+            return None
+
+        expected_snapshot = MainlineAttemptGuard.snapshot_version(
+            project_input,
+            section_plan,
+        )
+        persisted_snapshot = (
+            str(persisted.section_state.attempt.input_snapshot_version or "")
+            if persisted.section_state is not None
+            else ""
+        )
+        if (
+            persisted.task_id != task_id
+            or persisted.run_id != run_id
+            or persisted.document_id != document_id
+            or persisted.section_id != section_id
+            or persisted.project_input.model_dump(mode="json", round_trip=True)
+            != project_input.model_dump(mode="json", round_trip=True)
+            or persisted.section_plan.model_dump(mode="json", round_trip=True)
+            != section_plan.model_dump(mode="json", round_trip=True)
+            or (persisted_snapshot and persisted_snapshot != expected_snapshot)
+        ):
+            raise ValueError("section recovery immutable identity mismatch")
+
+        if persisted.completed:
+            if persisted.result is None:
+                raise RuntimeError("completed Section checkpoint has no result")
+            restored_state = self.codec.restore_graph_state(persisted)
+            self.graph_state_codec.project_onto(shared_state, restored_state)
+            citation_registry.restore(persisted.citation_registry)
+            return persisted.result
+
+        return self.resume(
+            workflow_namespace=workflow_namespace,
+            run_id=run_id,
+            section_id=section_id,
+            shared_state=shared_state,
+            citation_registry=citation_registry,
+        )
 
     def checkpoint_history(
         self,

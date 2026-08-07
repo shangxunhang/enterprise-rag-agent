@@ -12,6 +12,7 @@ from rag.plugins.chunkers import (
     HeadingParentChildChunkerPlugin,
     ParagraphParentChildChunkerPlugin,
     RecursiveParentChildChunkerPlugin,
+    TypeAwareParentChildChunkerPlugin,
 )
 from rag.plugins.context_packers import (
     DefaultContextPacker,
@@ -67,6 +68,18 @@ def build_default_component_registry() -> ComponentRegistry[object]:
         name="paragraph_parent_child",
         version="v1",
         builder=ParagraphParentChildChunkerPlugin,
+    )
+    registry.register(
+        category="chunker",
+        name="type_aware_parent_child",
+        version="v1",
+        builder=TypeAwareParentChildChunkerPlugin,
+    )
+    registry.register(
+        category="chunker",
+        name="type_aware_parent_child",
+        version="v2",
+        builder=TypeAwareParentChildChunkerPlugin,
     )
 
     registry.register(

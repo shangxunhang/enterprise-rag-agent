@@ -19,6 +19,7 @@ from schemas.rag import RAGContextSchema
 from context_manager import LLMContextManager, SectionGenerationContextPolicy
 from model_gateway.model_contract import ModelRole
 from prompt_manager.prompt_manager import PromptManager
+from rag.evidence.citation_sources import prompt_visible_citation_text
 
 
 class SectionPromptService:
@@ -50,7 +51,7 @@ class SectionPromptService:
                     "source_chunk_id": item.chunk_id or item.child_chunk_id or item.parent_chunk_id,
                     "title": item.title,
                     "section": item.section,
-                    "quote_text": item.quote_text,
+                    "quote_text": prompt_visible_citation_text(item),
                 }
                 for item in citations
             ],

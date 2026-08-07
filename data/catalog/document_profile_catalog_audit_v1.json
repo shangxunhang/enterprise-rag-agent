@@ -1,0 +1,39 @@
+{
+  "document_type_counts": {
+    "current_project_decision": 1,
+    "current_project_requirement": 3,
+    "document_template": 4,
+    "historical_construction_scheme": 7,
+    "historical_feasibility_study": 8,
+    "policy_standard": 6,
+    "technical_whitepaper": 1,
+    "tender_requirement": 1
+  },
+  "duplicate_profile_document_ids": [],
+  "evidence_role_counts": {
+    "historical_case": 15,
+    "policy_standard": 6,
+    "procurement_requirement": 1,
+    "project_fact": 4,
+    "technical_reference": 1,
+    "template_style": 4
+  },
+  "indexable_document_count": 30,
+  "kb_counts": {
+    "historical_case_kb": 15,
+    "policy_standard_kb": 6,
+    "project_fact_kb": 5,
+    "technical_reference_kb": 1,
+    "template_style_kb": 4
+  },
+  "manifest_document_count": 31,
+  "missing_profile_document_ids": [],
+  "non_indexable_document_count": 1,
+  "orphan_profile_document_ids": [],
+  "passed": true,
+  "profile_document_count": 31,
+  "reviewed_document_count": 31,
+  "schema_version": "document_profile_catalog_audit_v1",
+  "source_hash_mismatch_document_ids": [],
+  "unknown_document_count": 0
+}

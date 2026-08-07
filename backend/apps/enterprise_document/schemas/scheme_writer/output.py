@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict, Field, model_validator
 
+from apps.enterprise_document.schemas.release_publication import PublishedReleaseSchema
 from apps.enterprise_document.schemas.scheme_writer.document import SchemeDraftSchema
 from apps.enterprise_document.schemas.scheme_writer.evaluation import HardGateResultSchema
 from apps.enterprise_document.schemas.scheme_writer.planning import DocumentPlanSchema
@@ -35,6 +36,7 @@ class DeliverableFinalResultSchema(SchemaBase):
     artifact_type: str = "deliverable_final_result"
     draft: SchemeDraftSchema
     output_format: str = "markdown"
+    release_publication: Optional[PublishedReleaseSchema] = None
 
 
 class SchemeWriterOutputSchema(SchemaBase):
@@ -77,6 +79,17 @@ class SchemeWriterOutputSchema(SchemaBase):
                 != self.generated_draft.draft_id
             ):
                 raise ValueError("deliverable must reference generated_draft")
+            publication = self.deliverable_final_result.release_publication
+            if publication is not None:
+                manifest = publication.manifest
+                if manifest.task_id != self.task_id or manifest.run_id != self.run_id:
+                    raise ValueError("release publication task/run identity mismatch")
+                if manifest.document_id != self.generated_draft.document_id:
+                    raise ValueError("release publication document identity mismatch")
+                if manifest.draft_id != self.generated_draft.draft_id:
+                    raise ValueError("release publication draft identity mismatch")
+                if self.need_human_review:
+                    raise ValueError("published release cannot require human review")
 
         successful = self.status in {
             ExecutionStatus.SUCCESS,

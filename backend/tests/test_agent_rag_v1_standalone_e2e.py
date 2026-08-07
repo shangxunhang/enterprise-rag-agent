@@ -12,7 +12,7 @@ MATRIX = {
     "paragraph-repair": "test_mainline_paragraph_repair_replaces_conflicting_version",
     "replan": "test_mainline_replan_supersedes_attempt_and_rejects_old_result",
     "partial-success": "test_mainline_partial_success_publishes_deliverable",
-    "failed": "test_explicit_insufficient_evidence_stops_before_writer_and_verifier",
+    "failed": "test_final_writer_gate_blocked_stops_before_writer_and_verifier",
     "budget-exhausted": "test_task_budget_draining_finishes_first_section_and_starts_no_more_agents",
     "human-review": "test_stale_human_review_decision_keeps_durable_interrupt_paused",
     "crash-recovery": "test_section_crash_resume_reuses_committed_paragraph_without_duplication",

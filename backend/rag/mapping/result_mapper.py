@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from rag.common.coercion import as_str_list
 from rag.evidence.contract import RAGEvidenceContractBuilder
+from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.mapping.evidence_mapper import EvidenceMapper
 from rag.mapping.request_mapper import RAGInvocation
+from rag.schema.evidence_assessment_v2 import EvidenceStatus
+from rag.schema.prompt_evidence_candidate_v1 import (
+    PromptEvidenceCandidateV1Schema,
+    build_prompt_evidence_candidate_v1,
+)
 from schemas.rag import (
     EvidenceAssessmentStatus,
     EvidenceBundleSchema,
@@ -21,8 +28,15 @@ from schemas.status import ExecutionStatus
 class RAGResultMapper:
     """Own the single dictionary-to-schema conversion at the runtime boundary."""
 
-    def __init__(self, evidence: EvidenceMapper | None = None) -> None:
+    def __init__(
+        self,
+        evidence: EvidenceMapper | None = None,
+        evidence_governance_v2: OnlineEvidenceGovernanceV2 | None = None,
+    ) -> None:
         self.evidence = evidence or EvidenceMapper()
+        self.evidence_governance_v2 = (
+            evidence_governance_v2 or OnlineEvidenceGovernanceV2()
+        )
 
     @staticmethod
     def _query_expansion(
@@ -70,35 +84,87 @@ class RAGResultMapper:
         data: dict[str, Any],
         context_pack: dict[str, Any],
         max_context_items: int,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        selected = context_pack.get("selected_results") or []
+        strict_prompt_contract: bool,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        str,
+        bool,
+    ]:
         full = data.get("retrieval_results") or []
         compact = data.get("contexts") or []
         dropped = context_pack.get("dropped_results") or []
+        selected_present = "selected_results" in context_pack
+        prompt_contract_missing = False
 
-        if isinstance(selected, list) and selected:
-            selected_records = [item for item in selected if isinstance(item, dict)]
+        if selected_present:
+            selected = context_pack.get("selected_results")
+            if not isinstance(selected, list):
+                raise ValueError("context_pack.selected_results must be a list")
+            selected_records = [
+                dict(item) for item in selected if isinstance(item, dict)
+            ]
+            if (
+                not strict_prompt_contract
+                and any("prompt_visible_text" not in item for item in selected_records)
+            ):
+                prompt_evidence_source = "legacy_fallback"
+            else:
+                prompt_evidence_source = "context_pack_selected_results"
+        elif strict_prompt_contract:
+            # Strong-gate mode never reconstructs prompt evidence from the
+            # broader retrieval set.  The final gate will publish a blocked
+            # decision with prompt_evidence_contract_missing.
+            selected_records = []
+            prompt_evidence_source = "missing_blocked"
+            prompt_contract_missing = True
         elif isinstance(full, list) and full:
             selected_records = [
-                item for item in full[:max_context_items] if isinstance(item, dict)
+                dict(item)
+                for item in full[:max_context_items]
+                if isinstance(item, dict)
             ]
+            prompt_evidence_source = "legacy_fallback"
         elif isinstance(compact, list):
             selected_records = [
-                item for item in compact[:max_context_items] if isinstance(item, dict)
+                dict(item)
+                for item in compact[:max_context_items]
+                if isinstance(item, dict)
             ]
+            prompt_evidence_source = "legacy_fallback"
         else:
             selected_records = []
+            prompt_evidence_source = "legacy_fallback"
+
+        packed_context = str(
+            context_pack.get("context")
+            or context_pack.get("rendered_text")
+            or ""
+        )
+        if selected_records and not packed_context and prompt_evidence_source != "legacy_fallback":
+            raise ValueError(
+                "context_pack selected_results is non-empty but rendered context is empty"
+            )
+        if not selected_records and packed_context and selected_present:
+            raise ValueError(
+                "context_pack rendered context is non-empty while selected_results is empty"
+            )
 
         dropped_records = (
-            [item for item in dropped if isinstance(item, dict)]
+            [dict(item) for item in dropped if isinstance(item, dict)]
             if isinstance(dropped, list)
             else []
         )
         selected_keys = {self._record_key(item) for item in selected_records}
         dropped_keys = {self._record_key(item) for item in dropped_records}
+        governance = data.get("evidence_governance_v2")
+        governance = governance if isinstance(governance, dict) else {}
+        rejected_candidate_ids = {
+            str(item)
+            for item in governance.get("rejected_candidate_ids", [])
+            if str(item).strip()
+        }
 
-        # Some older context packers omitted dropped_results. Preserve those
-        # candidates so the evidence contract remains auditable.
         if isinstance(full, list):
             for item in full:
                 if not isinstance(item, dict):
@@ -108,13 +174,27 @@ class RAGResultMapper:
                     continue
                 normalized = dict(item)
                 metadata = dict(normalized.get("metadata") or {})
-                metadata.setdefault(
-                    "context_drop_reason", "not_selected_by_context_packer"
+                candidate_id = str(
+                    normalized.get("child_chunk_id")
+                    or normalized.get("chunk_id")
+                    or ""
                 )
+                if prompt_contract_missing:
+                    drop_reason = "prompt_evidence_contract_missing"
+                elif candidate_id in rejected_candidate_ids:
+                    drop_reason = "evidence_ineligible_v2"
+                else:
+                    drop_reason = "not_selected_by_context_packer"
+                metadata.setdefault("context_drop_reason", drop_reason)
                 normalized["metadata"] = metadata
                 dropped_records.append(normalized)
                 dropped_keys.add(key)
-        return selected_records, dropped_records
+        return (
+            selected_records,
+            dropped_records,
+            prompt_evidence_source,
+            prompt_contract_missing,
+        )
 
     @staticmethod
     def _correction_rounds(
@@ -194,6 +274,47 @@ class RAGResultMapper:
             },
         )
 
+    @staticmethod
+    def _assessment_from_governance(
+        governance: dict[str, Any],
+        *,
+        legacy_assessment: RAGEvidenceAssessmentSchema,
+    ) -> RAGEvidenceAssessmentSchema:
+        set_assessment = governance.get("set_assessment")
+        set_assessment = set_assessment if isinstance(set_assessment, dict) else {}
+        gate = governance.get("gate_decision")
+        gate = gate if isinstance(gate, dict) else {}
+        raw_status = str(set_assessment.get("status") or "not_assessed")
+        if raw_status == EvidenceStatus.SUFFICIENT.value:
+            status = EvidenceAssessmentStatus.SUFFICIENT
+        elif raw_status == EvidenceStatus.PARTIAL.value:
+            status = EvidenceAssessmentStatus.PARTIAL
+        elif raw_status in {
+            EvidenceStatus.ABSENT.value,
+            EvidenceStatus.CONFLICTED.value,
+        }:
+            status = EvidenceAssessmentStatus.INSUFFICIENT
+        else:
+            status = EvidenceAssessmentStatus.NOT_ASSESSED
+        coverage = set_assessment.get("coverage_ratio")
+        try:
+            score = float(coverage) if coverage is not None else None
+        except (TypeError, ValueError):
+            score = None
+        return RAGEvidenceAssessmentSchema(
+            status=status,
+            judge_name="document_profile_gate_v2",
+            judge_version="stage_d_v1",
+            score=score,
+            reason_codes=list(gate.get("reason_codes") or []),
+            details={
+                "evidence_governance_v2": governance,
+                "gate_decision": gate,
+                "legacy_corrective_assessment": legacy_assessment.model_dump(),
+                "presence_is_not_semantic_sufficiency": True,
+            },
+        )
+
     def map(
         self,
         *,
@@ -228,11 +349,121 @@ class RAGResultMapper:
         )
         context_pack = data.get("context_pack") or {}
         context_pack = dict(context_pack) if isinstance(context_pack, dict) else {}
-        selected_records, dropped_records = self._selected_and_dropped_records(
+        runtime_context = dict(invocation.payload.get("extra_metadata") or {})
+        strict_prompt_contract = bool(
+            invocation.payload.get("access_scope_enforced")
+            or isinstance(runtime_context.get("evidence_requirements"), dict)
+        )
+        (
+            selected_records,
+            dropped_records,
+            prompt_evidence_source,
+            prompt_contract_missing,
+        ) = self._selected_and_dropped_records(
             data=data,
             context_pack=context_pack,
             max_context_items=invocation.max_context_items,
+            strict_prompt_contract=strict_prompt_contract,
         )
+
+        effective_context_pack = dict(context_pack)
+        if prompt_contract_missing:
+            effective_context_pack.update(
+                {
+                    "context": "",
+                    "rendered_text": "",
+                    "selected_results": [],
+                    "selected_count": 0,
+                    "used_chars": 0,
+                    "tokens_used": 0,
+                }
+            )
+
+        prompt_candidates: list[PromptEvidenceCandidateV1Schema] = []
+        prompt_candidate_errors: list[dict[str, str]] = []
+        packed_context = str(
+            effective_context_pack.get("context")
+            or effective_context_pack.get("rendered_text")
+            or ""
+        )
+        allow_legacy_prompt = prompt_evidence_source == "legacy_fallback"
+        normalized_selected_records: list[dict[str, Any]] = []
+        for raw in selected_records:
+            normalized = dict(raw)
+            try:
+                prompt_candidate = build_prompt_evidence_candidate_v1(
+                    normalized,
+                    allow_legacy_fallback=allow_legacy_prompt,
+                )
+            except Exception as exc:
+                if not allow_legacy_prompt:
+                    raise
+                candidate_id = str(
+                    normalized.get("child_chunk_id")
+                    or normalized.get("chunk_id")
+                    or "unknown"
+                )
+                error = {
+                    "candidate_id": candidate_id,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                prompt_candidate_errors.append(error)
+                metadata_for_item = dict(normalized.get("metadata") or {})
+                metadata_for_item["prompt_evidence_candidate_error"] = error
+                normalized["metadata"] = metadata_for_item
+                normalized_selected_records.append(normalized)
+                continue
+            if (
+                not allow_legacy_prompt
+                and prompt_candidate.prompt_visible_text
+                and prompt_candidate.prompt_visible_text not in packed_context
+            ):
+                raise ValueError(
+                    "prompt_visible_text is not present in context_pack.context"
+                )
+            metadata_for_item = dict(normalized.get("metadata") or {})
+            metadata_for_item["prompt_evidence_candidate_v1"] = (
+                prompt_candidate.model_dump(mode="json", exclude_none=True)
+            )
+            normalized["metadata"] = metadata_for_item
+            normalized["prompt_visible_text"] = (
+                prompt_candidate.prompt_visible_text
+            )
+            normalized["context_text"] = prompt_candidate.prompt_visible_text
+            prompt_candidates.append(prompt_candidate)
+            normalized_selected_records.append(normalized)
+        selected_records = normalized_selected_records
+
+        governance_prompt_contract_missing = bool(
+            prompt_contract_missing or prompt_candidate_errors
+        )
+        prompt_context = {
+            **runtime_context,
+            "prompt_evidence_contract_missing": governance_prompt_contract_missing,
+            "prompt_evidence_source": prompt_evidence_source,
+        }
+        final_governance = self.evidence_governance_v2.evaluate_prompt(
+            query=invocation.query,
+            prompt_candidates=prompt_candidates,
+            runtime_context=prompt_context,
+            prompt_evidence_source=prompt_evidence_source,
+        )
+        governance_payload = final_governance.to_dict()
+        prompt_contract_payload = {
+            "schema_version": "prompt_evidence_contract_v1",
+            "source": prompt_evidence_source,
+            "contract_missing": governance_prompt_contract_missing,
+            "candidate_count": len(prompt_candidates),
+            "candidate_errors": prompt_candidate_errors,
+            "candidates": [
+                item.model_dump(mode="json", exclude_none=True)
+                for item in prompt_candidates
+            ],
+            "context_sha256": hashlib.sha256(
+                packed_context.encode("utf-8")
+            ).hexdigest(),
+        }
         selected_chunks = self.evidence.chunks(selected_records)
         dropped_chunks = self.evidence.chunks(dropped_records)
         citations = self.evidence.citations(selected_chunks)
@@ -270,14 +501,16 @@ class RAGResultMapper:
                 "evidence_quality": evidence_quality,
                 "rag_run_id": data.get("run_id"),
                 "context_source": "rag_evidence_contract_v1",
-                "packing_strategy": context_pack.get("packing_strategy"),
-                "context_pack_selected_count": context_pack.get("selected_count"),
-                "context_pack_dropped_count": context_pack.get("dropped_count"),
-                "context_token_budget": context_pack.get("token_budget"),
-                "context_tokens_used": context_pack.get("tokens_used"),
-                "context_truncated_item_ids": context_pack.get(
+                "packing_strategy": effective_context_pack.get("packing_strategy"),
+                "context_pack_selected_count": len(selected_records),
+                "context_pack_dropped_count": len(dropped_records),
+                "context_token_budget": effective_context_pack.get("token_budget"),
+                "context_tokens_used": effective_context_pack.get("tokens_used"),
+                "context_truncated_item_ids": effective_context_pack.get(
                     "truncated_item_ids"
                 ),
+                "prompt_evidence_source": prompt_evidence_source,
+                "prompt_evidence_contract_missing": governance_prompt_contract_missing,
             },
         )
         bundle = RAGEvidenceContractBuilder.build(
@@ -288,18 +521,24 @@ class RAGResultMapper:
             citations=citations,
             trace=trace,
             max_context_chars=invocation.max_context_chars,
-            context_pack=context_pack,
+            context_pack=effective_context_pack,
             extra={
                 "source": "parent_child_retrieval",
-                "packing_strategy": context_pack.get("packing_strategy"),
-                "selected_count": context_pack.get("selected_count"),
-                "dropped_count": context_pack.get("dropped_count"),
-                "token_budget": context_pack.get("token_budget"),
-                "tokens_used": context_pack.get("tokens_used"),
+                "packing_strategy": effective_context_pack.get("packing_strategy"),
+                "selected_count": len(selected_records),
+                "dropped_count": len(dropped_records),
+                "token_budget": effective_context_pack.get("token_budget"),
+                "tokens_used": effective_context_pack.get("tokens_used"),
+                "prompt_evidence_contract": prompt_contract_payload,
+                "prompt_evidence_source": prompt_evidence_source,
             },
         )
         correction_rounds = self._correction_rounds(evidence_quality)
-        assessment = self._assessment_from_quality(evidence_quality)
+        legacy_assessment = self._assessment_from_quality(evidence_quality)
+        assessment = self._assessment_from_governance(
+            governance_payload,
+            legacy_assessment=legacy_assessment,
+        )
         assessment.evidence_available = bool(bundle.selected_evidence_ids)
         assessment.selected_evidence_count = len(bundle.selected_evidence_ids)
         assessment.dropped_evidence_count = len(bundle.dropped_evidence_ids)
@@ -327,6 +566,13 @@ class RAGResultMapper:
                     "rag_service": service_name,
                     "retrieval_plan": retrieval_plan,
                     "evidence_quality": evidence_quality,
+                    "evidence_governance_v2": governance_payload,
+                    "gate_decision": governance_payload.get("gate_decision"),
+                    "generation_allowed": bool(
+                        governance_payload.get("generation_allowed")
+                    ),
+                    "prompt_evidence_contract": prompt_contract_payload,
+                    "prompt_evidence_source": prompt_evidence_source,
                 },
             }
         )

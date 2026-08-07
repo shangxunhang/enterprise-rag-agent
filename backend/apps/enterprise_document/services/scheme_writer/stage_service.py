@@ -52,6 +52,9 @@ from apps.enterprise_document.workflows.section_parallel_execution_graph import 
     SectionParallelExecutionGraph,
 )
 from apps.enterprise_document.services.document_gate import evaluate_scheme_draft
+from apps.enterprise_document.services.release_publication import (
+    ReleasePublicationService,
+)
 from apps.enterprise_document.services.agent_rag_v1.assembly_validator import (
     DocumentAssemblyValidator,
 )
@@ -71,6 +74,7 @@ from apps.enterprise_document.services.agent_rag_v1.version_policy import (
     VersionPolicyService,
 )
 from core.retry_policy import RetryDecisionPolicy, classify_failure
+from core.runtime.recovery import current_durable_recovery
 from core.runtime.timing import MonotonicTimer, elapsed_ms
 from schemas.agent import AgentResultSchema
 from schemas.common import ErrorSchema, ErrorSourceSchema, WarningSchema
@@ -122,6 +126,7 @@ class SchemeGenerationStageService:
         rag_service_name: str,
         enable_semantic_gate: bool,
         section_max_concurrency: int = 1,
+        release_publication_service: ReleasePublicationService | None = None,
     ) -> None:
         self.input_service = input_service
         self.evidence_service = evidence_service
@@ -147,6 +152,10 @@ class SchemeGenerationStageService:
         self.final_artifact_review_service = FinalArtifactReviewService()
         self.generation_report_service = GenerationReportService()
         self.version_policy_service = VersionPolicyService()
+        self.release_publication_service = (
+            release_publication_service
+            or ReleasePublicationService.from_environment()
+        )
 
     def attach_planner_adapter(
         self,
@@ -1037,6 +1046,7 @@ class SchemeGenerationStageService:
                     payload.document_retrieved_chunks
                 ),
                 "document_citations": list(payload.document_citations),
+                "document_rag_output": dict(payload.document_rag_output),
                 "document_evidence_assessment": dict(
                     payload.document_evidence_assessment
                 ),
@@ -1049,12 +1059,29 @@ class SchemeGenerationStageService:
                 "budget_policy_override": dict(budget_policy_override),
             }
             if self.section_execution_graph is not None:
-                section_result = self.section_execution_graph.execute(
-                    SectionGraphExecutionRequestSchema(**request_data),
-                    shared_state=state,
-                    citation_registry=registry,
-                    workflow_namespace=payload.workflow_namespace,
+                recovery = current_durable_recovery()
+                section_result = (
+                    self.section_execution_graph.recover_or_reuse(
+                        workflow_namespace=payload.workflow_namespace,
+                        task_id=payload.task_id,
+                        run_id=payload.run_id,
+                        document_id=document_id,
+                        section_id=section_plan.section_id,
+                        project_input=project_input,
+                        section_plan=section_plan,
+                        shared_state=state,
+                        citation_registry=registry,
+                    )
+                    if recovery is not None
+                    else None
                 )
+                if section_result is None:
+                    section_result = self.section_execution_graph.execute(
+                        SectionGraphExecutionRequestSchema(**request_data),
+                        shared_state=state,
+                        citation_registry=registry,
+                        workflow_namespace=payload.workflow_namespace,
+                    )
             else:
                 section_result = self.section_execution_coordinator.execute(
                     SectionExecutionRequestSchema(
@@ -1834,7 +1861,7 @@ class SchemeGenerationStageService:
             hard_gate=hard_gate,
             warnings=list(payload.output_warnings),
             error=payload.output_error,
-            need_human_review=True,
+            need_human_review=(deliverable_final_result is None),
             extra={
                 "scheme_writer_input": scheme_input.model_dump(),
                 "document_plan": document_plan.model_dump(),
@@ -1867,6 +1894,11 @@ class SchemeGenerationStageService:
                     item.model_dump()
                     for item in assembly.section_evidence_requirements
                 ],
+                "release_publication": (
+                    payload.release_publication.model_dump(mode="json")
+                    if payload.release_publication is not None
+                    else None
+                ),
                 "document_closure": {
                     "document_verification": (
                         payload.document_verification.model_dump(mode="json")
@@ -1916,20 +1948,20 @@ class SchemeGenerationStageService:
         }
         self.state_writer.set_scheme_outputs(
             shared_state,
-            scheme_writer_input=scheme_input.model_dump(),
-            scheme_writer_output=output.model_dump(),
+            scheme_writer_input=scheme_input.model_dump(mode="json"),
+            scheme_writer_output=output.model_dump(mode="json"),
             rag_tool_output=enriched_rag_output,
         )
         self.state_writer.set_scheme_artifacts(
             shared_state,
             generated_draft=assembly.draft.model_dump(),
             rejected_artifact=(
-                rejected_artifact.model_dump()
+                rejected_artifact.model_dump(mode="json")
                 if rejected_artifact is not None
                 else None
             ),
             deliverable_final_result=(
-                deliverable_final_result.model_dump()
+                deliverable_final_result.model_dump(mode="json")
                 if deliverable_final_result is not None
                 else None
             ),
@@ -1947,6 +1979,7 @@ class SchemeGenerationStageService:
                 "generated_draft": assembly.draft,
                 "rejected_artifact": rejected_artifact,
                 "deliverable_final_result": deliverable_final_result,
+                "release_publication": payload.release_publication,
                 "capture_completed": True,
             },
             deep=True,
@@ -1969,13 +2002,54 @@ class SchemeGenerationStageService:
             field_name="assembly",
             node_name="persist_deliverable",
         )
+        hard_gate = self._require(
+            payload.hard_gate,
+            field_name="hard_gate",
+            node_name="persist_deliverable",
+        )
+        generation_report = self._require(
+            payload.generation_report,
+            field_name="generation_report",
+            node_name="persist_deliverable",
+        )
+        version_decision = self._require(
+            payload.version_decision,
+            field_name="version_decision",
+            node_name="persist_deliverable",
+        )
+        document_version = self._require(
+            payload.document_version,
+            field_name="document_version",
+            node_name="persist_deliverable",
+        )
+        output_status = self._require(
+            payload.output_status,
+            field_name="output_status",
+            node_name="persist_deliverable",
+        )
+        release_publication = self.release_publication_service.publish(
+            task_id=shared_state.task_id,
+            run_id=shared_state.run_id,
+            document_version=document_version,
+            draft=assembly.draft,
+            output_format=project_input.output_schema.output_format,
+            hard_gate=hard_gate,
+            generation_report=generation_report,
+            version_decision=version_decision,
+            output_status=output_status,
+        )
         deliverable_final_result = DeliverableFinalResultSchema(
             draft=assembly.draft,
             output_format=project_input.output_schema.output_format,
+            release_publication=release_publication,
+        )
+        published_payload = payload.model_copy(
+            update={"release_publication": release_publication},
+            deep=True,
         )
         return self._persist_output(
             shared_state,
-            payload,
+            published_payload,
             rejected_artifact=None,
             deliverable_final_result=deliverable_final_result,
         )
@@ -2036,7 +2110,7 @@ class SchemeGenerationStageService:
             status=output.status,
             result_type="scheme_writer_output",
             result={
-                "scheme_writer_output": output.model_dump(),
+                "scheme_writer_output": output.model_dump(mode="json"),
                 "generated_draft": (
                     payload.generated_draft.model_dump()
                     if payload.generated_draft is not None
@@ -2048,8 +2122,13 @@ class SchemeGenerationStageService:
                     else None
                 ),
                 "deliverable_final_result": (
-                    payload.deliverable_final_result.model_dump()
+                    payload.deliverable_final_result.model_dump(mode="json")
                     if payload.deliverable_final_result is not None
+                    else None
+                ),
+                "release_publication": (
+                    payload.release_publication.model_dump(mode="json")
+                    if payload.release_publication is not None
                     else None
                 ),
             },
@@ -2062,7 +2141,7 @@ class SchemeGenerationStageService:
             ),
             started_at=payload.started_at,
             finished_at=self.runtime_support.now_iso(),
-            need_human_review=True,
+            need_human_review=output.need_human_review,
             metadata={
                 "output_schema": output.schema_version,
                 "hard_gate_passed": bool(
@@ -2080,6 +2159,20 @@ class SchemeGenerationStageService:
                     item.model_dump()
                     for item in assembly.section_evidence_requirements
                 ],
+                "release_id": (
+                    payload.release_publication.manifest.release_id
+                    if payload.release_publication is not None
+                    else None
+                ),
+                "release_manifest_ref": (
+                    payload.release_publication.manifest_artifact.artifact_ref
+                    if payload.release_publication is not None
+                    else None
+                ),
+                "release_verified_after_write": bool(
+                    payload.release_publication
+                    and payload.release_publication.verified_after_write
+                ),
             },
         )
         shared_state.status = result.status

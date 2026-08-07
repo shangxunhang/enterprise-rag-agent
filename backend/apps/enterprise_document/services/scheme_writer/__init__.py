@@ -1,5 +1,7 @@
-"""SchemeWriterAgent 背后的章节生成、引用、修复和装配服务。"""
+"""Scheme writer service package.
 
-from .use_case import SchemeGenerationUseCase
+Public services must be imported from their concrete modules. This package does
+not expose dynamic delegation, proxy exports, or import-time registration.
+"""
 
-__all__ = ["SchemeGenerationUseCase"]
+__all__: list[str] = []

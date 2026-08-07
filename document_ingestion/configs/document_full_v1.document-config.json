@@ -1,0 +1,12 @@
+{
+  "documents": [
+    {
+      "source_name": "05.陕西省大件运输许可相关系统升级项目实施方案0702.doc",
+      "project_id": "dajian_transport",
+      "document_role": "gold_reference",
+      "document_version": "0702",
+      "is_gold_reference": true,
+      "should_index": false
+    }
+  ]
+}

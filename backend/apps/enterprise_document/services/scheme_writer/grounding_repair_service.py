@@ -14,6 +14,7 @@ from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationSchema
 from schemas.model import ModelResponseSchema
+from rag.evidence.citation_sources import prompt_visible_citation_text
 
 from .citation_service import CitationService
 from .model_service import SectionModelService
@@ -134,17 +135,63 @@ class GroundingRepairService:
         指标、安全措施或承诺。
         """
 
+        project_payload = project_input.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        project_fact_fields = (
+            "project_name",
+            "project_type",
+            "customer_type",
+            "business_goal",
+            "total_staff",
+            "functional_department_count",
+            "business_department_count",
+            "department_groups",
+            "hardware_resources",
+            "policy_requirements",
+            "manual_boundaries",
+            "missing_information",
+            "conflicting_information",
+            "extra",
+        )
+        project_facts = {
+            field_name: project_payload[field_name]
+            for field_name in project_fact_fields
+            if field_name in project_payload
+            and project_payload[field_name] not in (None, "", [], {})
+        }
+        citation_catalog = []
+        for item in citations:
+            rendered = {
+                "marker": f"[{item.citation_id}]",
+                "quote_text": prompt_visible_citation_text(item),
+            }
+            if item.title:
+                rendered["title"] = item.title
+            if item.section:
+                rendered["section"] = item.section
+            citation_catalog.append(rendered)
+
+        compact_project_facts = json.dumps(
+            project_facts,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        compact_citation_catalog = json.dumps(
+            citation_catalog,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         prompt = (
             f"“{section_title}”章节未通过 Claim-Evidence 校验，请重写该章节。\n"
             "强制要求：\n"
-            "1. 只能使用项目输入和下列引用目录中直接出现的信息；\n"
-            "2. 每个来自知识库的确定性事实必须在句末标注对应引用；\n"
-            "3. 不得把常识、经验或推测包装成项目事实；\n"
-            "4. 证据未覆盖的内容必须写为‘待补充’或‘需项目方确认’；\n"
-            "5. 不得保留原文中没有证据支持的安全措施、资源数量、指标或承诺；\n"
-            "6. 只输出重写后的完整章节正文。\n\n"
-            f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
-            f"引用目录：\n{self.prompt_service.citation_catalog(citations)}\n\n"
+            "1. 只能使用下方项目事实和引用证据；\n"
+            "2. 知识库事实必须在句末标注对应引用，未覆盖内容改为‘待补充’或‘需项目方确认’；\n"
+            "3. 删除原文中无依据的数量、配置、指标、安全措施和承诺，只输出完整章节正文。\n\n"
+            f"项目事实：\n{compact_project_facts}\n\n"
+            f"引用目录：\n{compact_citation_catalog}\n\n"
             f"未通过校验的原始正文（仅供识别需要修正的范围，不得照抄无依据内容）：\n"
             f"{original_content}"
         )

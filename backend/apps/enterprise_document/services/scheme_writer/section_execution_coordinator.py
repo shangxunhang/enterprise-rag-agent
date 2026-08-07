@@ -14,6 +14,7 @@ from apps.enterprise_document.quality.budget import (
     WorkflowBudgetExceeded,
     activate_workflow_budget,
 )
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeSectionSchema,
     SectionEvalSchema,
@@ -31,6 +32,7 @@ from .evidence_service import SchemeEvidenceService
 from .runtime_support import SchemeWriterRuntimeSupport
 from .section_generation_service import SectionGenerationService
 from .section_retrieval_query_builder import SectionRetrievalQueryBuilder
+from .writer_governance import extract_writer_gate_binding
 
 if TYPE_CHECKING:
     from .agent_integration import MainlineSectionAgentAdapter
@@ -78,6 +80,33 @@ class SectionExecutionCoordinator:
         details = assessment.get("details")
         assessment["details"] = dict(details) if isinstance(details, dict) else {}
         return assessment
+
+    @staticmethod
+    def _writer_gate_binding(
+        normalized_output: dict,
+        *,
+        section_id: str,
+        section_title: str,
+        section_order: int | None = None,
+        document_id: str | None = None,
+        run_id: str | None = None,
+    ) -> WriterGateBindingSchema | None:
+        contract = normalized_output.get("evidence")
+        contract = contract if isinstance(contract, dict) else {}
+        contract_extra = contract.get("extra")
+        contract_extra = contract_extra if isinstance(contract_extra, dict) else {}
+        return extract_writer_gate_binding(
+            normalized_output,
+            section_id=section_id,
+            section_title=section_title,
+            section_order=section_order,
+            document_id=document_id,
+            run_id=run_id,
+            evidence_contract_sha256=str(
+                contract_extra.get("evidence_contract_sha256") or ""
+            )
+            or None,
+        )
 
     def _budget_fallback_section(
         self,
@@ -266,6 +295,14 @@ class SectionExecutionCoordinator:
         active_query = project_input.user_query
         active_scope = "document"
         active_assessment = dict(request.document_evidence_assessment)
+        active_writer_gate = self._writer_gate_binding(
+            dict(request.document_rag_output),
+            section_id=section_id,
+            section_title=title,
+            section_order=order,
+            document_id=request.document_id,
+            run_id=shared_state.run_id,
+        )
         tool_call_ids = list(request.document_tool_call_ids)
         recovery_count = 0
         retrieval_metadata: dict = {
@@ -273,6 +310,12 @@ class SectionExecutionCoordinator:
             "citation_required": citation_required,
             "evidence_assessment_status": active_assessment.get(
                 "status", "not_assessed"
+            ),
+            "writer_gate_bound": bool(active_writer_gate is not None),
+            "writer_gate_binding": (
+                active_writer_gate.model_dump(mode="json", exclude_none=True)
+                if active_writer_gate is not None
+                else None
             ),
         }
         retrieved_chunks = []
@@ -328,12 +371,29 @@ class SectionExecutionCoordinator:
                     retrieved_chunks.extend(section_chunks)
                     rag_outputs.append(section_output)
                     section_assessment = self._evidence_assessment(section_output)
+                    section_writer_gate = self._writer_gate_binding(
+                        section_output,
+                        section_id=section_id,
+                        section_title=title,
+                        section_order=order,
+                        document_id=request.document_id,
+                        run_id=shared_state.run_id,
+                    )
                     active_assessment = section_assessment
+                    active_writer_gate = section_writer_gate
+                    retrieval_metadata["writer_gate_bound"] = bool(
+                        section_writer_gate is not None
+                    )
+                    retrieval_metadata["writer_gate_binding"] = (
+                        section_writer_gate.model_dump(mode="json", exclude_none=True)
+                        if section_writer_gate is not None
+                        else None
+                    )
                     retrieval_metadata["evidence_assessment_status"] = (
                         section_assessment.get("status", "not_assessed")
                     )
                     retrieval_metadata["evidence_assessment"] = section_assessment
-                    if section_citations and section_context.context_text.strip():
+                    if section_context.context_text.strip():
                         active_context = section_context
                         active_chunks = section_chunks
                         active_citations = section_citations
@@ -361,29 +421,61 @@ class SectionExecutionCoordinator:
                         flush=True,
                     )
 
+            writer_gate_missing = active_writer_gate is None
             evidence_blocked = bool(
-                citation_required
-                and active_assessment.get("status") == "insufficient"
+                writer_gate_missing
+                or not active_writer_gate.ordinary_generation_permitted
             )
             if evidence_blocked:
+                block_reason = (
+                    "writer_gate_missing"
+                    if writer_gate_missing
+                    else (
+                        "legacy_writer_artifact_incomplete"
+                        if active_writer_gate.legacy_artifact_incomplete
+                        else (
+                            "writer_human_review_required"
+                            if active_writer_gate.gate_decision.human_review_required
+                            else "writer_generation_blocked"
+                        )
+                    )
+                )
                 retrieval_metadata["normal_generation_blocked"] = True
-                retrieval_metadata["generation_block_reason"] = "evidence_insufficient"
+                retrieval_metadata["generation_block_reason"] = block_reason
                 print(
-                    f"[EvidenceGate] BLOCK section={title} "
-                    "reason=evidence_insufficient",
+                    f"[WriterGate] BLOCK section={title} reason={block_reason}",
                     flush=True,
                 )
-                section = (
-                    self.section_generation_service.build_insufficient_evidence_section(
+                if active_writer_gate is not None:
+                    section = self.section_generation_service.build_gate_blocked_section(
                         shared_state,
                         project_input=project_input,
                         section_title=title,
                         section_order=order,
                         rag_context=active_context,
                         citations=active_citations,
-                        assessment=active_assessment,
+                        writer_gate_binding=active_writer_gate,
                     )
-                )
+                else:
+                    section = self.section_generation_service.build_insufficient_evidence_section(
+                        shared_state,
+                        project_input=project_input,
+                        section_title=title,
+                        section_order=order,
+                        rag_context=active_context,
+                        citations=active_citations,
+                        assessment={
+                            **dict(active_assessment),
+                            "status": "not_assessed",
+                            "reason": "final writer gate binding is missing",
+                        },
+                    )
+                    section.extra = {
+                        **dict(section.extra or {}),
+                        "generation_block_reason": "writer_gate_missing",
+                        "writer_execution_status": "not_assessed",
+                        "formal_deliverable_eligible": False,
+                    }
             else:
                 try:
                     section = self.section_generation_service.generate_section(
@@ -397,6 +489,7 @@ class SectionExecutionCoordinator:
                         structured_facts=structured_facts,
                         previous_sections=previous_sections,
                         generation_attempt=1,
+                        writer_gate_binding=active_writer_gate,
                     )
                 except WorkflowBudgetExceeded as exc:
                     budget_exhaustion = exc
@@ -482,7 +575,58 @@ class SectionExecutionCoordinator:
                 retrieved_chunks.extend(recovered_chunks)
                 rag_outputs.append(recovered_output)
                 recovered_assessment = self._evidence_assessment(recovered_output)
-                if not recovered_context.context_text.strip():
+                recovered_writer_gate = self._writer_gate_binding(
+                    recovered_output,
+                    section_id=section_id,
+                    section_title=title,
+                    section_order=order,
+                    document_id=request.document_id,
+                    run_id=shared_state.run_id,
+                )
+                current_generation_permitted = bool(
+                    active_writer_gate is not None
+                    and active_writer_gate.ordinary_generation_permitted
+                )
+                recovered_context_available = bool(
+                    recovered_context.context_text.strip()
+                )
+                recovered_generation_permitted = bool(
+                    recovered_context_available
+                    and recovered_writer_gate is not None
+                    and recovered_writer_gate.ordinary_generation_permitted
+                )
+                if (
+                    not recovered_generation_permitted
+                    and current_generation_permitted
+                ):
+                    rejection_reason = (
+                        "empty_recovered_context"
+                        if not recovered_context_available
+                        else "recovery_not_ordinary_generation_permitted"
+                    )
+                    retrieval_metadata["self_rag_recovery_rejected"] = (
+                        rejection_reason
+                    )
+                    round_trace.update(
+                        {
+                            "error": rejection_reason,
+                            "recovery_rejected": True,
+                            "retained_scope": active_scope,
+                            "retrieved_chunk_count": len(recovered_chunks),
+                            "citation_count": len(recovered_citations),
+                        }
+                    )
+                    self_rag_rounds.append(round_trace)
+                    print(
+                        f"[SelfRAGRetrieveMore] KEEP section={title} "
+                        f"reason={rejection_reason} retained_scope={active_scope}",
+                        flush=True,
+                    )
+                    break
+                if not recovered_context_available and (
+                    recovered_writer_gate is None
+                    or recovered_writer_gate.ordinary_generation_permitted
+                ):
                     round_trace["error"] = "empty_recovered_context"
                     self_rag_rounds.append(round_trace)
                     break
@@ -493,30 +637,69 @@ class SectionExecutionCoordinator:
                 active_query = self_rag_query
                 active_scope = "self_rag_recovery"
                 active_assessment = recovered_assessment
+                active_writer_gate = recovered_writer_gate
+                retrieval_metadata["writer_gate_bound"] = bool(
+                    active_writer_gate is not None
+                )
+                retrieval_metadata["writer_gate_binding"] = (
+                    active_writer_gate.model_dump(mode="json", exclude_none=True)
+                    if active_writer_gate is not None
+                    else None
+                )
                 if (
-                    citation_required
-                    and recovered_assessment.get("status") == "insufficient"
+                    active_writer_gate is None
+                    or not active_writer_gate.ordinary_generation_permitted
                 ):
                     evidence_blocked = True
-                    retrieval_metadata["normal_generation_blocked"] = True
-                    retrieval_metadata["generation_block_reason"] = (
-                        "evidence_insufficient_after_self_rag_retrieval"
+                    block_reason = (
+                        "writer_gate_missing_after_self_rag_retrieval"
+                        if active_writer_gate is None
+                        else (
+                            "legacy_writer_artifact_incomplete_after_self_rag_retrieval"
+                            if active_writer_gate.legacy_artifact_incomplete
+                            else (
+                                "writer_human_review_required_after_self_rag_retrieval"
+                                if active_writer_gate.gate_decision.human_review_required
+                                else "writer_generation_blocked_after_self_rag_retrieval"
+                            )
+                        )
                     )
-                    section = (
-                        self.section_generation_service.build_insufficient_evidence_section(
+                    retrieval_metadata["normal_generation_blocked"] = True
+                    retrieval_metadata["generation_block_reason"] = block_reason
+                    if active_writer_gate is not None:
+                        section = self.section_generation_service.build_gate_blocked_section(
                             shared_state,
                             project_input=project_input,
                             section_title=title,
                             section_order=order,
                             rag_context=active_context,
                             citations=active_citations,
-                            assessment=active_assessment,
+                            writer_gate_binding=active_writer_gate,
                         )
-                    )
+                    else:
+                        section = self.section_generation_service.build_insufficient_evidence_section(
+                            shared_state,
+                            project_input=project_input,
+                            section_title=title,
+                            section_order=order,
+                            rag_context=active_context,
+                            citations=active_citations,
+                            assessment={
+                                **dict(active_assessment),
+                                "status": "not_assessed",
+                                "reason": "final writer gate binding is missing",
+                            },
+                        )
+                        section.extra = {
+                            **dict(section.extra or {}),
+                            "generation_block_reason": block_reason,
+                            "writer_execution_status": "not_assessed",
+                            "formal_deliverable_eligible": False,
+                        }
                     generation_check = {}
                     round_trace.update(
                         {
-                            "error": "evidence_insufficient",
+                            "error": block_reason,
                             "assessment": recovered_assessment,
                             "retrieved_chunk_count": len(recovered_chunks),
                             "citation_count": len(recovered_citations),
@@ -524,8 +707,7 @@ class SectionExecutionCoordinator:
                     )
                     self_rag_rounds.append(round_trace)
                     print(
-                        f"[EvidenceGate] BLOCK section={title} "
-                        "reason=evidence_insufficient_after_self_rag_retrieval",
+                        f"[WriterGate] BLOCK section={title} reason={block_reason}",
                         flush=True,
                     )
                     break
@@ -542,6 +724,7 @@ class SectionExecutionCoordinator:
                         structured_facts=structured_facts,
                         previous_sections=previous_sections,
                         generation_attempt=round_number + 1,
+                        writer_gate_binding=active_writer_gate,
                     )
                 except WorkflowBudgetExceeded as exc:
                     budget_exhaustion = exc
@@ -671,45 +854,118 @@ class SectionExecutionCoordinator:
                     retrieved_chunks.extend(recovery_chunks)
                     rag_outputs.append(recovery_output)
                     recovery_assessment = self._evidence_assessment(recovery_output)
+                    recovery_writer_gate = self._writer_gate_binding(
+                        recovery_output,
+                        section_id=section_id,
+                        section_title=title,
+                        section_order=order,
+                        document_id=request.document_id,
+                        run_id=shared_state.run_id,
+                    )
                     retrieval_metadata["corrective_evidence_assessment"] = (
                         recovery_assessment
                     )
-                    if recovery_citations and recovery_context.context_text.strip():
-                        if recovery_assessment.get("status") == "insufficient":
-                            retrieval_metadata["corrective_generation_skipped"] = (
-                                "evidence_insufficient"
+                    retrieval_metadata["corrective_writer_gate_binding"] = (
+                        recovery_writer_gate.model_dump(mode="json", exclude_none=True)
+                        if recovery_writer_gate is not None
+                        else None
+                    )
+                    current_generation_permitted = bool(
+                        active_writer_gate is not None
+                        and active_writer_gate.ordinary_generation_permitted
+                    )
+                    recovery_context_available = bool(
+                        recovery_context.context_text.strip()
+                    )
+                    recovery_generation_permitted = bool(
+                        recovery_context_available
+                        and recovery_writer_gate is not None
+                        and recovery_writer_gate.ordinary_generation_permitted
+                    )
+                    if recovery_generation_permitted:
+                        active_context = recovery_context
+                        active_chunks = recovery_chunks
+                        active_citations = recovery_citations
+                        active_query = recovery_query
+                        active_scope = "recovery"
+                        active_assessment = recovery_assessment
+                        active_writer_gate = recovery_writer_gate
+                        retrieval_metadata["corrective_recovery_accepted"] = True
+                        try:
+                            candidate_section = self.section_generation_service.generate_section(
+                                shared_state,
+                                document_id=request.document_id,
+                                project_input=project_input,
+                                section_title=title,
+                                section_order=order,
+                                rag_context=active_context,
+                                citations=active_citations,
+                                structured_facts=structured_facts,
+                                previous_sections=previous_sections,
+                                generation_attempt=recovery_count + 1,
+                                writer_gate_binding=active_writer_gate,
+                            )
+                        except WorkflowBudgetExceeded as exc:
+                            budget_exhaustion = exc
+                            section = self._budget_fallback_section(
+                                request,
+                                section_id=section_id,
+                                section_title=title,
+                                section_order=order,
+                                fallback_section=section,
                             )
                         else:
-                            active_context = recovery_context
-                            active_chunks = recovery_chunks
-                            active_citations = recovery_citations
-                            active_query = recovery_query
-                            active_scope = "recovery"
-                            active_assessment = recovery_assessment
-                            try:
-                                candidate_section = self.section_generation_service.generate_section(
-                                    shared_state,
-                                    document_id=request.document_id,
-                                    project_input=project_input,
-                                    section_title=title,
-                                    section_order=order,
-                                    rag_context=active_context,
-                                    citations=active_citations,
-                                    structured_facts=structured_facts,
-                                    previous_sections=previous_sections,
-                                    generation_attempt=recovery_count + 1,
+                            section = candidate_section
+                    elif current_generation_permitted:
+                        rejection_reason = (
+                            "empty_recovery_context"
+                            if not recovery_context_available
+                            else "recovery_not_ordinary_generation_permitted"
+                        )
+                        retrieval_metadata["corrective_recovery_accepted"] = False
+                        retrieval_metadata["corrective_recovery_rejected"] = (
+                            rejection_reason
+                        )
+                        retrieval_metadata["corrective_retained_scope"] = active_scope
+                        print(
+                            f"[CorrectiveSectionRAG] KEEP section={title} "
+                            f"reason={rejection_reason} retained_scope={active_scope}",
+                            flush=True,
+                        )
+                    elif recovery_context_available or recovery_writer_gate is not None:
+                        active_context = recovery_context
+                        active_chunks = recovery_chunks
+                        active_citations = recovery_citations
+                        active_query = recovery_query
+                        active_scope = "recovery"
+                        active_assessment = recovery_assessment
+                        active_writer_gate = recovery_writer_gate
+                        evidence_blocked = True
+                        block_reason = (
+                            "writer_gate_missing_after_corrective_retrieval"
+                            if active_writer_gate is None
+                            else (
+                                "legacy_writer_artifact_incomplete_after_corrective_retrieval"
+                                if active_writer_gate.legacy_artifact_incomplete
+                                else (
+                                    "writer_human_review_required_after_corrective_retrieval"
+                                    if active_writer_gate.gate_decision.human_review_required
+                                    else "writer_generation_blocked_after_corrective_retrieval"
                                 )
-                            except WorkflowBudgetExceeded as exc:
-                                budget_exhaustion = exc
-                                section = self._budget_fallback_section(
-                                    request,
-                                    section_id=section_id,
-                                    section_title=title,
-                                    section_order=order,
-                                    fallback_section=section,
-                                )
-                            else:
-                                section = candidate_section
+                            )
+                        )
+                        retrieval_metadata["corrective_generation_skipped"] = block_reason
+                        retrieval_metadata["generation_block_reason"] = block_reason
+                        if active_writer_gate is not None:
+                            section = self.section_generation_service.build_gate_blocked_section(
+                                shared_state,
+                                project_input=project_input,
+                                section_title=title,
+                                section_order=order,
+                                rag_context=active_context,
+                                citations=active_citations,
+                                writer_gate_binding=active_writer_gate,
+                            )
                     retrieval_metadata["corrective_retrieval_success"] = True
                     retrieval_metadata["corrective_citation_count"] = len(
                         recovery_citations
@@ -784,6 +1040,16 @@ class SectionExecutionCoordinator:
             citations=active_citations,
             recovery_count=recovery_count,
             evidence_contract_sha256=contract_sha,
+            writer_gate_binding=(
+                active_writer_gate.model_dump(mode="json", exclude_none=True)
+                if active_writer_gate is not None
+                else None
+            ),
+            generation_allowed=(
+                active_writer_gate.ordinary_generation_permitted
+                if active_writer_gate is not None
+                else False
+            ),
             metadata=retrieval_metadata,
         )
         budget_usage = section_budget.snapshot()
@@ -795,6 +1061,16 @@ class SectionExecutionCoordinator:
             "evidence_contract_sha256": contract_sha,
             "corrective_retrieval_count": recovery_count,
             "workflow_budget": budget_usage,
+            "writer_gate_binding": (
+                active_writer_gate.model_dump(mode="json", exclude_none=True)
+                if active_writer_gate is not None
+                else None
+            ),
+            "writer_execution_status": (
+                active_writer_gate.execution_status.value
+                if active_writer_gate is not None
+                else "not_assessed"
+            ),
         }
         state_writer.add_generated_section(shared_state, section.section_id)
         print(
@@ -813,8 +1089,21 @@ class SectionExecutionCoordinator:
             citation_registry=citation_registry.all(),
             budget_usage=budget_usage,
             need_human_review=bool(
-                budget_exhaustion is not None
-                and section_budget.human_review_on_exhaustion
+                (
+                    budget_exhaustion is not None
+                    and section_budget.human_review_on_exhaustion
+                )
+                or (
+                    active_writer_gate is not None
+                    and active_writer_gate.gate_decision.human_review_required
+                )
+                or active_writer_gate is None
+                or bool(
+                    isinstance((section.extra or {}).get("claim_audit"), dict)
+                    and not (section.extra or {}).get("claim_audit", {}).get(
+                        "passed", False
+                    )
+                )
             ),
             warnings=list(section.warnings),
             error=section.error,

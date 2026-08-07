@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+from core.persistence.safe_paths import SafeExternalIdentifier, SafePathResolver
+
 from apps.enterprise_document.schemas.agent_rag_v1 import (
     AgentExecutionContextSchema,
     AgentRole,
@@ -199,7 +201,8 @@ class MarkdownDocumentExporter:
     """Writes standalone Markdown/JSON files; this is not a DOCX exporter."""
 
     def __init__(self, output_root: str | Path) -> None:
-        self.output_root = Path(output_root).resolve()
+        self._path_resolver = SafePathResolver(output_root)
+        self.output_root = self._path_resolver.root
 
     def export(
         self,
@@ -210,10 +213,34 @@ class MarkdownDocumentExporter:
         document_content: bytes,
         generation_report: Mapping[str, Any],
     ) -> ExportedDocumentPathsSchema:
-        run_dir = self.output_root / task_id / run_id
+        safe_task_id = SafeExternalIdentifier.validate(
+            task_id,
+            field_name="task_id",
+        )
+        safe_run_id = SafeExternalIdentifier.validate(
+            run_id,
+            field_name="run_id",
+        )
+        SafeExternalIdentifier.validate(
+            document_version,
+            field_name="document_version",
+        )
+        run_dir = self._path_resolver.resolve(safe_task_id, safe_run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
-        document_path = run_dir / f"construction-scheme-{document_version}.md"
-        report_path = run_dir / f"generation-report-{document_version}.json"
+        document_path = self._path_resolver.path_for_identifier(
+            document_version,
+            field_name="document_version",
+            directory=(safe_task_id, safe_run_id),
+            prefix="construction-scheme-",
+            suffix=".md",
+        )
+        report_path = self._path_resolver.path_for_identifier(
+            document_version,
+            field_name="document_version",
+            directory=(safe_task_id, safe_run_id),
+            prefix="generation-report-",
+            suffix=".json",
+        )
         self._atomic_write(document_path, document_content)
         self._atomic_write(
             report_path,

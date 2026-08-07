@@ -9,7 +9,13 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
+from apps.enterprise_document.schemas.gate_decision import (
+    ClaimRiskLevel,
+    DeliveryMode,
+    GateDecisionSchema,
+)
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeDraftSchema,
@@ -17,9 +23,17 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     SectionEvalSchema,
     TruncationCheckSchema,
 )
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
+from apps.enterprise_document.services.scheme_writer.citation_integrity_service import (
+    CitationOccurrenceIntegrityGate,
+)
+from apps.enterprise_document.services.scheme_writer.citation_service import CitationService
 from eval.agent.hard_gate import evaluate_scheme_draft
+from rag.schema.evidence_assessment_v2 import EvidenceStatus
 from schemas.citation import CitationBindingSchema, CitationSchema
+from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
 from schemas.model import ModelResponseSchema
+from schemas.rag import RAGContextSchema
 from schemas.status import ExecutionStatus
 
 
@@ -232,6 +246,171 @@ class CitationBindingRegressionTest(unittest.TestCase):
             ["安全设计"],
             result.metadata["missing_citation_sections"],
         )
+
+
+def _final_binding_shared_state() -> SharedStateSchema:
+    return SharedStateSchema(
+        task_id="task_citation_final",
+        run_id="run_citation_final",
+        task_type="scheme_generation",
+        user_input="生成实施方案",
+        context_bundle=ContextBundleSchema(
+            user=UserContextSchema(user_query="生成实施方案"),
+            task=TaskContextSchema(
+                task_id="task_citation_final",
+                run_id="run_citation_final",
+                task_type="scheme_generation",
+            ),
+        ),
+        created_at="2026-08-05T05:00:00+00:00",
+    )
+
+
+def _final_binding_project_input() -> ProjectInputSchema:
+    return ProjectInputSchema.model_validate(
+        {
+            "task_id": "task_citation_final",
+            "task_type": "scheme_generation",
+            "user_query": "生成实施方案",
+            "generation_requirements": {
+                "required_sections": ["实施方案"],
+                "need_citation": True,
+                "citation_required_sections": ["实施方案"],
+                "min_section_chars": 1,
+                "max_section_retries": 0,
+            },
+            "output_schema": {"required_sections": ["实施方案"]},
+        }
+    )
+
+
+def _final_writer_binding() -> WriterGateBindingSchema:
+    return WriterGateBindingSchema(
+        section_id="section_run_citation_final_001",
+        section_title="实施方案",
+        section_order=1,
+        document_id="doc_citation_final",
+        run_id="run_citation_final",
+        gate_decision=GateDecisionSchema(
+            policy_id="citation_final_binding_test_v1",
+            evidence_status=EvidenceStatus.SUFFICIENT,
+            delivery_mode=DeliveryMode.QUALIFIED,
+            claim_risk_level=ClaimRiskLevel.LOW,
+            allowed_claim_types=["general_method"],
+            forbidden_claim_types=[],
+            required_qualifiers=["基于现有参考资料"],
+            covered_topics=["实施方案"],
+            missing_topics=[],
+            human_review_required=False,
+            reason_codes=["reference_evidence_requires_qualification"],
+        ),
+        generation_allowed=True,
+        evidence_contract_sha256="a" * 64,
+        prompt_evidence_source="context_pack_selected_results",
+        prompt_evidence_contract_sha256="b" * 64,
+    )
+
+
+def _final_binding_citations() -> list[CitationSchema]:
+    return [
+        CitationSchema(
+            citation_id="cite-method",
+            source_type="document_chunk",
+            doc_id="source-method",
+            chunk_id="chunk-method",
+            title="实施方法",
+            quote_text="实施方法采用分阶段推进和闭环治理原则。",
+            confidence=0.95,
+        ),
+        CitationSchema(
+            citation_id="cite-acceptance",
+            source_type="document_chunk",
+            doc_id="source-acceptance",
+            chunk_id="chunk-acceptance",
+            title="验收方法",
+            quote_text="验收方法按照功能验证和证据留痕流程执行。",
+            confidence=0.95,
+        ),
+    ]
+
+
+def test_qualifier_injection_rebuilds_final_citation_binding_identity() -> None:
+    class _TwoCitationAgent(SchemeWriterAgent):
+        def call_model(self, *args, **kwargs):  # type: ignore[override]
+            del args, kwargs
+            return ModelResponseSchema(
+                model_call_id="citation-final-model",
+                task_id="task_citation_final",
+                run_id="run_citation_final",
+                model_name="citation-final-stub",
+                success=True,
+                content=(
+                    "实施方法采用分阶段推进和闭环治理原则。\n\n"
+                    "验收方法按照功能验证和证据留痕流程执行。"
+                ),
+                finish_reason="stop",
+                created_at="2026-08-05T05:00:00+00:00",
+            )
+
+    citations = _final_binding_citations()
+    section = _TwoCitationAgent(
+        enable_semantic_gate=False
+    ).section_generation_service.generate_section(
+        _final_binding_shared_state(),
+        document_id="doc_citation_final",
+        project_input=_final_binding_project_input(),
+        section_title="实施方案",
+        section_order=1,
+        rag_context=RAGContextSchema(
+            context_text="\n".join(item.quote_text or "" for item in citations)
+        ),
+        citations=citations,
+        structured_facts=[],
+        previous_sections=[],
+        writer_gate_binding=_final_writer_binding(),
+    )
+
+    assert section.content.startswith("证据限定：基于现有参考资料。")
+    occurrences = CitationOccurrenceIntegrityGate.extract_marker_occurrences(
+        section_id=section.section_id,
+        content=section.content,
+    )
+    integrity = CitationOccurrenceIntegrityGate().evaluate(
+        sections=[section],
+        bindings=section.citation_bindings,
+        full_text=section.content,
+    )
+    expected_bindings = CitationService.supported_bindings(
+        CitationService.bind_citations(
+            document_id="doc_citation_final",
+            section_id=section.section_id,
+            content=section.content,
+            citations=citations,
+        ),
+        citations,
+    )
+
+    assert len(occurrences) == 2
+    assert len(section.citation_bindings) == 2
+    assert integrity.metadata["verified_binding_occurrence_count"] == 2
+    assert integrity.metadata["orphan_marker_occurrence_ids"] == []
+    assert integrity.metadata["orphan_binding_ids"] == []
+    assert integrity.checks["citation_marker_binding_bijection"] is True
+    assert integrity.passed is True
+
+    fields = (
+        "target_paragraph_id",
+        "target_claim_id",
+        "target_marker_index",
+        "marker_ordinal",
+        "target_marker_start",
+        "target_marker_end",
+        "claim_text",
+        "citation_id",
+    )
+    actual_projection = [tuple(getattr(item, field) for field in fields) for item in section.citation_bindings]
+    expected_projection = [tuple(getattr(item, field) for field in fields) for item in expected_bindings]
+    assert actual_projection == expected_projection
 
 
 if __name__ == "__main__":

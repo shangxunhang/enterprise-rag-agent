@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from core.runtime.clock import Clock, SystemClock
 from core.runtime.ids import IdGenerator, UuidIdGenerator
+from core.persistence.safe_paths import SafeExternalIdentifier, SafePathResolver
 from observability.trace_context import current_span
 from observability.trace_summary import bounded_summary
 from schemas.trace import RunTraceEventSchema
@@ -46,7 +47,8 @@ class JsonlRunTraceRecorder:
         """
 
         # 第一步：统一把输出目录转换为 Path。
-        self.output_dir = Path(output_dir)
+        self._path_resolver = SafePathResolver(output_dir)
+        self.output_dir = self._path_resolver.root
 
         # 第二步：补齐可替换时间和标识依赖，支持确定性测试。
         self.clock = clock or SystemClock()
@@ -88,7 +90,11 @@ class JsonlRunTraceRecorder:
             ``<output_dir>/<run_id>_trace.jsonl``。
         """
 
-        return self.output_dir / f"{run_id}_trace.jsonl"
+        return self._path_resolver.path_for_identifier(
+            run_id,
+            field_name="run_id",
+            suffix="_trace.jsonl",
+        )
 
     def _next_sequence(self, run_id: str) -> int:
         """线程安全地分配当前运行的下一个事件序号。
@@ -207,6 +213,9 @@ class JsonlRunTraceRecorder:
         Returns:
             已写入文件的标准 ``RunTraceEventSchema``。
         """
+
+        SafeExternalIdentifier.validate(task_id, field_name="task_id")
+        SafeExternalIdentifier.validate(run_id, field_name="run_id")
 
         # 第一步：为事件创建时间快照，并读取当前活动 span 上下文。
         now = self._now_iso()

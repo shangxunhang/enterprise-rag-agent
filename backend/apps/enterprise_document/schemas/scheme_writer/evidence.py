@@ -29,4 +29,6 @@ class SectionEvidenceBundleSchema(SchemaBase):
     citations: List[CitationSchema] = Field(default_factory=list)
     recovery_count: int = 0
     evidence_contract_sha256: Optional[str] = None
+    writer_gate_binding: Optional[Dict[str, Any]] = None
+    generation_allowed: Optional[bool] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)

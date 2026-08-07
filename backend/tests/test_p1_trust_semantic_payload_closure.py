@@ -476,6 +476,67 @@ def _project_fact_input(
     return ProjectInputSchema.model_validate(payload)
 
 
+def _stage_e_project_fact_binding(section_id: str, section_title: str):
+    from apps.enterprise_document.schemas.gate_decision import (
+        ClaimRiskLevel,
+        DeliveryMode,
+        GateDecisionSchema,
+    )
+    from apps.enterprise_document.schemas.writer_governance import (
+        WriterGateBindingSchema,
+    )
+    from rag.catalog.document_profile import ClaimType
+    from rag.schema.evidence_assessment_v2 import EvidenceStatus
+
+    return WriterGateBindingSchema(
+        section_id=section_id,
+        section_title=section_title,
+        section_order=1,
+        document_id="document-project-fact",
+        run_id="run-project-fact",
+        gate_decision=GateDecisionSchema(
+            policy_id="p1_trust_stage_e_fixture_v1",
+            evidence_status=EvidenceStatus.SUFFICIENT,
+            delivery_mode=DeliveryMode.GROUNDED,
+            claim_risk_level=ClaimRiskLevel.HIGH,
+            allowed_claim_types=list(ClaimType),
+            forbidden_claim_types=[],
+            covered_topics=[section_title],
+            missing_topics=[],
+            human_review_required=False,
+            reason_codes=["explicit_stage_e_test_fixture"],
+        ),
+        generation_allowed=True,
+        evidence_contract_sha256="e" * 64,
+        prompt_evidence_contract_sha256="f" * 64,
+    )
+
+
+def _ensure_stage_e_project_fact_contract(section):
+    from apps.enterprise_document.services.scheme_writer.writer_governance import (
+        WriterClaimAuditor,
+    )
+
+    extra = dict(section.extra or {})
+    if isinstance(extra.get("writer_gate_binding"), dict):
+        return section
+    binding = _stage_e_project_fact_binding(
+        section.section_id,
+        section.section_title,
+    )
+    audit = WriterClaimAuditor().audit(section.content, binding=binding)
+    section.extra = {
+        **extra,
+        "writer_gate_binding": binding.model_dump(mode="json", exclude_none=True),
+        "writer_execution_status": binding.execution_status.value,
+        "claim_audit": audit.model_dump(mode="json", exclude_none=True),
+        "required_qualifiers_applied": [],
+        "formal_deliverable_eligible": audit.passed,
+        "need_human_review": False,
+    }
+    return section
+
+
 def _generate_project_fact_section(
     *,
     project_input: ProjectInputSchema,
@@ -518,6 +579,10 @@ def _generate_project_fact_section(
         citations=citations,
         structured_facts=[],
         previous_sections=[],
+        writer_gate_binding=_stage_e_project_fact_binding(
+            "section_run-project-fact_001",
+            "资源配置",
+        ),
     )
 
 
@@ -529,6 +594,7 @@ def _evaluate_project_fact_section(section, *, citations: list):
         evaluate_scheme_draft,
     )
 
+    section = _ensure_stage_e_project_fact_contract(section)
     draft = SchemeDraftSchema(
         draft_id="draft-project-fact",
         document_id="document-project-fact",
@@ -852,7 +918,7 @@ def test_minor_semantic_advisory_remains_deliverable() -> None:
         section_id="section-advisory",
         section_title="资源配置",
         section_order=1,
-        content="本章节存在轻微范围偏移，但没有高风险项目事实。",
+        content="采用分阶段实施方法，形成闭环治理流程。",
         status=ExecutionStatus.PARTIAL_SUCCESS,
         truncation=TruncationCheckSchema(truncated=False),
         eval_result=SectionEvalSchema(

@@ -15,6 +15,7 @@ from core.persistence.crash_safe_jsonl import (
     CrashSafeJsonlRecordSink,
     canonical_json_sha256,
 )
+from core.persistence.safe_paths import SafeExternalIdentifier, SafePathResolver
 from core.runtime.clock import Clock, SystemClock
 from core.runtime.execution_control import current_execution_control
 from core.runtime.ids import IdGenerator, UuidIdGenerator
@@ -87,7 +88,8 @@ class JsonlDataCaptureRecorder:
         """
 
         # 第一步：统一根目录类型并补齐可测试的时间与标识依赖。
-        self.output_dir = Path(output_dir)
+        self._path_resolver = SafePathResolver(output_dir)
+        self.output_dir = self._path_resolver.root
         self.clock = clock or SystemClock()
         self.id_generator = id_generator or UuidIdGenerator()
 
@@ -96,7 +98,10 @@ class JsonlDataCaptureRecorder:
 
         # 第三步：预先创建所有允许类别目录，使 record 只处理具体记录写入。
         for capture_type in self.VALID_CAPTURE_TYPES:
-            (self.output_dir / capture_type).mkdir(parents=True, exist_ok=True)
+            self._path_resolver.resolve(capture_type).mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
     def _now_iso(self) -> str:
         """返回统一时钟生成的当前 UTC ISO 时间。"""
@@ -134,7 +139,12 @@ class JsonlDataCaptureRecorder:
             raise ValueError(f"Unsupported capture_type: {capture_type}")
 
         # 第二步：按类别隔离不同用途数据，并按 run 隔离执行来源。
-        return self.output_dir / capture_type / f"{run_id}_{capture_type}.jsonl"
+        return self._path_resolver.path_for_identifier(
+            run_id,
+            field_name="run_id",
+            directory=(capture_type,),
+            suffix=f"_{capture_type}.jsonl",
+        )
 
     def record(
         self,
@@ -222,6 +232,9 @@ class JsonlDataCaptureRecorder:
                 "runtime recorder cannot create promoted lifecycle state; "
                 "use DataCaptureLifecycleStore.transition"
             )
+
+        SafeExternalIdentifier.validate(task_id, field_name="task_id")
+        SafeExternalIdentifier.validate(run_id, field_name="run_id")
 
         # 第二步：读取当前节点尝试的执行控制上下文；普通调用可能没有该上下文。
         execution_control = current_execution_control()

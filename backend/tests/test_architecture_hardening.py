@@ -164,6 +164,11 @@ def _checkpoint_path(output_root: Path) -> Path:
     return output_root / "runs" / "langgraph_checkpoints.sqlite3"
 
 
+def _review_snapshot(events) -> str:
+    request = events[-1].payload["agent_result"]["human_review_request"]
+    return request["metadata"]["input_snapshot_version"]
+
+
 def _assert_immediate_rename(path: Path) -> None:
     moved = path.with_name(path.name + ".renamed")
     path.replace(moved)
@@ -226,6 +231,7 @@ def test_stream_resume_cross_instance_has_unique_ids_and_no_business_replay(
                 task_id=initial_events[-1].task_id,
                 run_id="hardening_stream_resume",
                 decision="approved",
+                input_snapshot_version=_review_snapshot(initial_events),
                 feedback="approved by architecture hardening",
                 reviewer_id="reviewer-hardening",
                 output_root=tmp_path,
@@ -318,6 +324,7 @@ def test_parallel_sections_are_not_replayed_or_recounted_after_durable_resume(
                 task_id=initial_events[-1].task_id,
                 run_id=run_id,
                 decision="approved",
+                input_snapshot_version=_review_snapshot(initial_events),
                 output_root=tmp_path,
                 settings=settings,
                 allow_demo_defaults=True,
@@ -383,6 +390,7 @@ def test_stream_reject_and_cancel_preserve_artifact_and_lifecycle(
                     task_id=initial_events[-1].task_id,
                     run_id=run_id,
                     decision="rejected",
+                    input_snapshot_version=_review_snapshot(initial_events),
                     feedback="rejected by architecture hardening",
                     reviewer_id="reviewer-hardening",
                     output_root=tmp_path,
@@ -426,6 +434,7 @@ def test_stream_continuation_exception_still_releases_checkpoint(tmp_path) -> No
                 task_id=initial_events[-1].task_id,
                 run_id="hardening_stream_exception",
                 decision="approved",
+                input_snapshot_version=_review_snapshot(initial_events),
                 output_root=tmp_path,
                 settings=settings,
                 allow_demo_defaults=True,
@@ -473,6 +482,7 @@ def test_stream_engine_exception_after_mark_running_reconciles_to_pause(
                 task_id=task_id,
                 run_id=run_id,
                 decision="approved",
+                input_snapshot_version=_review_snapshot(initial_events),
                 output_root=tmp_path,
                 settings=settings,
                 allow_demo_defaults=True,
@@ -532,6 +542,7 @@ def test_invalid_terminal_payload_reconciles_durable_terminal_state(
                 task_id=task_id,
                 run_id=run_id,
                 decision="approved",
+                input_snapshot_version=_review_snapshot(initial_events),
                 output_root=tmp_path,
                 settings=settings,
                 allow_demo_defaults=True,
@@ -565,6 +576,7 @@ def test_partial_stream_consumption_close_restores_durable_pause(
             task_id=task_id,
             run_id=run_id,
             decision="approved",
+            input_snapshot_version=_review_snapshot(initial_events),
             output_root=tmp_path,
             settings=settings,
             allow_demo_defaults=True,

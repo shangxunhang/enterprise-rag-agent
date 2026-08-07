@@ -124,6 +124,34 @@ class ParentChildCandidateEnricher:
                             "source_unit_ids": (
                                 child_chunk.get("source_unit_ids") or []
                             ),
+                            "tenant_id": child_chunk.get("tenant_id") or item.get("tenant_id"),
+                            "kb_id": child_chunk.get("kb_id") or item.get("kb_id"),
+                            "file_id": child_chunk.get("file_id") or item.get("file_id"),
+                            "document_profile": dict(
+                                child_chunk.get("document_profile")
+                                or item.get("document_profile")
+                                or (
+                                    (child_chunk.get("extra") or {}).get("document_profile")
+                                    if isinstance(child_chunk.get("extra"), dict)
+                                    else {}
+                                )
+                                or {}
+                            ),
+                            "type_aware_chunking": dict(
+                                child_chunk.get("type_aware_chunking")
+                                or item.get("type_aware_chunking")
+                                or (
+                                    (child_chunk.get("extra") or {}).get("type_aware_chunking")
+                                    if isinstance(child_chunk.get("extra"), dict)
+                                    else {}
+                                )
+                                or {}
+                            ),
+                            "structured_evidence": dict(
+                                child_chunk.get("structured_evidence")
+                                or item.get("structured_evidence")
+                                or {}
+                            ),
                         }
                     )
                 for source in item.get("retrieval_sources", []) or []:

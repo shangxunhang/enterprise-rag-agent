@@ -130,20 +130,16 @@ class FileArtifactStore:
                     temporary.unlink()
         return reference
 
-    def get_bytes(
-        self,
-        artifact_ref: str,
+    @staticmethod
+    def _validate_identity(
+        reference: ArtifactReferenceSchema,
         *,
+        artifact_ref: str,
         task_id: str,
         section_id: str | None = None,
         attempt_id: str | None = None,
         input_snapshot_version: str | None = None,
-    ) -> bytes:
-        target = self._path_for_ref(artifact_ref)
-        if not target.is_file():
-            raise FileNotFoundError(f"artifact does not exist: {artifact_ref}")
-        with self._lock:
-            reference, content = self._read_envelope(target)
+    ) -> None:
         if reference.artifact_ref != artifact_ref:
             raise ArtifactIntegrityError("artifact reference identity mismatch")
         if reference.task_id != task_id:
@@ -157,14 +153,52 @@ class FileArtifactStore:
             and reference.input_snapshot_version != input_snapshot_version
         ):
             raise ArtifactIntegrityError("artifact snapshot identity mismatch")
+
+    def get_bytes_with_reference(
+        self,
+        artifact_ref: str,
+        *,
+        task_id: str,
+        section_id: str | None = None,
+        attempt_id: str | None = None,
+        input_snapshot_version: str | None = None,
+    ) -> tuple[ArtifactReferenceSchema, bytes]:
+        target = self._path_for_ref(artifact_ref)
+        if not target.is_file():
+            raise FileNotFoundError(f"artifact does not exist: {artifact_ref}")
+        with self._lock:
+            reference, content = self._read_envelope(target)
+        self._validate_identity(
+            reference,
+            artifact_ref=artifact_ref,
+            task_id=task_id,
+            section_id=section_id,
+            attempt_id=attempt_id,
+            input_snapshot_version=input_snapshot_version,
+        )
+        return reference, content
+
+    def get_bytes(self, artifact_ref: str, **identity: Any) -> bytes:
+        _, content = self.get_bytes_with_reference(artifact_ref, **identity)
         return content
 
-    def get_json(self, artifact_ref: str, **identity: Any) -> Any:
-        content = self.get_bytes(artifact_ref, **identity)
+    def get_json_with_reference(
+        self,
+        artifact_ref: str,
+        **identity: Any,
+    ) -> tuple[ArtifactReferenceSchema, Any]:
+        reference, content = self.get_bytes_with_reference(
+            artifact_ref,
+            **identity,
+        )
         try:
-            return json.loads(content.decode("utf-8"))
+            return reference, json.loads(content.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ArtifactIntegrityError("artifact is not valid JSON") from exc
+
+    def get_json(self, artifact_ref: str, **identity: Any) -> Any:
+        _, value = self.get_json_with_reference(artifact_ref, **identity)
+        return value
 
     @classmethod
     def _read_envelope(

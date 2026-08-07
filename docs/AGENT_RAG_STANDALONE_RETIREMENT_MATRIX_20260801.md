@@ -23,7 +23,7 @@ The former `runtime/agent_rag_v1` Standalone Orchestrator, RuntimeFactory and ap
 | paragraph-repair | `test_phase8_recovery_budget_retirement.py::test_mainline_paragraph_repair_replaces_conflicting_version` | Blocking precheck causes Paragraph v2 to replace the conflicting version |
 | replan | `test_phase8_recovery_budget_retirement.py::test_mainline_replan_supersedes_attempt_and_rejects_old_result` | New plan creates Attempt 2 and stale Attempt 1 output is rejected |
 | partial-success | `test_phase8_recovery_budget_retirement.py::test_mainline_partial_success_publishes_deliverable` | Partial Section remains an explicit partial-success deliverable |
-| failed | `test_phase4_section_agents_mainline.py::test_explicit_insufficient_evidence_stops_before_writer_and_verifier` | Business failure produces rejected artifact and no deliverable |
+| failed | `test_phase4_section_agents_mainline.py::test_final_writer_gate_blocked_stops_before_writer_and_verifier` | Final Writer Gate blocks Writer/Verifier execution and produces only a rejected artifact |
 | budget-exhausted | `test_phase8_recovery_budget_retirement.py::test_task_budget_draining_finishes_first_section_and_starts_no_more_agents` | In-flight Section finishes; no later Section starts an Agent call |
 | human-review | `test_phase8_recovery_budget_retirement.py::test_stale_human_review_decision_keeps_durable_interrupt_paused` | Stale decision is rejected; valid decision resumes across a new engine instance |
 | crash-recovery | `test_phase8_recovery_budget_retirement.py::test_section_crash_resume_reuses_committed_paragraph_without_duplication` | New process resumes from Section cursor without duplicating committed Paragraphs |

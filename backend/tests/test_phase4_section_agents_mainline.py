@@ -10,8 +10,7 @@ from pathlib import Path
 import sqlite3
 from unittest.mock import patch
 
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
+from agent.runtime.official_checkpoint_saver import CompressedJsonPlusSerializer
 from application.mainline_service import MainlineApplicationService
 from apps.enterprise_document.agents.agent_rag_v1 import (
     ResearchAgent,
@@ -41,6 +40,7 @@ from apps.enterprise_document.workflows.top_level_business_graph import (
 )
 from bootstrap.supervisor_factory import SupervisorFactory
 from core.config import get_settings
+from tools.fake_rag_tool import FakeRAGTool
 
 
 class _InspectingFactory(SupervisorFactory):
@@ -131,7 +131,7 @@ def _trace_events(summary: dict) -> list[dict]:
 
 
 def _latest_section_payloads(database: Path) -> dict[str, dict]:
-    serializer = JsonPlusSerializer()
+    serializer = CompressedJsonPlusSerializer()
     latest: dict[str, tuple[str, bytes]] = {}
     with closing(sqlite3.connect(database)) as connection:
         rows = connection.execute(
@@ -368,7 +368,59 @@ def test_verifier_research_more_drives_real_section_route(tmp_path) -> None:
     )
 
 
-def test_explicit_insufficient_evidence_stops_before_writer_and_verifier(
+def test_final_writer_gate_blocked_stops_before_writer_and_verifier(
+    tmp_path,
+) -> None:
+    original = FakeRAGTool.run
+
+    def blocked_gate(self, tool_call):
+        result = original(self, tool_call)
+        evidence = result.result["evidence"]
+        extra = evidence["extra"]
+        gate = extra["gate_decision"]
+        gate.update(
+            {
+                "evidence_status": "absent",
+                "delivery_mode": "blocked",
+                "allowed_claim_types": [],
+                "forbidden_claim_types": ["current_project_fact"],
+                "covered_topics": [],
+                "missing_topics": ["forced_stage_e_gap"],
+                "human_review_required": False,
+                "reason_codes": ["forced_stage_e_blocked_gate"],
+            }
+        )
+        extra["generation_allowed"] = False
+        return result
+
+    summary, factory = _run_fake(
+        tmp_path,
+        run_id="round4_final_writer_gate_blocked",
+        patchers=(patch.object(FakeRAGTool, "run", blocked_gate),),
+    )
+    assert summary["status"] == "failed"
+    assert summary["deliverable_final_result"] is None
+    assert summary["rejected_artifact"] is not None
+
+    engine = factory.engines[0]
+    payloads = _latest_section_payloads(Path(engine.checkpointer.path))
+    assert payloads
+    for payload in payloads.values():
+        assert payload["active_writer_gate"]["gate_decision"][
+            "delivery_mode"
+        ] == "blocked"
+        assert payload["active_writer_gate"]["generation_allowed"] is False
+        assert payload["evidence_blocked"] is True
+        assert payload["writer_agent_payloads"] == []
+        assert payload["verifier_agent_payloads"] == []
+        assert "generate_section" not in payload["executed_nodes"]
+        assert payload["section"]["extra"]["writer_execution_status"] == (
+            "blocked"
+        )
+        assert payload["section"]["extra"]["formal_deliverable_eligible"] is False
+
+
+def test_legacy_insufficient_assessment_cannot_override_final_writer_gate(
     tmp_path,
 ) -> None:
     summary, factory = _run_fake(
@@ -392,21 +444,19 @@ def test_explicit_insufficient_evidence_stops_before_writer_and_verifier(
 
     engine = factory.engines[0]
     payloads = _latest_section_payloads(Path(engine.checkpointer.path))
-    blocked = [
+    governed = [
         payload
         for payload in payloads.values()
         if payload.get("citation_required") is True
     ]
-    assert blocked
-    for payload in blocked:
-        assert payload["evidence_blocked"] is True
-        assert len(payload["research_agent_payloads"]) == 1
-        assert payload["research_agent_payloads"][0]["evidence_summary"][
-            "recommended_action"
-        ] == "partial_delivery"
-        assert payload["writer_agent_payloads"] == []
-        assert payload["verifier_agent_payloads"] == []
-        assert "generate_section" not in payload["executed_nodes"]
-        assert payload["section_state"]["research"]["status"] == (
-            "insufficient"
-        )
+    assert governed
+    for payload in governed:
+        assert payload["active_assessment"]["status"] == "insufficient"
+        assert payload["active_writer_gate"]["gate_decision"][
+            "delivery_mode"
+        ] == "grounded"
+        assert payload["active_writer_gate"]["generation_allowed"] is True
+        assert payload["evidence_blocked"] is False
+        assert payload["writer_agent_payloads"]
+        assert payload["verifier_agent_payloads"]
+        assert "generate_section" in payload["executed_nodes"]

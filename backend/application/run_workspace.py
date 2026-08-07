@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from core.persistence.safe_paths import SafeExternalIdentifier, SafePathResolver
+
 
 @dataclass(frozen=True)
 class RunWorkspace:
@@ -32,47 +34,77 @@ class RunWorkspace:
     task_id: str
     run_id: str
 
+    def __post_init__(self) -> None:
+        """Validate identities at construction and pin the trusted root."""
+
+        SafeExternalIdentifier.validate(self.task_id, field_name="task_id")
+        SafeExternalIdentifier.validate(self.run_id, field_name="run_id")
+        object.__setattr__(
+            self,
+            "output_root",
+            Path(self.output_root).expanduser().resolve(strict=False),
+        )
+
+    @property
+    def _resolver(self) -> SafePathResolver:
+        return SafePathResolver(self.output_root)
+
     @property
     def tasks_dir(self) -> Path:
         """返回存放任务级持久状态的目录。"""
 
         # 任务状态可能跨多个 run 复用，因此按任务维度独立保存。
-        return self.output_root / "tasks"
+        return self._resolver.resolve("tasks")
 
     @property
     def runs_dir(self) -> Path:
         """返回存放单次运行轨迹和聚合产物的目录。"""
 
         # 目录中的文件通过 run_id 命名，避免同一任务的多次执行互相覆盖。
-        return self.output_root / "runs"
+        return self._resolver.resolve("runs")
 
     @property
     def captures_dir(self) -> Path:
         """返回存放训练与评测数据采集结果的目录。"""
 
         # 原始交互、SFT 候选和评测样本会在该目录下继续按用途分层。
-        return self.output_root / "captures"
+        return self._resolver.resolve("captures")
 
     @property
     def task_state_path(self) -> Path:
         """返回当前任务的状态事件流文件路径。"""
 
         # 文件按 task_id 命名，使任务状态能够跨 run 追踪和恢复。
-        return self.tasks_dir / f"{self.task_id}_state.jsonl"
+        return self._resolver.path_for_identifier(
+            self.task_id,
+            field_name="task_id",
+            directory=("tasks",),
+            suffix="_state.jsonl",
+        )
 
     @property
     def trace_path(self) -> Path:
         """返回当前运行的执行轨迹文件路径。"""
 
         # 轨迹按 run_id 隔离，便于定位一次具体执行的节点、分支和异常。
-        return self.runs_dir / f"{self.run_id}_trace.jsonl"
+        return self._resolver.path_for_identifier(
+            self.run_id,
+            field_name="run_id",
+            directory=("runs",),
+            suffix="_trace.jsonl",
+        )
 
     @property
     def model_usage_path(self) -> Path:
         """返回当前运行的模型用量聚合快照路径。"""
 
         # 用量快照是单个 JSON 对象，而不是追加写入的 JSONL 事件流。
-        return self.runs_dir / f"{self.run_id}_model_usage.json"
+        return self._resolver.path_for_identifier(
+            self.run_id,
+            field_name="run_id",
+            directory=("runs",),
+            suffix="_model_usage.json",
+        )
 
     def write_model_usage(self, payload: dict[str, Any]) -> None:
         """以原子替换方式发布当前运行的模型用量快照。
@@ -146,10 +178,11 @@ class RunWorkspace:
         """返回当前运行的原始模型交互采集文件路径。"""
 
         # 原始交互单独保存，供审计、重放和后续数据清洗使用。
-        return (
-            self.captures_dir
-            / "raw_interactions"
-            / f"{self.run_id}_raw_interactions.jsonl"
+        return self._resolver.path_for_identifier(
+            self.run_id,
+            field_name="run_id",
+            directory=("captures", "raw_interactions"),
+            suffix="_raw_interactions.jsonl",
         )
 
     @property
@@ -157,10 +190,11 @@ class RunWorkspace:
         """返回当前运行的监督微调候选样本文件路径。"""
 
         # SFT 候选与原始交互隔离，表明其已经经过候选样本构造步骤。
-        return (
-            self.captures_dir
-            / "sft_candidates"
-            / f"{self.run_id}_sft_candidates.jsonl"
+        return self._resolver.path_for_identifier(
+            self.run_id,
+            field_name="run_id",
+            directory=("captures", "sft_candidates"),
+            suffix="_sft_candidates.jsonl",
         )
 
     @property
@@ -168,10 +202,11 @@ class RunWorkspace:
         """返回当前运行的评测样本采集文件路径。"""
 
         # 评测样本独立存放，避免与训练候选混用造成数据泄漏。
-        return (
-            self.captures_dir
-            / "eval_samples"
-            / f"{self.run_id}_eval_samples.jsonl"
+        return self._resolver.path_for_identifier(
+            self.run_id,
+            field_name="run_id",
+            directory=("captures", "eval_samples"),
+            suffix="_eval_samples.jsonl",
         )
 
     def clean(self) -> None:
@@ -181,7 +216,11 @@ class RunWorkspace:
         不存在的文件会被直接跳过，因此该操作可以重复执行。
         """
 
-        # 第一步：枚举仅属于当前 run、能够通过重新执行生成的全部产物。
+        # 第一步：删除前重新验证身份，避免对象被非常规反射修改后越界。
+        SafeExternalIdentifier.validate(self.task_id, field_name="task_id")
+        SafeExternalIdentifier.validate(self.run_id, field_name="run_id")
+
+        # 第二步：枚举仅属于当前 run、能够通过重新执行生成的全部产物。
         run_artifacts = (
             self.trace_path,
             self.model_usage_path,
@@ -190,7 +229,7 @@ class RunWorkspace:
             self.eval_capture_path,
         )
 
-        # 第二步：逐个检查并删除，避免对不存在的路径调用 unlink。
+        # 第三步：每个属性都会重新 resolve 并执行 containment，再执行删除。
         for path in run_artifacts:
             if path.exists():
                 path.unlink()

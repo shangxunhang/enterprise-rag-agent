@@ -13,6 +13,11 @@ from agent.runtime.langgraph_workflow_engine import LangGraphWorkflowEngine
 from agent.runtime.shared_state_schema import SharedStateSchema
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from application.project_input_factory import ProjectInputFactory
+from apps.enterprise_document.schemas.gate_decision import (
+    ClaimRiskLevel,
+    DeliveryMode,
+    GateDecisionSchema,
+)
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeDraftSchema,
@@ -20,6 +25,7 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     SectionEvalSchema,
     TruncationCheckSchema,
 )
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
 from apps.enterprise_document.services.output_validation import detect_truncation
 from apps.enterprise_document.services.scheme_writer.advisory_service import (
     SectionAdvisoryService,
@@ -30,7 +36,11 @@ from apps.enterprise_document.services.scheme_writer.document_planning_service i
 from apps.enterprise_document.services.scheme_writer.prompt_service import (
     SectionPromptService,
 )
+from apps.enterprise_document.services.scheme_writer.writer_governance import (
+    WriterClaimAuditor,
+)
 from eval.agent.hard_gate import evaluate_scheme_draft
+from rag.schema.evidence_assessment_v2 import EvidenceStatus
 from schemas.agent import AgentResultSchema
 from schemas.citation import CitationBindingSchema
 from schemas.common import ErrorSchema
@@ -1341,17 +1351,52 @@ def test_hard_gate_accepts_partial_sections_and_returns_warnings() -> None:
     阅读提示:
         主要直接调用：SchemeSectionSchema, TruncationCheckSchema, SectionEvalSchema, SchemeDraftSchema, evaluate_scheme_draft。
     """
+    binding = WriterGateBindingSchema(
+        section_id="section_partial",
+        section_title="说明",
+        section_order=1,
+        document_id="document_partial",
+        run_id="run_partial",
+        gate_decision=GateDecisionSchema(
+            policy_id="stage1_partial_warning_v1",
+            evidence_status=EvidenceStatus.SUFFICIENT,
+            delivery_mode=DeliveryMode.GROUNDED,
+            claim_risk_level=ClaimRiskLevel.LOW,
+            allowed_claim_types=["general_method", "style_guidance"],
+            forbidden_claim_types=[],
+            required_qualifiers=[],
+            covered_topics=["说明"],
+            missing_topics=[],
+            human_review_required=False,
+            reason_codes=["stage1_partial_warning_fixture"],
+        ),
+        generation_allowed=True,
+        evidence_contract_sha256="a" * 64,
+        prompt_evidence_contract_sha256="b" * 64,
+    )
+    content = "本章节采用分阶段实施方法，并保留轻微语义警告。"
+    audit = WriterClaimAuditor().audit(content, binding=binding)
     section = SchemeSectionSchema(
         section_id="section_partial",
         section_title="说明",
         section_order=1,
-        content="正文完整，但存在轻微语义警告。",
+        content=content,
         status=ExecutionStatus.PARTIAL_SUCCESS,
         truncation=TruncationCheckSchema(truncated=False),
         eval_result=SectionEvalSchema(
             passed=True,
             warnings=["semantic:section_scope_drift"],
         ),
+        extra={
+            "writer_gate_binding": binding.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "writer_execution_status": binding.execution_status.value,
+            "claim_audit": audit.model_dump(mode="json", exclude_none=True),
+            "required_qualifiers_applied": [],
+            "formal_deliverable_eligible": audit.passed,
+            "need_human_review": False,
+        },
     )
     draft = SchemeDraftSchema(
         draft_id="draft_partial",

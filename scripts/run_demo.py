@@ -43,6 +43,7 @@ from mainline_runtime import (
     resolve_project_path,
 )
 from rag.offline.resolver import ActiveIndexResolver
+from schemas.rag import RetrievalAccessScopeSchema
 
 RUN_DEMO_VERSION = f"{MAINLINE_RUNTIME_VERSION}+e2e-console-v5"
 DEFAULT_USER_INPUT = "根据资料生成企业级 RAG-Agent 系统建设方案"
@@ -275,7 +276,10 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
             f"本地LLM目录不存在：{settings.local_qwen_model_path}"
         )
 
-    pointer_path = settings.project_root / "data/processed/indexes/active_index.json"
+    rag_runtime_root = Path(
+        os.getenv("RAG_PROJECT_ROOT", str(settings.project_root))
+    ).expanduser().resolve()
+    pointer_path = rag_runtime_root / "data/processed/indexes/active_index.json"
     index_info = ActiveIndexResolver(
         verify_manifest_hash=True,
         verify_artifacts=True,
@@ -299,6 +303,7 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
         "model_path": str(settings.local_qwen_model_path),
         "model_device": settings.local_qwen_device,
         **_model_routing_snapshot(settings),
+        "rag_project_root": str(rag_runtime_root),
         "active_index_version": index_info["index_version"],
         "active_index_backend": index_info["backend"],
         "active_index_collection": index_info["collection_name"],
@@ -867,6 +872,7 @@ def run_demo(
     enable_agent_self_rag: Optional[bool] = None,
     project_input: Optional[Dict[str, Any]] = None,
     allow_demo_defaults: bool = True,
+    retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
 ) -> Dict[str, Any]:
     """Run the demo adapter while delegating execution to the shared mainline."""
 
@@ -882,6 +888,7 @@ def run_demo(
         enable_agent_self_rag=enable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=allow_demo_defaults,
+        retrieval_access_scope=retrieval_access_scope,
     )
     summary["experiment_seed"] = experiment_seed
     summary["experiment_seed_application"] = seed_application
@@ -945,6 +952,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--rag-project-root",
+        type=str,
+        default=None,
+        help=(
+            "Optional online RAG runtime root containing "
+            "data/processed/indexes/active_index.json. Code and policy files "
+            "remain resolved from the repository."
+        ),
+    )
+    parser.add_argument(
         "--project-input-file",
         type=str,
         default=None,
@@ -952,6 +969,15 @@ def main() -> None:
             "Optional JSON file containing a complete ProjectInput. "
             "When omitted, the CLI builds a minimal validated ProjectInput "
             "from the console question."
+        ),
+    )
+    parser.add_argument(
+        "--authorized-kb-id",
+        action="append",
+        default=[],
+        help=(
+            "Trusted KB identifier authorized for this run. Repeat the option "
+            "for multiple KBs. Required by formal real-RAG runs."
         ),
     )
     parser.add_argument(
@@ -976,10 +1002,35 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    #接收用户输入
-    user_input = _resolve_console_question(args.user_input)
+
+    project_input = None
+    if args.project_input_file:
+        project_input_path = Path(args.project_input_file).expanduser().resolve()
+        if not project_input_path.is_file():
+            raise FileNotFoundError(
+                f"ProjectInput file not found: {project_input_path}"
+            )
+        with project_input_path.open("r", encoding="utf-8") as file:
+            project_input = json.load(file)
+        if not isinstance(project_input, dict):
+            raise ValueError(
+                "ProjectInput file must contain one JSON object at the top level."
+            )
+
+    canonical_file_query = str(
+        (project_input or {}).get("user_query") or ""
+    ).strip()
+    # Explicit ProjectInput is the canonical source of the formal run query.
+    # This avoids terminal encoding/transcription drift at the CLI boundary.
+    user_input = _resolve_console_question(
+        args.user_input if args.user_input is not None else canonical_file_query
+    )
     # 创建运行时配置
     _configure_runtime(fake_runtime=args.fake_runtime)
+    if args.rag_project_root:
+        os.environ["RAG_PROJECT_ROOT"] = str(
+            Path(args.rag_project_root).expanduser().resolve()
+        )
 
     # 接下用户自己上传的rag配置
     if args.rag_static_spec:
@@ -1011,21 +1062,13 @@ def main() -> None:
     print("\nRuntime preflight:")
     print(json.dumps(runtime_preflight, ensure_ascii=False, indent=2))
 
-    project_input = None
-
-    # 读取结构化项目输入
-    if args.project_input_file:
-        project_input_path = Path(args.project_input_file).expanduser().resolve()
-        if not project_input_path.is_file():
-            raise FileNotFoundError(
-                f"ProjectInput file not found: {project_input_path}"
-            )
-        with project_input_path.open("r", encoding="utf-8") as file:
-            project_input = json.load(file)
-        if not isinstance(project_input, dict):
-            raise ValueError(
-                "ProjectInput file must contain one JSON object at the top level."
-            )
+    retrieval_access_scope = None
+    if args.authorized_kb_id:
+        tenant_id = str((project_input or {}).get("tenant_id") or "default")
+        retrieval_access_scope = RetrievalAccessScopeSchema(
+            tenant_id=tenant_id,
+            authorized_kb_ids=list(dict.fromkeys(args.authorized_kb_id)),
+        )
 
     # 调用run_demo函数并返回结果
     summary = run_demo(
@@ -1037,6 +1080,7 @@ def main() -> None:
         enable_agent_self_rag=not args.disable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=project_input is None,
+        retrieval_access_scope=retrieval_access_scope,
     )
     # 生成主链的草稿
     generated_draft = summary.get("generated_draft") or {}

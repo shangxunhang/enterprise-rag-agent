@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from core.persistence.safe_paths import SafeExternalIdentifier, SafePathResolver
+
 from apps.enterprise_document.agents.agent_rag_v1 import (
     PlannerAgent,
     ResearchAgent,
@@ -291,12 +293,16 @@ class RuntimeFactory:
     ) -> RuntimeStoragePaths:
         assert project_input.task_id is not None
         assert project_input.run_id is not None
-        run_root = (
-            Path(project_input.output_dir).resolve()
-            / "_runtime"
-            / project_input.task_id
-            / project_input.run_id
+        SafeExternalIdentifier.validate(
+            project_input.task_id,
+            field_name="task_id",
         )
+        SafeExternalIdentifier.validate(
+            project_input.run_id,
+            field_name="run_id",
+        )
+        resolver = SafePathResolver(Path(project_input.output_dir) / "_runtime")
+        run_root = resolver.resolve(project_input.task_id, project_input.run_id)
         run_root.mkdir(parents=True, exist_ok=True)
         return RuntimeStoragePaths(
             run_root=run_root,

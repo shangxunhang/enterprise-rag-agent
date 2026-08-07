@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
@@ -39,7 +41,79 @@ DEFAULT_STATUS_MAX_LENGTH = 64
 DEFAULT_MODEL_MAX_LENGTH = 1024
 DEFAULT_VERSION_MAX_LENGTH = 256
 DEFAULT_INDEX_NAME_MAX_LENGTH = 512
-DEFAULT_EXTRA_JSON_MAX_LENGTH = 16384
+DEFAULT_EXTRA_JSON_MAX_LENGTH = 65535
+
+
+def ensure_milvus_lite_windows_manifest_replace_compatibility() -> bool:
+    """Patch one upstream Windows-only atomic-replace incompatibility.
+
+    The installed Milvus Lite Manifest implementation uses ``os.rename`` for
+    the final commit point.  POSIX replaces an existing target, while Windows
+    raises WinError 183.  The method already writes/fsyncs a temporary file and
+    copies the previous manifest; replacing only the commit primitive with
+    ``os.replace`` preserves that contract and makes it cross-platform.
+    """
+
+    if os.name != "nt":
+        return False
+    import milvus_lite.storage.manifest as manifest_module
+
+    manifest_class = manifest_module.Manifest
+    if getattr(manifest_class, "_rag_windows_replace_patch", False):
+        return True
+
+    def save(self: Any) -> None:
+        os.makedirs(self._data_dir, exist_ok=True)
+        new_version = self._version + 1
+        payload = self._to_payload()
+        payload["version"] = new_version
+        target_path = os.path.join(
+            self._data_dir, manifest_module.MANIFEST_FILENAME
+        )
+        prev_path = os.path.join(
+            self._data_dir, manifest_module.MANIFEST_PREV_FILENAME
+        )
+        tmp_path = os.path.join(
+            self._data_dir, manifest_module.MANIFEST_TMP_FILENAME
+        )
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    payload,
+                    handle,
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.path.exists(target_path):
+                try:
+                    shutil.copy2(target_path, prev_path)
+                except OSError as exc:
+                    manifest_module.logger.warning(
+                        "manifest: failed to create .prev backup: %s", exc
+                    )
+            os.replace(tmp_path, target_path)
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+        self._version = new_version
+        try:
+            directory_fd = os.open(self._data_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+
+    manifest_class.save = save
+    manifest_class._rag_windows_replace_patch = True
+    return True
 
 
 def _safe_str(
@@ -103,10 +177,12 @@ def _extra_json(extra: Any) -> str:
         separators=(",", ":"),
         default=str,
     )
-    return _safe_str(
-        text,
-        max_length=DEFAULT_EXTRA_JSON_MAX_LENGTH,
-    )
+    if len(text) > DEFAULT_EXTRA_JSON_MAX_LENGTH:
+        raise ValueError(
+            "Milvus extra_json exceeds canonical metadata limit; "
+            f"actual={len(text)} limit={DEFAULT_EXTRA_JSON_MAX_LENGTH}"
+        )
+    return text
 
 
 def build_child_chunk_collection_schema(
@@ -172,6 +248,31 @@ def build_child_chunk_collection_schema(
         field_name="kb_id",
         datatype=DataType.VARCHAR,
         max_length=DEFAULT_KB_ID_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="document_type",
+        datatype=DataType.VARCHAR,
+        max_length=DEFAULT_VERSION_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="evidence_role",
+        datatype=DataType.VARCHAR,
+        max_length=DEFAULT_VERSION_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="project_relation",
+        datatype=DataType.VARCHAR,
+        max_length=DEFAULT_VERSION_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="project_id",
+        datatype=DataType.VARCHAR,
+        max_length=DEFAULT_ID_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="authority_level",
+        datatype=DataType.VARCHAR,
+        max_length=DEFAULT_VERSION_MAX_LENGTH,
     )
 
     # 第四步：子块正文和文档展示字段用于返回匹配片段与来源信息。
@@ -392,6 +493,26 @@ def build_milvus_child_chunk_record(
         page_num,
     )
 
+    child_extra = child_chunk.get("extra")
+    if not isinstance(child_extra, dict):
+        raise ValueError(f"child extra must be an object: {child_chunk_id}")
+    raw_profile = child_extra.get("document_profile")
+    raw_chunking = child_extra.get("type_aware_chunking")
+    lineage_present = isinstance(raw_profile, dict) or isinstance(
+        raw_chunking, dict
+    )
+    if lineage_present and not (
+        isinstance(raw_profile, dict) and isinstance(raw_chunking, dict)
+    ):
+        raise ValueError(
+            "Milvus lineage must contain both document_profile and "
+            "type_aware_chunking; "
+            f"child_chunk_id={child_chunk_id!r}"
+        )
+    profile = raw_profile if isinstance(raw_profile, dict) else {}
+    if profile and str(profile.get("document_id") or "") != doc_id:
+        raise ValueError("Milvus doc_id conflicts with canonical document_profile")
+
     # 第三步：构造与集合 Schema 完全一致的扁平物理记录。
     return {
         "chunk_id": child_chunk_id,
@@ -412,6 +533,26 @@ def build_milvus_child_chunk_record(
         "kb_id": _safe_str(
             child_chunk.get("kb_id"),
             max_length=DEFAULT_KB_ID_MAX_LENGTH,
+        ),
+        "document_type": _safe_str(
+            profile.get("document_type"),
+            max_length=DEFAULT_VERSION_MAX_LENGTH,
+        ),
+        "evidence_role": _safe_str(
+            profile.get("evidence_role"),
+            max_length=DEFAULT_VERSION_MAX_LENGTH,
+        ),
+        "project_relation": _safe_str(
+            profile.get("project_relation"),
+            max_length=DEFAULT_VERSION_MAX_LENGTH,
+        ),
+        "project_id": _safe_str(
+            profile.get("project_id"),
+            max_length=DEFAULT_ID_MAX_LENGTH,
+        ),
+        "authority_level": _safe_str(
+            (profile.get("authority") or {}).get("level"),
+            max_length=DEFAULT_VERSION_MAX_LENGTH,
         ),
         "text": _safe_str(
             child_chunk.get("text"),
@@ -493,7 +634,7 @@ def build_milvus_child_chunk_record(
             index_version,
             max_length=DEFAULT_VERSION_MAX_LENGTH,
         ),
-        "extra_json": _extra_json(child_chunk.get("extra")),
+        "extra_json": _extra_json(child_extra),
         "vector": _safe_float_list(vector, embedding_dim),
     }
 

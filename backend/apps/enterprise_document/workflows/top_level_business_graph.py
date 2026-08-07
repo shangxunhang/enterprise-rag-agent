@@ -51,6 +51,10 @@ from apps.enterprise_document.services.scheme_writer.stage_service import (
 from contracts.observability import TraceSink
 from contracts.workflow_engine import WorkflowEngineCapabilities
 from core.retry_policy import RetryDecisionPolicy, classify_failure
+from core.runtime.recovery import (
+    DurableRecoveryContext,
+    activate_durable_recovery,
+)
 from core.runtime.side_effects import (
     InMemorySideEffectCommitStore,
     SideEffectCommitStore,
@@ -352,7 +356,14 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
         ),
         "persist_deliverable": BusinessNodeContract(
             node_name="persist_deliverable",
-            read_keys=("assembly", "hard_gate", "output_status"),
+            read_keys=(
+                "assembly",
+                "hard_gate",
+                "output_status",
+                "generation_report",
+                "version_decision",
+                "document_version",
+            ),
             graph_write_paths=(
                 "contexts.scheme_writer_input",
                 "contexts.scheme_writer_output",
@@ -367,6 +378,7 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
                 "generated_draft",
                 "rejected_artifact",
                 "deliverable_final_result",
+                "release_publication",
                 "capture_completed",
             ),
         ),
@@ -1362,27 +1374,32 @@ class EnterpriseDocumentWorkflowEngine:
     ) -> SchemeGenerationGraphPayloadSchema:
         raw = dict(response) if isinstance(response, dict) else {}
         raw_metadata = dict(raw.get("metadata") or {})
-        expected_snapshot = self._active_input_snapshot(payload)
-        provided_snapshot = str(
-            raw.get("input_snapshot_version")
-            or raw_metadata.get("input_snapshot_version")
-            or ""
-        ).strip()
-        if provided_snapshot and provided_snapshot != expected_snapshot:
-            raise ValueError("human review decision snapshot is stale")
-        provided_task_id = str(raw.get("task_id") or "").strip()
-        if provided_task_id and provided_task_id != graph_state.task_id:
-            raise ValueError("human review task identity mismatch")
-        provided_run_id = str(raw.get("run_id") or "").strip()
-        if provided_run_id and provided_run_id != graph_state.run_id:
-            raise ValueError("human review run identity mismatch")
         raw_decision = str(
             raw.get("decision")
             or ("approved" if raw.get("approved") is True else "")
             or ("rejected" if raw.get("approved") is False else "")
         ).strip().lower()
-        approved = raw_decision in {"approve", "approved", "accept", "accepted"}
         cancelled = raw_decision in {"cancel", "cancelled", "canceled"}
+        expected_snapshot = self._active_input_snapshot(payload)
+        if not cancelled:
+            provided_snapshot = raw.get("input_snapshot_version")
+            if provided_snapshot is None:
+                provided_snapshot = raw_metadata.get("input_snapshot_version")
+            if not isinstance(provided_snapshot, str) or not provided_snapshot:
+                raise ValueError("human review input_snapshot_version is required")
+            if provided_snapshot != expected_snapshot:
+                raise ValueError("human review decision snapshot is stale")
+            provided_task_id = raw.get("task_id")
+            if not isinstance(provided_task_id, str) or not provided_task_id:
+                raise ValueError("human review task_id is required")
+            if provided_task_id != graph_state.task_id:
+                raise ValueError("human review task identity mismatch")
+            provided_run_id = raw.get("run_id")
+            if not isinstance(provided_run_id, str) or not provided_run_id:
+                raise ValueError("human review run_id is required")
+            if provided_run_id != graph_state.run_id:
+                raise ValueError("human review run identity mismatch")
+        approved = raw_decision in {"approve", "approved", "accept", "accepted"}
         decision = (
             "approved"
             if approved
@@ -1947,28 +1964,164 @@ class EnterpriseDocumentWorkflowEngine:
             workflow,
             run_id=graph_state.run_id,
         )
+        if persisted is None:
+            raise RuntimeError("durable checkpoint does not contain business state")
         if persisted is not None:
             raw_metadata = dict(resume_value.get("metadata") or {})
-            provided_snapshot = str(
-                resume_value.get("input_snapshot_version")
-                or raw_metadata.get("input_snapshot_version")
-                or ""
-            ).strip()
+            cancelled = str(resume_value.get("decision") or "").strip().lower() in {
+                "cancel",
+                "cancelled",
+                "canceled",
+            }
             expected_snapshot = self._active_input_snapshot(persisted)
-            if provided_snapshot and provided_snapshot != expected_snapshot:
-                raise ValueError("human review decision snapshot is stale")
-            provided_task_id = str(resume_value.get("task_id") or "").strip()
-            if provided_task_id and provided_task_id != persisted.task_id:
-                raise ValueError("human review task identity mismatch")
-            provided_run_id = str(resume_value.get("run_id") or "").strip()
-            if provided_run_id and provided_run_id != persisted.run_id:
-                raise ValueError("human review run identity mismatch")
+            if not cancelled:
+                provided_snapshot = resume_value.get("input_snapshot_version")
+                if provided_snapshot is None:
+                    provided_snapshot = raw_metadata.get("input_snapshot_version")
+                if not isinstance(provided_snapshot, str) or not provided_snapshot:
+                    raise ValueError("human review input_snapshot_version is required")
+                if provided_snapshot != expected_snapshot:
+                    raise ValueError("human review decision snapshot is stale")
+                provided_task_id = resume_value.get("task_id")
+                if not isinstance(provided_task_id, str) or not provided_task_id:
+                    raise ValueError("human review task_id is required")
+                if provided_task_id != persisted.task_id:
+                    raise ValueError("human review task identity mismatch")
+                provided_run_id = resume_value.get("run_id")
+                if not isinstance(provided_run_id, str) or not provided_run_id:
+                    raise ValueError("human review run_id is required")
+                if provided_run_id != persisted.run_id:
+                    raise ValueError("human review run identity mismatch")
 
         initial_revision = graph_state.graph_revision
         final_runtime = self.build_graph(workflow).invoke(
             Command(resume=dict(resume_value)),
             config=self._invoke_config(workflow, run_id=graph_state.run_id),
         )
+        return self._result_from_runtime(
+            workflow=workflow,
+            graph_state=graph_state,
+            final_runtime=final_runtime,
+            initial_revision=initial_revision,
+            resumed=True,
+        )
+
+    def recovery_plan(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        *,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Locate a durable, non-human checkpoint from which recovery may branch."""
+
+        inspection = self.inspect(workflow, run_id=run_id)
+        if inspection.get("interrupts"):
+            raise ValueError(
+                "human review is waiting; inspect the run and use resume_run"
+            )
+        if not inspection.get("checkpoint_config") or not inspection.get(
+            "graph_state"
+        ):
+            raise ValueError("durable checkpoint is required for recovery")
+        if inspection.get("next_nodes"):
+            return {
+                "checkpoint_config": self._recovery_checkpoint_config(
+                    workflow,
+                    inspection["checkpoint_config"],
+                    run_id=run_id,
+                ),
+                "reason": "unfinished_top_level_checkpoint",
+                "failed_business_node": None,
+            }
+
+        persisted = self._latest_checkpoint_payload(workflow, run_id=run_id)
+        if persisted is None:
+            raise ValueError("durable business checkpoint is required for recovery")
+        failed_node = str(persisted.failed_business_node or "").strip()
+        if failed_node not in _SUCCESS_SEQUENCE:
+            raise ValueError("checkpoint does not prove a recoverable interruption")
+        failed_index = _SUCCESS_SEQUENCE.index(failed_node)
+        if failed_index == 0:
+            raise ValueError("checkpoint has no safe recovery predecessor")
+        predecessor = _SUCCESS_SEQUENCE[failed_index - 1]
+
+        for checkpoint_tuple in self.checkpoint_history(workflow, run_id=run_id):
+            checkpoint = getattr(checkpoint_tuple, "checkpoint", {})
+            values = (
+                checkpoint.get("channel_values", {})
+                if isinstance(checkpoint, dict)
+                else {}
+            )
+            if str(values.get("current_business_node") or "") != predecessor:
+                continue
+            if values.get("task_id") != persisted.task_id or values.get(
+                "run_id"
+            ) != persisted.run_id:
+                raise ValueError("recovery checkpoint identity mismatch")
+            config = getattr(checkpoint_tuple, "config", None)
+            if not isinstance(config, dict):
+                raise ValueError("recovery checkpoint config is unavailable")
+            return {
+                "checkpoint_config": self._recovery_checkpoint_config(
+                    workflow,
+                    config,
+                    run_id=run_id,
+                ),
+                "reason": "terminal_failure_checkpoint_branch",
+                "failed_business_node": failed_node,
+                "predecessor": predecessor,
+            }
+        raise ValueError("recoverable predecessor checkpoint was not found")
+
+    def _recovery_checkpoint_config(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        config: dict[str, Any],
+        *,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Restore the logical namespace carrier for an exact checkpoint."""
+
+        base = self._invoke_config(workflow, run_id=run_id)
+        supplied = dict(config.get("configurable") or {})
+        checkpoint_id = supplied.get("checkpoint_id")
+        if not checkpoint_id:
+            raise ValueError("recovery checkpoint id is unavailable")
+        return {
+            **base,
+            "configurable": {
+                **dict(base["configurable"]),
+                # LangGraph treats a non-empty top-level checkpoint_ns as a
+                # subgraph selector.  The saver adapter restores the logical
+                # namespace from workflow_namespace at its own boundary.
+                "checkpoint_ns": "",
+                "checkpoint_id": checkpoint_id,
+            },
+        }
+
+    def recover(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        recovery_attempt: int,
+        recovery_reason: str,
+        recovery_policy: str,
+    ) -> WorkflowEngineResultSchema:
+        """Continue a durable checkpoint without replaying completed Sections."""
+
+        plan = self.recovery_plan(workflow, run_id=graph_state.run_id)
+        initial_revision = graph_state.graph_revision
+        context = DurableRecoveryContext(
+            attempt_number=recovery_attempt,
+            reason=recovery_reason,
+            policy=recovery_policy,
+        )
+        with activate_durable_recovery(context):
+            final_runtime = self.build_graph(workflow).invoke(
+                None,
+                config=plan["checkpoint_config"],
+            )
         return self._result_from_runtime(
             workflow=workflow,
             graph_state=graph_state,

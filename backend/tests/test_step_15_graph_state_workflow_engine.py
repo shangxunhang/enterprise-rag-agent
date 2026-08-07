@@ -1089,8 +1089,8 @@ def test_timeout_requests_cooperative_cancel_and_never_retries_live_worker() -> 
     assert engine.wait_for_idle(timeout_seconds=0.5)
 
 
-def test_resource_close_can_be_deferred_until_timed_out_worker_exits() -> None:
-    """Shutdown callbacks cannot race a non-cooperative in-flight dependency call."""
+def test_resource_close_waits_for_timed_out_worker_and_has_closed_postcondition() -> None:
+    """Shutdown waits boundedly and returns only after dependency ownership closes."""
 
     import threading
 
@@ -1153,11 +1153,9 @@ def test_resource_close_can_be_deferred_until_timed_out_worker_exits() -> None:
     assert worker_started.is_set()
     assert engine.active_worker_count == 1
     supervisor.close()
-    assert not resource_closed.is_set()
-
-    release_worker.set()
-    assert engine.wait_for_idle(timeout_seconds=0.5)
+    assert engine.active_worker_count == 0
     assert resource_closed.is_set()
+    supervisor.close()
 
 
 # 阅读注释（函数）：处理 测试 business failure can commit only declared partial outputs 相关逻辑。

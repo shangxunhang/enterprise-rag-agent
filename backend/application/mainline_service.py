@@ -7,12 +7,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from application.existing_run_authorization import (
+    ExistingRunAuthorizationError,
+    ExistingRunAuthorizer,
+)
 from application.run_workspace import RunWorkspace
 from application.task_factory import TaskFactory
 from apps.enterprise_document.schemas.project_input_schema import (
@@ -34,6 +38,19 @@ from task.task_manager import JsonlTaskManager
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _AuthorizedExistingRuntime:
+    workspace: RunWorkspace
+    task_manager: JsonlTaskManager
+    task_state: Any
+    workflow: Any
+    supervisor: Any
+    settings: AppSettings
+    options: RuntimeOptions
+    inspection: Dict[str, Any]
+    task: TaskSchema
 
 
 class MainlineApplicationService:
@@ -174,6 +191,7 @@ class MainlineApplicationService:
             retrieval_access_scope=retrieval_access_scope,
         )
         # 阶段 7：正式进入 Agent/Workflow 主链；无论成功、失败还是异常，都统一释放本次运行持有的资源。
+        primary_error: BaseException | None = None
         try:
             result = supervisor.run(task)
             usage_snapshot = getattr(supervisor, "model_usage_snapshot", None)
@@ -208,12 +226,19 @@ class MainlineApplicationService:
                 defer_until_idle(lambda: persist_model_usage(finalized=True))
             else:
                 persist_model_usage(finalized=True)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            supervisor.close()
+            self._close_supervisor(
+                supervisor,
+                primary_error=primary_error,
+            )
 
         generated_draft: Dict[str, Any] = {}
         rejected_artifact: Dict[str, Any] | None = None
         deliverable_final_result: Dict[str, Any] | None = None
+        release_publication: Dict[str, Any] | None = None
         scheme_writer_output: Dict[str, Any] = {}
         for sub_result in result.result.get("sub_agent_results", []):
             if sub_result.get("agent_name") in {
@@ -224,6 +249,13 @@ class MainlineApplicationService:
                 generated_draft = payload.get("generated_draft", {})
                 rejected_artifact = payload.get("rejected_artifact")
                 deliverable_final_result = payload.get("deliverable_final_result")
+                release_publication = payload.get("release_publication")
+                if release_publication is None and isinstance(
+                    deliverable_final_result, dict
+                ):
+                    release_publication = deliverable_final_result.get(
+                        "release_publication"
+                    )
                 scheme_writer_output = payload.get("scheme_writer_output", {})
                 break
 
@@ -241,6 +273,7 @@ class MainlineApplicationService:
             "generated_draft": generated_draft,
             "rejected_artifact": rejected_artifact,
             "deliverable_final_result": deliverable_final_result,
+            "release_publication": release_publication,
             "scheme_writer_output": scheme_writer_output,
             "model_usage": model_usage,
             "task_state": task_manager.get_task(task_id).model_dump(),
@@ -252,6 +285,24 @@ class MainlineApplicationService:
             },
             "supervisor_result": result.model_dump(mode="json"),
         }
+
+    @staticmethod
+    def _close_supervisor(
+        supervisor: Any,
+        *,
+        primary_error: BaseException | None,
+    ) -> None:
+        """Preserve a business error while surfacing standalone close failures."""
+
+        try:
+            supervisor.close()
+        except Exception:
+            if primary_error is None:
+                raise
+            logger.warning(
+                "supervisor shutdown failed after a primary runtime error",
+                exc_info=True,
+            )
 
     @staticmethod
     def _close_runtime_stream(
@@ -273,9 +324,16 @@ class MainlineApplicationService:
                     "runtime stream close failed before supervisor shutdown",
                     exc_info=True,
                 )
-        supervisor.close()
+        supervisor_error: Exception | None = None
+        try:
+            supervisor.close()
+        except Exception as exc:
+            supervisor_error = exc
+            logger.warning("supervisor shutdown failed", exc_info=True)
         if close_error is not None and primary_error is None:
             raise close_error
+        if supervisor_error is not None and primary_error is None:
+            raise supervisor_error
 
     def stream_run(
         self,
@@ -445,20 +503,10 @@ class MainlineApplicationService:
         allow_demo_defaults: bool,
         retrieval_access_scope: RetrievalAccessScopeSchema | None,
     ):
-        """Reassemble services for an existing run without creating a task."""
+        """Authorize metadata/checkpoint before exposing one existing runtime."""
 
         settings = settings or get_settings()
-        if (
-            retrieval_access_scope is not None
-            and not isinstance(
-                retrieval_access_scope,
-                RetrievalAccessScopeSchema,
-            )
-        ):
-            raise TypeError(
-                "retrieval_access_scope must be a trusted "
-                "RetrievalAccessScopeSchema instance"
-            )
+        ExistingRunAuthorizer.validate_trusted_scope(retrieval_access_scope)
         workspace = RunWorkspace(
             output_root=(
                 Path(output_root) if output_root is not None else settings.data_root
@@ -467,11 +515,37 @@ class MainlineApplicationService:
             run_id=run_id,
         )
         task_manager = JsonlTaskManager(output_dir=workspace.tasks_dir)
-        task_state = task_manager.get_task(task_id)
-        if task_state.run_id != run_id:
-            raise ValueError(
-                f"run_id mismatch: task={task_state.run_id}, requested={run_id}"
+        try:
+            authorization_metadata = task_manager.get_authorization_metadata(
+                task_id
             )
+        except (KeyError, OSError, ValueError) as exc:
+            raise ExistingRunAuthorizationError(
+                "existing run is not authorized"
+            ) from exc
+        authenticated_tenant = ExistingRunAuthorizer.authorize_task_metadata(
+            authorization_metadata,
+            requested_task_id=task_id,
+            requested_run_id=run_id,
+            retrieval_access_scope=retrieval_access_scope,
+            allow_demo_defaults=allow_demo_defaults,
+        )
+
+        # Full Task JSONL is opened only after the immutable identity tenant is
+        # authorized, then its identity must exactly match that projection.
+        try:
+            task_state = task_manager.get_task(task_id)
+            ExistingRunAuthorizer.authorize_task_state_identity(
+                task_state=task_state,
+                identity=authorization_metadata,
+                authenticated_tenant=authenticated_tenant,
+            )
+        except ExistingRunAuthorizationError:
+            raise
+        except (KeyError, OSError, ValueError) as exc:
+            raise ExistingRunAuthorizationError(
+                "existing run is not authorized"
+            ) from exc
         workflow = build_scheme_generation_workflow(
             created_at=task_state.created_at
         )
@@ -484,15 +558,6 @@ class MainlineApplicationService:
             project_root,
             enable_agent_self_rag=enable_agent_self_rag,
         )
-        if (
-            options.use_real_rag
-            and not allow_demo_defaults
-            and retrieval_access_scope is None
-        ):
-            raise ValueError(
-                "trusted retrieval_access_scope is required for production "
-                "secure retrieval"
-            )
         supervisor = self.supervisor_factory.build(
             workflow=workflow,
             runs_dir=workspace.runs_dir,
@@ -503,35 +568,57 @@ class MainlineApplicationService:
             allow_legacy_unscoped_rag=allow_demo_defaults,
             retrieval_access_scope=retrieval_access_scope,
         )
-        supervisor.set_prior_model_usage(workspace.read_model_usage())
-        return (
-            workspace,
-            task_manager,
-            task_state,
-            workflow,
-            supervisor,
-            settings,
-            options,
+        try:
+            inspection = supervisor.inspect(
+                task_id=task_id,
+                run_id=run_id,
+                task_type=task_state.task_type,
+            )
+            task = ExistingRunAuthorizer.authorize_checkpoint(
+                inspection=inspection,
+                metadata=authorization_metadata,
+                authenticated_tenant=authenticated_tenant,
+            )
+            # Model usage is sensitive run data and is loaded only after every
+            # tenant and immutable-identity check succeeds.
+            supervisor.set_prior_model_usage(workspace.read_model_usage())
+        except BaseException as exc:
+            self._close_supervisor(supervisor, primary_error=exc)
+            raise
+        return _AuthorizedExistingRuntime(
+            workspace=workspace,
+            task_manager=task_manager,
+            task_state=task_state,
+            workflow=workflow,
+            supervisor=supervisor,
+            settings=settings,
+            options=options,
+            inspection=inspection,
+            task=task,
         )
 
     @staticmethod
-    def _task_from_inspection(inspection: Dict[str, Any]) -> TaskSchema:
-        graph_state = inspection.get("graph_state") or {}
-        raw_task = graph_state.get("task")
-        if not isinstance(raw_task, dict):
-            raise RuntimeError("durable checkpoint does not contain the original task")
-        # Checkpoints are a JSON boundary.  Validate through Pydantic's JSON
-        # path so strict enums remain strict while their wire values are
-        # decoded to the canonical Python enum instances.
-        task = TaskSchema.model_validate_json(
-            json.dumps(raw_task, ensure_ascii=False)
-        )
-        if (
-            task.task_id != inspection.get("task_id")
-            or task.run_id != inspection.get("run_id")
-        ):
-            raise ValueError("durable task identity does not match inspection")
-        return task
+    def _input_snapshot_version(inspection: Dict[str, Any]) -> str | None:
+        """Extract the current human-review snapshot from a durable interrupt."""
+
+        for interrupt_item in inspection.get("interrupts") or []:
+            value = (
+                interrupt_item.get("value")
+                if isinstance(interrupt_item, dict)
+                else None
+            )
+            if not isinstance(value, dict):
+                continue
+            metadata = value.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            snapshot = str(
+                value.get("input_snapshot_version")
+                or metadata.get("input_snapshot_version")
+                or ""
+            ).strip()
+            if snapshot:
+                return snapshot
+        return None
 
     def inspect_run(
         self,
@@ -547,15 +634,7 @@ class MainlineApplicationService:
     ) -> Dict[str, Any]:
         """Inspect the original task/run checkpoint without creating a new run."""
 
-        (
-            workspace,
-            _task_manager,
-            task_state,
-            _workflow,
-            supervisor,
-            _settings,
-            _options,
-        ) = self._build_existing_runtime(
+        runtime = self._build_existing_runtime(
             project_root=project_root,
             task_id=task_id,
             run_id=run_id,
@@ -565,18 +644,23 @@ class MainlineApplicationService:
             allow_demo_defaults=allow_demo_defaults,
             retrieval_access_scope=retrieval_access_scope,
         )
+        primary_error: BaseException | None = None
         try:
-            inspection = supervisor.inspect(
-                task_id=task_id,
-                run_id=run_id,
-                task_type=task_state.task_type,
-            )
             return {
-                **inspection,
-                "paths": workspace.paths(),
+                **runtime.inspection,
+                "input_snapshot_version": self._input_snapshot_version(
+                    runtime.inspection
+                ),
+                "paths": runtime.workspace.paths(),
             }
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            supervisor.close()
+            self._close_supervisor(
+                runtime.supervisor,
+                primary_error=primary_error,
+            )
 
     def _continuation_summary(
         self,
@@ -595,6 +679,7 @@ class MainlineApplicationService:
             "deliverable_final_result": result.result.get(
                 "deliverable_final_result"
             ),
+            "release_publication": result.result.get("release_publication"),
             "model_usage": result.result.get("model_usage", {}),
             "task_state": task_manager.get_task(result.task_id).model_dump(
                 mode="json"
@@ -609,6 +694,7 @@ class MainlineApplicationService:
         task_id: str,
         run_id: str,
         decision: str,
+        input_snapshot_version: str | None,
         feedback: str | None,
         reviewer_id: str | None,
         cancel: bool,
@@ -621,15 +707,7 @@ class MainlineApplicationService:
     ) -> Iterable[WorkflowStreamEventSchema]:
         """Rebuild, stream and close one existing durable runtime."""
 
-        (
-            workspace,
-            task_manager,
-            task_state,
-            _workflow,
-            supervisor,
-            _settings,
-            _options,
-        ) = self._build_existing_runtime(
+        runtime = self._build_existing_runtime(
             project_root=project_root,
             task_id=task_id,
             run_id=run_id,
@@ -642,22 +720,17 @@ class MainlineApplicationService:
         stream = None
         primary_error: BaseException | None = None
         try:
-            inspection = supervisor.inspect(
-                task_id=task_id,
-                run_id=run_id,
-                task_type=task_state.task_type,
-            )
-            task = self._task_from_inspection(inspection)
             stream = (
-                supervisor.stream_cancel(
-                    task,
+                runtime.supervisor.stream_cancel(
+                    runtime.task,
                     reason=feedback or "workflow_cancelled",
                     runnable_config=runnable_config,
                 )
                 if cancel
-                else supervisor.stream_resume(
-                    task,
+                else runtime.supervisor.stream_resume(
+                    runtime.task,
                     decision=decision,
+                    input_snapshot_version=input_snapshot_version,
                     feedback=feedback,
                     reviewer_id=reviewer_id,
                     runnable_config=runnable_config,
@@ -669,8 +742,8 @@ class MainlineApplicationService:
                     yield stream_event
                     continue
                 result = AgentResultSchema.model_validate(raw_result)
-                model_usage = supervisor.model_usage_snapshot()
-                workspace.write_model_usage(
+                model_usage = runtime.supervisor.model_usage_snapshot()
+                runtime.workspace.write_model_usage(
                     {
                         "schema_version": "model_usage_v1",
                         "task_id": task_id,
@@ -681,8 +754,8 @@ class MainlineApplicationService:
                     }
                 )
                 summary = self._continuation_summary(
-                    workspace=workspace,
-                    task_manager=task_manager,
+                    workspace=runtime.workspace,
+                    task_manager=runtime.task_manager,
                     result=result,
                 )
                 yield stream_event.model_copy(
@@ -700,7 +773,7 @@ class MainlineApplicationService:
         finally:
             self._close_runtime_stream(
                 stream,
-                supervisor,
+                runtime.supervisor,
                 primary_error=primary_error,
             )
 
@@ -711,6 +784,7 @@ class MainlineApplicationService:
         task_id: str,
         run_id: str,
         decision: str,
+        input_snapshot_version: str,
         feedback: str | None = None,
         reviewer_id: str | None = None,
         output_root: str | Path | None = None,
@@ -727,6 +801,7 @@ class MainlineApplicationService:
             task_id=task_id,
             run_id=run_id,
             decision=decision,
+            input_snapshot_version=input_snapshot_version,
             feedback=feedback,
             reviewer_id=reviewer_id,
             cancel=False,
@@ -759,6 +834,7 @@ class MainlineApplicationService:
             task_id=task_id,
             run_id=run_id,
             decision="cancelled",
+            input_snapshot_version=None,
             feedback=reason,
             reviewer_id=None,
             cancel=True,
@@ -777,6 +853,7 @@ class MainlineApplicationService:
         task_id: str,
         run_id: str,
         decision: str,
+        input_snapshot_version: str,
         feedback: str | None = None,
         reviewer_id: str | None = None,
         output_root: str | Path | None = None,
@@ -787,15 +864,7 @@ class MainlineApplicationService:
     ) -> Dict[str, Any]:
         """Resume an existing paused task while preserving task/run identity."""
 
-        (
-            workspace,
-            task_manager,
-            task_state,
-            _workflow,
-            supervisor,
-            _settings,
-            _options,
-        ) = self._build_existing_runtime(
+        runtime = self._build_existing_runtime(
             project_root=project_root,
             task_id=task_id,
             run_id=run_id,
@@ -805,36 +874,38 @@ class MainlineApplicationService:
             allow_demo_defaults=allow_demo_defaults,
             retrieval_access_scope=retrieval_access_scope,
         )
+        primary_error: BaseException | None = None
         try:
-            inspection = supervisor.inspect(
-                task_id=task_id,
-                run_id=run_id,
-                task_type=task_state.task_type,
-            )
-            task = self._task_from_inspection(inspection)
-            result = supervisor.resume(
-                task,
+            result = runtime.supervisor.resume(
+                runtime.task,
                 decision=decision,
+                input_snapshot_version=input_snapshot_version,
                 feedback=feedback,
                 reviewer_id=reviewer_id,
             )
-            workspace.write_model_usage(
+            runtime.workspace.write_model_usage(
                 {
                     "schema_version": "model_usage_v1",
                     "task_id": task_id,
                     "run_id": run_id,
                     "created_at": self.clock.now_iso(),
                     "finalized": True,
-                    "usage": supervisor.model_usage_snapshot(),
+                    "usage": runtime.supervisor.model_usage_snapshot(),
                 }
             )
             return self._continuation_summary(
-                workspace=workspace,
-                task_manager=task_manager,
+                workspace=runtime.workspace,
+                task_manager=runtime.task_manager,
                 result=result,
             )
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            supervisor.close()
+            self._close_supervisor(
+                runtime.supervisor,
+                primary_error=primary_error,
+            )
 
     def cancel_run(
         self,
@@ -851,15 +922,7 @@ class MainlineApplicationService:
     ) -> Dict[str, Any]:
         """Cancel an existing paused task through its durable graph."""
 
-        (
-            workspace,
-            task_manager,
-            task_state,
-            _workflow,
-            supervisor,
-            _settings,
-            _options,
-        ) = self._build_existing_runtime(
+        runtime = self._build_existing_runtime(
             project_root=project_root,
             task_id=task_id,
             run_id=run_id,
@@ -869,18 +932,182 @@ class MainlineApplicationService:
             allow_demo_defaults=allow_demo_defaults,
             retrieval_access_scope=retrieval_access_scope,
         )
+        primary_error: BaseException | None = None
         try:
-            inspection = supervisor.inspect(
-                task_id=task_id,
-                run_id=run_id,
-                task_type=task_state.task_type,
-            )
-            task = self._task_from_inspection(inspection)
-            result = supervisor.cancel(task, reason=reason)
+            result = runtime.supervisor.cancel(runtime.task, reason=reason)
             return self._continuation_summary(
-                workspace=workspace,
-                task_manager=task_manager,
+                workspace=runtime.workspace,
+                task_manager=runtime.task_manager,
                 result=result,
             )
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            supervisor.close()
+            self._close_supervisor(
+                runtime.supervisor,
+                primary_error=primary_error,
+            )
+
+    def _recover_existing_run(
+        self,
+        *,
+        project_root: Path,
+        task_id: str,
+        run_id: str,
+        retry_only: bool,
+        recovery_reason: str,
+        expected_revision: int | None,
+        output_root: str | Path | None,
+        settings: AppSettings | None,
+        enable_agent_self_rag: bool | None,
+        allow_demo_defaults: bool,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None,
+    ) -> Dict[str, Any]:
+        """Authorize, CAS and continue one durable recovery attempt."""
+
+        runtime = self._build_existing_runtime(
+            project_root=project_root,
+            task_id=task_id,
+            run_id=run_id,
+            output_root=output_root,
+            settings=settings,
+            enable_agent_self_rag=enable_agent_self_rag,
+            allow_demo_defaults=allow_demo_defaults,
+            retrieval_access_scope=retrieval_access_scope,
+        )
+        primary_error: BaseException | None = None
+        try:
+            if (
+                runtime.inspection.get("interrupts")
+                or runtime.task_state.status.value == "paused"
+            ):
+                raise ValueError(
+                    "human review is waiting; inspect the run and use resume_run"
+                )
+            observed_revision = runtime.task_state.revision
+            if (
+                expected_revision is not None
+                and expected_revision != observed_revision
+            ):
+                raise ValueError(
+                    "task revision conflict: "
+                    f"expected={expected_revision} actual={observed_revision}"
+                )
+
+            # This read-only checkpoint plan must succeed before the append-only
+            # recovery event is committed.
+            runtime.supervisor.recovery_plan(runtime.task)
+            recovery_policy = (
+                "retryable_failed_checkpoint_v1"
+                if retry_only
+                else "durable_checkpoint_recovery_v1"
+            )
+            started = runtime.task_manager.mark_recovery_started(
+                runtime.task,
+                expected_revision=observed_revision,
+                recovery_reason=recovery_reason,
+                recovery_policy=recovery_policy,
+                max_recovery_count=runtime.settings.max_recovery_attempts,
+                retry_only=retry_only,
+            )
+            recovery_attempt = int(
+                started.metadata.get("recovery_attempt_count", 0)
+            )
+            result = runtime.supervisor.recover(
+                runtime.task,
+                recovery_attempt=recovery_attempt,
+                recovery_reason=recovery_reason,
+                recovery_policy=recovery_policy,
+            )
+            runtime.workspace.write_model_usage(
+                {
+                    "schema_version": "model_usage_v1",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "created_at": self.clock.now_iso(),
+                    "finalized": True,
+                    "usage": runtime.supervisor.model_usage_snapshot(),
+                }
+            )
+            summary = self._continuation_summary(
+                workspace=runtime.workspace,
+                task_manager=runtime.task_manager,
+                result=result,
+            )
+            summary["recovery"] = {
+                "attempt": recovery_attempt,
+                "reason": recovery_reason,
+                "policy": recovery_policy,
+                "previous_revision": observed_revision,
+                "recovery_revision": started.revision,
+            }
+            return summary
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            self._close_supervisor(
+                runtime.supervisor,
+                primary_error=primary_error,
+            )
+
+    def recover_run(
+        self,
+        *,
+        project_root: Path,
+        task_id: str,
+        run_id: str,
+        recovery_reason: str = "durable_execution_interruption",
+        expected_revision: int | None = None,
+        output_root: str | Path | None = None,
+        settings: AppSettings | None = None,
+        enable_agent_self_rag: bool | None = None,
+        allow_demo_defaults: bool = False,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
+    ) -> Dict[str, Any]:
+        """Recover an interrupted run only when checkpoint and error facts allow."""
+
+        return self._recover_existing_run(
+            project_root=project_root,
+            task_id=task_id,
+            run_id=run_id,
+            retry_only=False,
+            recovery_reason=recovery_reason,
+            expected_revision=expected_revision,
+            output_root=output_root,
+            settings=settings,
+            enable_agent_self_rag=enable_agent_self_rag,
+            allow_demo_defaults=allow_demo_defaults,
+            retrieval_access_scope=retrieval_access_scope,
+        )
+
+    def retry_run(
+        self,
+        *,
+        project_root: Path,
+        task_id: str,
+        run_id: str,
+        recovery_reason: str = "retryable_execution_failure",
+        expected_revision: int | None = None,
+        output_root: str | Path | None = None,
+        settings: AppSettings | None = None,
+        enable_agent_self_rag: bool | None = None,
+        allow_demo_defaults: bool = False,
+        retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
+    ) -> Dict[str, Any]:
+        """Retry only a task explicitly persisted as RETRYABLE_FAILED."""
+
+        return self._recover_existing_run(
+            project_root=project_root,
+            task_id=task_id,
+            run_id=run_id,
+            retry_only=True,
+            recovery_reason=recovery_reason,
+            expected_revision=expected_revision,
+            output_root=output_root,
+            settings=settings,
+            enable_agent_self_rag=enable_agent_self_rag,
+            allow_demo_defaults=allow_demo_defaults,
+            retrieval_access_scope=retrieval_access_scope,
+        )

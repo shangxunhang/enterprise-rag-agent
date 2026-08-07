@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from pydantic import ConfigDict, Field, model_validator
 from agent.runtime.langgraph_state import LangGraphRuntimeState
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
+from apps.enterprise_document.schemas.release_publication import PublishedReleaseSchema
 from apps.enterprise_document.schemas.agent_rag_v1.document_closure import (
     AssemblyValidationResultSchema,
     ConflictRepairPlanSchema,
@@ -157,6 +158,7 @@ class SchemeGenerationGraphPayloadSchema(SchemaBase):
     generated_draft: SchemeDraftSchema | None = None
     rejected_artifact: RejectedDraftArtifactSchema | None = None
     deliverable_final_result: DeliverableFinalResultSchema | None = None
+    release_publication: PublishedReleaseSchema | None = None
 
     terminal_agent_result: AgentResultSchema | None = None
     terminal_error: ErrorSchema | None = None

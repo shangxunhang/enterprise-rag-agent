@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import ConfigDict, Field
 
@@ -89,3 +89,28 @@ class TaskStateRecordSchema(SchemaBase):
     events: List[TaskStateEventSchema] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     extra: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskAuthorizationIdentitySchema(SchemaBase):
+    """Immutable identity projection safe to read before tenant authorization."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        frozen=True,
+        arbitrary_types_allowed=True,
+    )
+
+    schema_version: Literal["task_authorization_identity_v1"] = (
+        "task_authorization_identity_v1"
+    )
+    task_id: str
+    run_id: str
+    task_type: str
+    tenant_id: str
+    canonical_task_request_sha256: str
+
+
+# Transitional import alias.  It intentionally points at the immutable
+# identity-only schema and therefore cannot expose status, revision or content.
+TaskAuthorizationMetadataSchema = TaskAuthorizationIdentitySchema

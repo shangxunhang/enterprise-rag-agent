@@ -117,9 +117,22 @@ class DocumentAssembler:
                 if section is not None
                 else ""
             )
-            explicitly_blocked = (
+            writer_execution_status = (
+                str(
+                    (section.extra or {}).get("writer_execution_status")
+                    or ""
+                ).strip()
+                if section is not None
+                else ""
+            )
+            explicitly_blocked = bool(
                 generation_blocked
-                and generation_block_reason == "evidence_insufficient"
+                and (
+                    generation_block_reason == "evidence_insufficient"
+                    or generation_block_reason.startswith("writer_")
+                    or writer_execution_status
+                    in {"blocked", "human_review", "not_assessed"}
+                )
             )
             if explicitly_blocked:
                 effective_status = "blocked"
