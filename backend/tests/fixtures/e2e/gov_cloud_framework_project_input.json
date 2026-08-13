@@ -3,6 +3,7 @@
   "task_id": "task_gov_cloud_framework_e2e",
   "tenant_id": "default",
   "project_name": "政务云建设项目",
+  "current_project_id": "gov_cloud_framework",
   "task_type": "scheme_generation",
   "user_query": "请基于知识库中的现有材料，生成一份政务云建设方案。方案至少包括项目背景、建设目标、总体架构、计算资源建设方案、存储资源建设方案、网络资源建设方案、安全设计、实施与验收建议。所有项目事实、技术参数和建设结论必须遵守证据边界；知识库没有明确支持的具体数量、型号、品牌和金额不得编造；缺少项目特定信息时明确标记为待确认项；采用知识库证据的内容必须保留有效引用。",
   "generation_requirements": {

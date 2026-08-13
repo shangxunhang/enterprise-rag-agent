@@ -417,6 +417,7 @@ class ProjectFactRecordChunker:
             child_chunk_version=self.child_chunk_version,
             created_at=self.created_at,
             chunker_name=self.chunker_name,
+            max_parent_chars=self.parent_chunk_size,
         )
         self._stats = {
             "fact_record_count": fact_count,

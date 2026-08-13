@@ -22,6 +22,14 @@ from apps.enterprise_document.schemas.writer_governance import (
     WriterGateBindingSchema,
 )
 from rag.catalog.document_profile import ClaimType
+from .semantic_claim_classifier import (
+    SEMANTIC_CLAIM_CLASSIFIER_ID,
+    SEMANTIC_CLAIM_CLASSIFIER_POLICY_SHA256,
+    SEMANTIC_CLAIM_CLASSIFIER_VERSION,
+    SEMANTIC_CLAIM_CONFIDENCE_THRESHOLD,
+    SEMANTIC_CLAIM_PROMPT_VERSION,
+    SemanticClaimClassifier,
+)
 
 
 CLAIM_CLASSIFIER_ID = "deterministic_stage_e_claim_classifier"
@@ -96,6 +104,14 @@ _SUBSTANTIVE_SIGNAL_PATTERN = re.compile(
     r"形成|提供|具备|覆盖|开展|投入|上线|完成|交付|安装|配备|选用|接入|升级)"
 )
 _PURE_HEADING_PATTERN = re.compile(r"^#{1,6}\s*\S.+$")
+_STRUCTURAL_LABEL_PATTERN = re.compile(
+    r"^(?:"
+    r"\s*#{1,6}\s*[^。！？!?；;]{1,40}"
+    r"|\s*(?:[-*+]\s*)?(?:[（(]?[一二三四五六七八九十百千万\d]+[）).、.]?\s*)?"
+    r"(?:\*\*|__)[^。！？!?；;]{1,24}(?:\*\*|__)\s*[:：]?"
+    r"|\s*[（(]?[一二三四五六七八九十百千万\d]+[）).、.]\s*[^。！？!?；;]{1,24}\s*[:：]"
+    r")\s*$"
+)
 _PURE_LIST_MARKER_PATTERN = re.compile(
     rf"^[（(]?(?:\d+|[{_CHINESE_NUMBER}]+)[）).、]?\s*$"
 )
@@ -150,8 +166,20 @@ SUPPORTED_CLASSIFIER_POLICIES = {
     (
         CLAIM_CLASSIFIER_ID,
         CLAIM_CLASSIFIER_VERSION,
-    ): CLAIM_CLASSIFIER_POLICY_SHA256
+    ): CLAIM_CLASSIFIER_POLICY_SHA256,
+    (
+        SEMANTIC_CLAIM_CLASSIFIER_ID,
+        SEMANTIC_CLAIM_CLASSIFIER_VERSION,
+    ): SEMANTIC_CLAIM_CLASSIFIER_POLICY_SHA256,
 }
+
+SEMANTIC_CLASSIFICATION_FAILURE_CODES = frozenset(
+    {
+        "semantic_unclassified_substantive_claim",
+        "unclassified_substantive_claim",
+        "unclassified_or_low_confidence_claim",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -231,6 +259,8 @@ class SubstantiveSentenceDetector:
             return False
         if _PURE_HEADING_PATTERN.fullmatch(normalized):
             return False
+        if _STRUCTURAL_LABEL_PATTERN.fullmatch(normalized):
+            return False
         if _PURE_LIST_MARKER_PATTERN.fullmatch(normalized):
             return False
         if _PURE_PLACEHOLDER_PATTERN.fullmatch(normalized):
@@ -263,6 +293,38 @@ class SubstantiveSentenceDetector:
         ):
             return True
         return bool(len(normalized) >= 8 and re.search(r"[\u4e00-\u9fff]", normalized))
+
+
+def extract_substantive_sentence_spans(
+    content: str,
+    *,
+    governance_qualifiers: Iterable[str] = (),
+    detector: SubstantiveSentenceDetector | None = None,
+) -> list[dict[str, Any]]:
+    """Extract stable sentence/span rows without assigning any ClaimType."""
+
+    sentence_detector = detector or SubstantiveSentenceDetector()
+    rows: list[dict[str, Any]] = []
+    for sentence_index, match in enumerate(_SENTENCE_PATTERN.finditer(content)):
+        raw = match.group(0)
+        text = clean_claim_span_text(raw)
+        if not text.strip():
+            continue
+        if not sentence_detector.is_substantive_sentence(
+            raw,
+            governance_qualifiers=governance_qualifiers,
+        ):
+            continue
+        rows.append(
+            {
+                "id": f"s{sentence_index}",
+                "sentence_index": sentence_index,
+                "span_start": match.start(),
+                "span_end": match.end(),
+                "text": text,
+            }
+        )
+    return rows
 
 
 class DeterministicClaimClassifier:
@@ -475,6 +537,9 @@ def _integrity_for(
     content: str,
     *,
     binding: WriterGateBindingSchema,
+    classifier_id: str = CLAIM_CLASSIFIER_ID,
+    classifier_version: str = CLAIM_CLASSIFIER_VERSION,
+    classifier_policy_sha256: str = CLAIM_CLASSIFIER_POLICY_SHA256,
 ) -> ClaimAuditIntegritySchema:
     return ClaimAuditIntegritySchema(
         section_id=binding.section_id,
@@ -484,9 +549,9 @@ def _integrity_for(
         writer_gate_binding_sha256=writer_gate_binding_sha256(binding),
         evidence_contract_sha256=binding.evidence_contract_sha256,
         prompt_evidence_contract_sha256=binding.prompt_evidence_contract_sha256,
-        classifier_id=CLAIM_CLASSIFIER_ID,
-        classifier_version=CLAIM_CLASSIFIER_VERSION,
-        classifier_policy_sha256=CLAIM_CLASSIFIER_POLICY_SHA256,
+        classifier_id=classifier_id,
+        classifier_version=classifier_version,
+        classifier_policy_sha256=classifier_policy_sha256,
         substantive_detector_version=SUBSTANTIVE_DETECTOR_VERSION,
     )
 
@@ -496,52 +561,171 @@ class WriterClaimAuditor:
 
     def __init__(
         self,
-        classifier: DeterministicClaimClassifier | None = None,
+        classifier: Any | None = None,
     ) -> None:
+        # Deterministic classification remains an explicit compatibility/test seam.
+        # The production SchemeWriter composition injects SemanticClaimClassifier.
         self.classifier = classifier or DeterministicClaimClassifier()
 
+    @property
+    def classifier_id(self) -> str:
+        return str(getattr(self.classifier, "classifier_id", CLAIM_CLASSIFIER_ID))
+
+    @property
+    def classifier_version(self) -> str:
+        return str(
+            getattr(self.classifier, "classifier_version", CLAIM_CLASSIFIER_VERSION)
+        )
+
+    @property
+    def classifier_policy_sha256(self) -> str:
+        return str(
+            getattr(
+                self.classifier,
+                "policy_sha256",
+                CLAIM_CLASSIFIER_POLICY_SHA256,
+            )
+        )
+
+    @property
+    def classifier_confidence_threshold(self) -> float:
+        return float(
+            getattr(
+                self.classifier,
+                "confidence_threshold",
+                CLAIM_CLASSIFIER_CONFIDENCE_THRESHOLD,
+            )
+        )
+
     def classify_sentence(self, sentence: str) -> ClaimClassificationResult:
-        return self.classifier.classify_sentence(sentence)
+        classify = getattr(self.classifier, "classify_sentence", None)
+        if not callable(classify):
+            raise RuntimeError("configured Claim classifier is batch semantic only")
+        return classify(sentence)
 
     def _extract_claims_and_violations(
         self,
         content: str,
         *,
         binding: WriterGateBindingSchema,
-    ) -> tuple[list[GeneratedClaimSchema], list[ClaimAuditViolationSchema]]:
+        runtime_context: dict[str, Any] | None = None,
+    ) -> tuple[
+        list[GeneratedClaimSchema],
+        list[ClaimAuditViolationSchema],
+        dict[str, Any],
+    ]:
         claims: list[GeneratedClaimSchema] = []
         violations: list[ClaimAuditViolationSchema] = []
         qualifiers = set(binding.gate_decision.required_qualifiers)
-        for sentence_index, match in enumerate(_SENTENCE_PATTERN.finditer(content)):
-            raw = match.group(0)
-            sentence = clean_claim_span_text(raw)
-            normalized_sentence = sentence.rstrip("。！？!?；;").strip()
-            if not normalized_sentence:
-                continue
-            classification = self.classifier.classify_sentence(
-                sentence,
-                governance_qualifiers=qualifiers,
+        rows = extract_substantive_sentence_spans(
+            content,
+            governance_qualifiers=qualifiers,
+        )
+        diagnostics: dict[str, Any] = {
+            "classification_mode": self.classifier_id,
+            "substantive_sentence_count": len(rows),
+            "semantic_model_calls": [],
+        }
+
+        semantic_classify = getattr(self.classifier, "classify_sentences", None)
+        semantic_results: dict[str, Any] = {}
+        if callable(semantic_classify):
+            batch_result = semantic_classify(
+                rows,
+                section_title=binding.section_title,
+                runtime_context={
+                    **dict(runtime_context or {}),
+                    "workflow_run_id": (
+                        dict(runtime_context or {}).get("workflow_run_id")
+                        or binding.run_id
+                    ),
+                    "run_id": dict(runtime_context or {}).get("run_id") or binding.run_id,
+                    "section_id": binding.section_id,
+                    "section_title": binding.section_title,
+                },
             )
-            if classification.substantive and not classification.claim_types:
-                violations.append(
-                    ClaimAuditViolationSchema(
-                        violation_code="unclassified_substantive_claim",
-                        message="substantive sentence could not be deterministically classified",
-                        text=sentence,
-                        metadata={
-                            "sentence_index": sentence_index,
-                            "span_start": match.start(),
-                            "span_end": match.end(),
-                            "classifier_confidence": classification.confidence,
-                        },
+            semantic_results = dict(batch_result.classifications)
+            diagnostics["semantic_model_calls"] = list(batch_result.calls)
+
+        for row in rows:
+            sentence_index = int(row["sentence_index"])
+            sentence = str(row["text"])
+            span_start = int(row["span_start"])
+            span_end = int(row["span_end"])
+            model_metadata: dict[str, Any] = {}
+
+            if callable(semantic_classify):
+                classification = semantic_results.get(str(row["id"]))
+                if classification is None:
+                    violations.append(
+                        ClaimAuditViolationSchema(
+                            violation_code="semantic_unclassified_substantive_claim",
+                            message="substantive sentence has no valid semantic ClaimType result after retry",
+                            text=sentence,
+                            metadata={
+                                "sentence_index": sentence_index,
+                                "span_start": span_start,
+                                "span_end": span_end,
+                                "classifier_confidence": 0.0,
+                                "required_confidence": self.classifier_confidence_threshold,
+                                "semantic_failure_reason": "missing_or_unparseable_semantic_classification",
+                            },
+                        )
                     )
+                    continue
+                claim_types = tuple(classification.claim_types)
+                confidence = float(classification.confidence)
+                model_metadata = {
+                    "semantic_model_name": classification.model_name,
+                    "semantic_model_call_id": classification.model_call_id,
+                    "semantic_prompt_version": getattr(
+                        self.classifier,
+                        "prompt_version",
+                        SEMANTIC_CLAIM_PROMPT_VERSION,
+                    ),
+                }
+                if not claim_types:
+                    violations.append(
+                        ClaimAuditViolationSchema(
+                            violation_code="semantic_unclassified_substantive_claim",
+                            message="semantic classifier returned no ClaimType for a substantive sentence",
+                            text=sentence,
+                            metadata={
+                                "sentence_index": sentence_index,
+                                "span_start": span_start,
+                                "span_end": span_end,
+                                "classifier_confidence": confidence,
+                                "required_confidence": self.classifier_confidence_threshold,
+                                "semantic_failure_reason": "empty_claim_types",
+                                **model_metadata,
+                            },
+                        )
+                    )
+                    continue
+            else:
+                classification = self.classifier.classify_sentence(
+                    sentence,
+                    governance_qualifiers=qualifiers,
                 )
-                continue
-            if (
-                classification.substantive
-                and classification.confidence
-                < CLAIM_CLASSIFIER_CONFIDENCE_THRESHOLD
-            ):
+                claim_types = tuple(classification.claim_types)
+                confidence = float(classification.confidence)
+                if not classification.substantive or not claim_types:
+                    violations.append(
+                        ClaimAuditViolationSchema(
+                            violation_code="unclassified_substantive_claim",
+                            message="substantive sentence could not be deterministically classified",
+                            text=sentence,
+                            metadata={
+                                "sentence_index": sentence_index,
+                                "span_start": span_start,
+                                "span_end": span_end,
+                                "classifier_confidence": confidence,
+                            },
+                        )
+                    )
+                    continue
+
+            if confidence < self.classifier_confidence_threshold:
                 violations.append(
                     ClaimAuditViolationSchema(
                         violation_code="unclassified_or_low_confidence_claim",
@@ -549,15 +733,17 @@ class WriterClaimAuditor:
                         text=sentence,
                         metadata={
                             "sentence_index": sentence_index,
-                            "span_start": match.start(),
-                            "span_end": match.end(),
-                            "classifier_confidence": classification.confidence,
-                            "required_confidence": CLAIM_CLASSIFIER_CONFIDENCE_THRESHOLD,
+                            "span_start": span_start,
+                            "span_end": span_end,
+                            "classifier_confidence": confidence,
+                            "required_confidence": self.classifier_confidence_threshold,
+                            **model_metadata,
                         },
                     )
                 )
                 continue
-            for claim_type in classification.claim_types:
+
+            for claim_type in claim_types:
                 digest = hashlib.sha256(
                     f"{binding.section_id}:{sentence_index}:{claim_type.value}:{sentence}".encode(
                         "utf-8"
@@ -570,15 +756,18 @@ class WriterClaimAuditor:
                         sentence_index=sentence_index,
                         claim_type=claim_type,
                         text=sentence,
-                        span_start=match.start(),
-                        span_end=match.end(),
-                        classifier_id=CLAIM_CLASSIFIER_ID,
-                        classifier_version=CLAIM_CLASSIFIER_VERSION,
-                        confidence=classification.confidence,
-                        metadata={"source": "final_section_content"},
+                        span_start=span_start,
+                        span_end=span_end,
+                        classifier_id=self.classifier_id,
+                        classifier_version=self.classifier_version,
+                        confidence=confidence,
+                        metadata={
+                            "source": "final_section_content",
+                            **model_metadata,
+                        },
                     )
                 )
-        return claims, violations
+        return claims, violations, diagnostics
 
     def audit(
         self,
@@ -587,16 +776,28 @@ class WriterClaimAuditor:
         binding: WriterGateBindingSchema,
         applied_qualifiers: Iterable[str] = (),
         audit_created_at: datetime | None = None,
+        runtime_context: dict[str, Any] | None = None,
+        force_evaluate: bool = False,
     ) -> ClaimAuditResultSchema:
         del applied_qualifiers  # final content, not the caller, is the authority
         gate = binding.gate_decision
         allowed = set(gate.allowed_claim_types)
         forbidden = set(gate.forbidden_claim_types)
-        claims, violations = (
-            self._extract_claims_and_violations(content, binding=binding)
-            if binding.generation_allowed
-            else ([], [])
-        )
+        evaluate_generated_content = bool(binding.generation_allowed or force_evaluate)
+        if evaluate_generated_content:
+            claims, violations, classification_metadata = (
+                self._extract_claims_and_violations(
+                    content,
+                    binding=binding,
+                    runtime_context=runtime_context,
+                )
+            )
+        else:
+            claims, violations, classification_metadata = [], [], {
+                "classification_mode": self.classifier_id,
+                "substantive_sentence_count": 0,
+                "semantic_model_calls": [],
+            }
         for claim in claims:
             if claim.claim_type in forbidden:
                 violations.append(
@@ -650,18 +851,14 @@ class WriterClaimAuditor:
                 for item in violations
             ),
             "all_substantive_sentences_classified": not any(
-                item.violation_code
-                in {
-                    "unclassified_substantive_claim",
-                    "unclassified_or_low_confidence_claim",
-                }
+                item.violation_code in SEMANTIC_CLASSIFICATION_FAILURE_CODES
                 for item in violations
             ),
             "required_qualifiers_visible": all(qualifier_checks.values()),
             "classifier_policy_supported": classifier_policy_is_supported(
-                classifier_id=CLAIM_CLASSIFIER_ID,
-                classifier_version=CLAIM_CLASSIFIER_VERSION,
-                policy_sha256=CLAIM_CLASSIFIER_POLICY_SHA256,
+                classifier_id=self.classifier_id,
+                classifier_version=self.classifier_version,
+                policy_sha256=self.classifier_policy_sha256,
             ),
         }
         if not gate.required_qualifiers:
@@ -673,7 +870,13 @@ class WriterClaimAuditor:
             execution_status=binding.execution_status,
             passed=passed,
             human_review_required=human_review_required,
-            integrity=_integrity_for(content, binding=binding),
+            integrity=_integrity_for(
+                content,
+                binding=binding,
+                classifier_id=self.classifier_id,
+                classifier_version=self.classifier_version,
+                classifier_policy_sha256=self.classifier_policy_sha256,
+            ),
             audit_created_at=audit_created_at or datetime.now(timezone.utc),
             generated_claims=claims,
             violations=violations,
@@ -686,6 +889,13 @@ class WriterClaimAuditor:
                 "delivery_mode": gate.delivery_mode.value,
                 "gate_human_review_required": gate.human_review_required,
                 "classification_independent_of_gate": True,
+                "evaluated_despite_generation_block": bool(
+                    force_evaluate and not binding.generation_allowed
+                ),
+                "classifier_id": self.classifier_id,
+                "classifier_version": self.classifier_version,
+                "classifier_policy_sha256": self.classifier_policy_sha256,
+                **classification_metadata,
             },
         )
 
@@ -766,6 +976,11 @@ __all__ = [
     "CLAIM_CLASSIFIER_ID",
     "CLAIM_CLASSIFIER_POLICY_SHA256",
     "CLAIM_CLASSIFIER_VERSION",
+    "SEMANTIC_CLASSIFICATION_FAILURE_CODES",
+    "SEMANTIC_CLAIM_CLASSIFIER_ID",
+    "SEMANTIC_CLAIM_CLASSIFIER_POLICY_SHA256",
+    "SEMANTIC_CLAIM_CLASSIFIER_VERSION",
+    "SEMANTIC_CLAIM_CONFIDENCE_THRESHOLD",
     "SUBSTANTIVE_DETECTOR_VERSION",
     "ClaimClassificationResult",
     "DeterministicClaimClassifier",
@@ -775,6 +990,7 @@ __all__ = [
     "classifier_policy_is_supported",
     "clean_claim_span_text",
     "content_sha256",
+    "extract_substantive_sentence_spans",
     "extract_writer_gate_binding",
     "inject_required_qualifiers",
     "normalize_content_for_diagnostics",

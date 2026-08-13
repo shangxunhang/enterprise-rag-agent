@@ -236,6 +236,7 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
         ),
         "execute_sections": BusinessNodeContract(
             node_name="execute_sections",
+            timeout_seconds=1800.0,
             read_keys=(
                 "document_plan",
                 "document_rag_context",

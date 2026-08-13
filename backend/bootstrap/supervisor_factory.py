@@ -148,6 +148,7 @@ class SupervisorFactory:
             generation_quality_metadata=agent_quality.metadata,
             retrieval_access_scope=retrieval_access_scope,
             section_max_concurrency=options.section_max_concurrency,
+            gate_enforcement_mode=settings.gate_enforcement_mode,
         )
         scheme_writer.stage_service.attach_planner_adapter(
             build_mainline_planner_adapter(

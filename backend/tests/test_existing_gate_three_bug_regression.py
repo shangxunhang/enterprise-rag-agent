@@ -15,6 +15,7 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     SectionExecutionRequestSchema,
     SectionPlanSchema,
 )
+from apps.enterprise_document.services.gate_enforcement import GateEnforcementController
 from apps.enterprise_document.services.scheme_writer.document_citation_registry import (
     DocumentCitationRegistry,
 )
@@ -440,6 +441,40 @@ def test_initial_blocked_gate_stays_on_existing_blocked_path() -> None:
     assert result.evidence.retrieval_scope == "document"
     assert evidence_service.retrieve_calls == 0
     assert generation.calls == []
+
+
+def test_shadow_initial_business_block_still_executes_writer() -> None:
+    generation = _GenerationService()
+    generation.gate_enforcement_controller = GateEnforcementController("shadow")
+    evidence_service = _RecoveryEvidenceService(mode="permitted")
+    coordinator = SectionExecutionCoordinator(
+        evidence_service=evidence_service,
+        query_builder=_QueryBuilder(),
+        section_generation_service=generation,
+        runtime_support=SchemeWriterRuntimeSupport(),
+        generation_quality_metadata={
+            "max_retrieval_rounds": 1,
+            "max_rewrite_rounds": 1,
+            "max_total_llm_calls": 8,
+            "max_total_tokens": 24000,
+        },
+    )
+
+    result = coordinator.execute(
+        _recovery_request(initial_mode=DeliveryMode.BLOCKED),
+        citation_registry=DocumentCitationRegistry(),
+    )
+
+    assert generation.calls
+    assert result.section.content != "RECOVERY_BLOCKED_SECTION"
+    assert result.evidence.metadata["writer_gate_enforcement"] == {
+        "enforcement_mode": "shadow",
+        "enforcement_action": "continue",
+        "would_block_in_strict": True,
+        "failure_kind": "business",
+        "gate_passed": False,
+        "gate_id": "G06/G11",
+    }
 
 
 def test_writer_prompt_catalog_uses_governed_projection_not_raw_citation_quote() -> None:

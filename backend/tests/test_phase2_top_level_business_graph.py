@@ -63,6 +63,7 @@ def _run_production_fake(
     *,
     run_id: str,
     patchers=(),
+    gate_enforcement_mode: str = "strict",
 ) -> dict:
     settings = replace(
         get_settings(),
@@ -72,6 +73,7 @@ def _run_production_fake(
         enable_llm_routing=False,
         trace_enabled=True,
         data_capture_enabled=True,
+        gate_enforcement_mode=gate_enforcement_mode,
     )
     environment = {
         "USE_REAL_RAG_TOOL": "false",
@@ -444,12 +446,49 @@ def test_evidence_insufficient_reaches_gate_once_and_persists_rejected(
     assert gate_finished["latency_ms"] is not None
 
 
+def test_shadow_gate_failure_keeps_real_failure_and_completes_run(
+    tmp_path,
+) -> None:
+    forced_gate = HardGateResultSchema(
+        passed=False,
+        failures=["forced business quality failure"],
+        checks={"forced_business_quality": False},
+    )
+    summary = _run_production_fake(
+        tmp_path,
+        run_id="phase2_shadow_gate_failure",
+        gate_enforcement_mode="shadow",
+        patchers=(
+            patch(
+                "apps.enterprise_document.services.scheme_writer.stage_service."
+                "evaluate_scheme_draft",
+                return_value=forced_gate,
+            ),
+        ),
+    )
+
+    assert summary["status"] == "success"
+    assert summary["generated_draft"]
+    assert summary["rejected_artifact"]
+    assert summary["deliverable_final_result"] is None
+    output = summary["scheme_writer_output"]
+    assert output["hard_gate"]["passed"] is False
+    assert output["hard_gate"]["metadata"]["enforcement_mode"] == "shadow"
+    assert output["hard_gate"]["metadata"]["enforcement_action"] == "continue"
+    assert output["hard_gate"]["metadata"]["would_block_in_strict"] is True
+    assert output["extra"]["execution_status"] == "success"
+    assert output["extra"]["business_quality_status"] == "failed"
+    assert output["extra"]["release_status"] == "shadow_only"
+    assert output["extra"]["final_artifact_generated"] is True
+
+
 def test_technical_failure_routes_directly_to_failure_without_artifact(
     tmp_path,
 ) -> None:
     summary = _run_production_fake(
         tmp_path,
         run_id="phase2_technical_failure",
+        gate_enforcement_mode="shadow",
         patchers=(
             patch.object(
                 SchemeGenerationStageService,

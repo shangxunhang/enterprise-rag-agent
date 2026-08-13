@@ -104,6 +104,13 @@ class TaskFactory:
             str(normalized.metadata.get("task_name") or "").strip()
             or f"{normalized.task_type}:{normalized.project_name or normalized.task_id}"
         )
+        task_metadata = dict(normalized.metadata)
+        current_project_id = str(normalized.current_project_id or "").strip()
+        if current_project_id:
+            # Persist the runtime project identity in the existing task-state
+            # metadata channel so resume/recover can rebuild the same evidence
+            # boundary before constructing a retrieval-capable Supervisor.
+            task_metadata["current_project_id"] = current_project_id
 
         # 第六步：创建运行时任务，并保留完整规范输入及常用嵌套结构的序列化快照。
         return TaskSchema(
@@ -118,7 +125,7 @@ class TaskFactory:
             source_materials=[item.model_dump() for item in normalized.source_materials],
             generation_requirements=normalized.generation_requirements.model_dump(),
             output_schema=normalized.output_schema.model_dump(),
-            metadata=normalized.metadata,
+            metadata=task_metadata,
             file_ids=file_ids,
             doc_ids=doc_ids,
             kb_ids=kb_ids,

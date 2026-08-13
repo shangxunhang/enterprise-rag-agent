@@ -48,6 +48,8 @@ class ModelGateway:
         self._lifecycle = Condition(RLock())
         self._lifecycle_state = "open"
         self._active_calls = 0
+        self._exclusive_residency_lock = RLock()
+        self._active_resident_by_group: dict[str, str] = {}
         # Compatibility alias for existing introspection/tests.
         self._clients = self.registry._clients
 
@@ -199,6 +201,34 @@ class ModelGateway:
             "availability_fallback_used": bool(fallback_chain),
         }
 
+    @staticmethod
+    def _exclusive_residency_group(selection: ModelSelection) -> str | None:
+        group = str(
+            selection.profile.metadata.get("exclusive_residency_group") or ""
+        ).strip()
+        return group or None
+
+    def _invoke_with_residency(
+        self,
+        request: ModelRequestSchema,
+        selection: ModelSelection,
+    ) -> ModelResponseSchema:
+        """Serialize mutually-exclusive local residents and switch only on role change."""
+        group = self._exclusive_residency_group(selection)
+        if group is None:
+            return self.invoker.invoke(request, selection.model_name)
+
+        with self._exclusive_residency_lock:
+            current_model = self._active_resident_by_group.get(group)
+            if (
+                current_model is not None
+                and current_model != selection.model_name
+                and self.registry.contains(current_model)
+            ):
+                self.registry.release(current_model)
+            self._active_resident_by_group[group] = selection.model_name
+            return self.invoker.invoke(request, selection.model_name)
+
     def _release_if_on_demand(self, selection: ModelSelection) -> None:
         if selection.profile.residency_policy != ResidencyPolicy.ON_DEMAND:
             return
@@ -243,9 +273,9 @@ class ModelGateway:
             )
             try:
                 with activate_span(span_handle):
-                    response = self.invoker.invoke(
+                    response = self._invoke_with_residency(
                         attempt_request,
-                        selection.model_name,
+                        selection,
                     )
             except WorkflowExecutionCancelled as exc:
                 # Entering the concrete client is a real provider attempt even

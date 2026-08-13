@@ -37,6 +37,12 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             ],
         )
 
+    section_generation_candidates = (
+        [settings.section_generation_model_profile]
+        if settings.section_generation_model_profile
+        else ["local_1_5b", "local_3b", "deepseek"]
+    )
+
     profiles = [
         ModelProfile(
             profile_id="local_1_5b",
@@ -46,7 +52,11 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             residency_policy=ResidencyPolicy.PRIMARY,
             context_window=32768,
             max_output_tokens=settings.local_qwen_max_new_tokens,
-            metadata={"family": "Qwen2.5", "size": "1.5B"},
+            metadata={
+                "family": "Qwen2.5",
+                "size": "1.5B",
+                "exclusive_residency_group": "single_cuda_llm",
+            },
         ),
         ModelProfile(
             profile_id="local_3b",
@@ -56,7 +66,11 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             residency_policy=ResidencyPolicy.RESIDENT,
             context_window=32768,
             max_output_tokens=settings.local_qwen_max_new_tokens,
-            metadata={"family": "Qwen2.5", "size": "3B"},
+            metadata={
+                "family": "Qwen2.5",
+                "size": "3B",
+                "exclusive_residency_group": "single_cuda_llm",
+            },
         ),
         ModelProfile(
             profile_id="deepseek",
@@ -113,7 +127,7 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
         ),
         RoutingPolicy(
             role=ModelRole.SECTION_GENERATION,
-            candidates=["local_1_5b", "local_3b", "deepseek"],
+            candidates=section_generation_candidates,
         ),
         RoutingPolicy(
             role=ModelRole.SEMANTIC_GATE,

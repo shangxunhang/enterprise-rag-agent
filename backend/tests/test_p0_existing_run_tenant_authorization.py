@@ -28,7 +28,12 @@ def _scope(tenant_id: str) -> RetrievalAccessScopeSchema:
     )
 
 
-def _persist_task(root: Path, *, tenant_id: str = "tenant-a"):
+def _persist_task(
+    root: Path,
+    *,
+    tenant_id: str = "tenant-a",
+    current_project_id: str | None = None,
+):
     task = TaskFactory().build(
         task_id="task-existing-auth",
         run_id="run-existing-auth",
@@ -37,6 +42,7 @@ def _persist_task(root: Path, *, tenant_id: str = "tenant-a"):
         project_input={
             "task_id": "task-existing-auth",
             "tenant_id": tenant_id,
+            "current_project_id": current_project_id,
         },
         allow_demo_defaults=True,
     )
@@ -135,6 +141,7 @@ class _Factory:
     def __init__(self, task, *, mutation: str | None = None):
         self.task = task
         self.mutation = mutation
+        self.last_build_scope = None
         self.counters = {
             "build": 0,
             "inspect": 0,
@@ -148,6 +155,7 @@ class _Factory:
 
     def build(self, **_kwargs):
         self.counters["build"] += 1
+        self.last_build_scope = _kwargs.get("retrieval_access_scope")
         return _AuthorizedSupervisor(
             self.task,
             self.counters,
@@ -165,6 +173,33 @@ def _common(root: Path, scope: RetrievalAccessScopeSchema) -> dict[str, Any]:
         "allow_demo_defaults": False,
         "retrieval_access_scope": scope,
     }
+
+
+def test_existing_run_rebuilds_current_project_document_whitelist(tmp_path: Path) -> None:
+    task, _manager = _persist_task(
+        tmp_path,
+        tenant_id="default",
+        current_project_id="gov_cloud_framework",
+    )
+    factory = _Factory(task)
+    service = MainlineApplicationService(supervisor_factory=factory)
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=[
+            "historical_case_kb",
+            "policy_standard_kb",
+            "project_fact_kb",
+            "technical_reference_kb",
+            "template_style_kb",
+        ],
+    )
+
+    service.inspect_run(**_common(tmp_path, scope))
+
+    assert factory.last_build_scope is not None
+    assert len(factory.last_build_scope.allowed_doc_ids) == 26
+    assert "doc_5bd4faa071c0d2cb316c1add" not in factory.last_build_scope.allowed_doc_ids
+    assert "doc_dc9385d9cce409724dabdd8b" in factory.last_build_scope.allowed_doc_ids
 
 
 def test_same_tenant_all_existing_run_entry_points_succeed(tmp_path: Path) -> None:

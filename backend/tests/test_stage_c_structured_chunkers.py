@@ -245,6 +245,33 @@ def test_structured_table_binds_headers_rows_and_merged_cells() -> None:
     assert all(child["extra"]["type_aware_chunking"]["fallback_used"] is False for child in result.children)
 
 
+def test_table_row_parent_chunks_obey_configured_char_budget() -> None:
+    payload = {
+        "column_count": 2,
+        "row_count": 7,
+        "merged_cells": [],
+        "rows": [
+            ["字段", "值"],
+            *[[f"字段{index}", "甲" * 180] for index in range(1, 7)],
+        ],
+    }
+    unit = _unit(
+        document_id="doc-table-budget",
+        strategy="table_row_record",
+        order=1,
+        text="| 字段 | 值 |",
+        unit_type="table",
+        extra={"structured_table": payload},
+    )
+
+    result = TableRowRecordChunker(parent_chunk_size=450).chunk_records([unit])
+
+    assert len(result.children) == 6
+    assert len(result.parents) == 3
+    assert all(len(parent["text"]) <= 450 for parent in result.parents)
+    assert sum(len(parent["child_chunk_ids"]) for parent in result.parents) == 6
+
+
 def test_co2_calculation_becomes_source_grounded_table_row() -> None:
     texts = [
         "一、年CO₂排放量",
@@ -311,6 +338,38 @@ def test_fact_status_never_confuses_proposed_estimated_and_confirmed() -> None:
         predicate="质量管理计划",
         fact_category="schedule",
     ) == "unknown"
+
+
+def test_fact_record_parent_chunks_obey_configured_char_budget() -> None:
+    rows = [
+        _unit(
+            document_id="doc-fact-budget",
+            strategy="fact_record",
+            order=1,
+            text="第一章 项目参数",
+            unit_type="title",
+            kb_id="project_fact_kb",
+            evidence_role="project_fact",
+        ),
+        *[
+            _unit(
+                document_id="doc-fact-budget",
+                strategy="fact_record",
+                order=index + 1,
+                text=f"参数{index}：" + "乙" * 500,
+                kb_id="project_fact_kb",
+                evidence_role="project_fact",
+            )
+            for index in range(1, 5)
+        ],
+    ]
+
+    result = ProjectFactRecordChunker(parent_chunk_size=1200).chunk_records(rows)
+
+    assert len(result.children) == 4
+    assert len(result.parents) == 2
+    assert all(len(parent["text"]) <= 1200 for parent in result.parents)
+    assert sum(len(parent["child_chunk_ids"]) for parent in result.parents) == 4
 
 
 def test_fact_chunker_falls_back_without_inventing_value() -> None:

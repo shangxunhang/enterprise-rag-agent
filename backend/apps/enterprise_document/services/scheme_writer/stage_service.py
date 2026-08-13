@@ -52,6 +52,7 @@ from apps.enterprise_document.workflows.section_parallel_execution_graph import 
     SectionParallelExecutionGraph,
 )
 from apps.enterprise_document.services.document_gate import evaluate_scheme_draft
+from apps.enterprise_document.services.gate_enforcement import GateFailureKind
 from apps.enterprise_document.services.release_publication import (
     ReleasePublicationService,
 )
@@ -131,6 +132,9 @@ class SchemeGenerationStageService:
         self.input_service = input_service
         self.evidence_service = evidence_service
         self.section_execution_coordinator = section_execution_coordinator
+        self.gate_enforcement_controller = (
+            section_execution_coordinator.gate_enforcement_controller
+        )
         self.document_assembler = document_assembler
         self.document_planning_service = document_planning_service
         self.capture_service = capture_service
@@ -1693,8 +1697,23 @@ class SchemeGenerationStageService:
                 },
                 deep=True,
             )
+        enforcement = self.gate_enforcement_controller.resolve(
+            gate_passed=hard_gate.passed,
+            failure_kind=GateFailureKind.BUSINESS,
+        )
+        hard_gate = hard_gate.model_copy(
+            update={
+                "metadata": {
+                    **dict(hard_gate.metadata),
+                    **enforcement.as_metadata(gate_id="G40/G41"),
+                }
+            },
+            deep=True,
+        )
         print(
             f"[HardGate] passed={hard_gate.passed} "
+            f"enforcement={enforcement.action.value} "
+            f"mode={enforcement.mode.value} "
             f"failures={hard_gate.failures} warnings={hard_gate.warnings}",
             flush=True,
         )
@@ -1709,7 +1728,7 @@ class SchemeGenerationStageService:
         else:
             status = ExecutionStatus.SUCCESS
         output_error = None
-        if not hard_gate.passed:
+        if not hard_gate.passed and enforcement.should_block:
             failure_category, retryable = self._hard_gate_failure_policy(
                 hard_gate,
                 evidence_requirements_satisfied=(
@@ -1739,6 +1758,20 @@ class SchemeGenerationStageService:
             )
             for message in hard_gate.warnings
         ]
+        if not hard_gate.passed and enforcement.should_continue:
+            output_warnings.append(
+                WarningSchema(
+                    warning_code="DOCUMENT_GATE_SHADOW_CONTINUE",
+                    message="文档硬门禁真实失败；Shadow 模式仅取消阻断权，草稿继续保留用于链路闭环与评测。",
+                    source=ErrorSourceSchema(
+                        component=self.agent_name,
+                        agent_name=self.agent_name,
+                        step_name="evaluate_document_gate",
+                    ),
+                    details=enforcement.as_metadata(gate_id="G40/G41"),
+                    created_at=self.runtime_support.now_iso(),
+                )
+            )
         return payload.model_copy(
             update={
                 "hard_gate": hard_gate,
@@ -1863,6 +1896,39 @@ class SchemeGenerationStageService:
             error=payload.output_error,
             need_human_review=(deliverable_final_result is None),
             extra={
+                "execution_status": (
+                    "success"
+                    if (
+                        hard_gate.passed
+                        or (
+                            self.gate_enforcement_controller.is_shadow
+                            and not hard_gate.passed
+                        )
+                    )
+                    else "blocked"
+                ),
+                "business_quality_status": (
+                    "passed" if hard_gate.passed else "failed"
+                ),
+                "gate_enforcement_mode": self.gate_enforcement_controller.mode.value,
+                "gate_enforcement_status": (
+                    "continued"
+                    if hard_gate.passed
+                    or self.gate_enforcement_controller.is_shadow
+                    else "blocked"
+                ),
+                "would_block_in_strict": not hard_gate.passed,
+                "final_artifact_generated": bool(assembly.draft.full_text),
+                "release_status": (
+                    "published"
+                    if payload.release_publication is not None
+                    else (
+                        "shadow_only"
+                        if self.gate_enforcement_controller.is_shadow
+                        and not hard_gate.passed
+                        else "rejected"
+                    )
+                ),
                 "scheme_writer_input": scheme_input.model_dump(),
                 "document_plan": document_plan.model_dump(),
                 "rag_tool_output": dict(payload.document_rag_output),
@@ -2101,13 +2167,22 @@ class SchemeGenerationStageService:
             field_name="assembly",
             node_name="finalize_workflow_result",
         )
+        shadow_continued = bool(
+            payload.hard_gate is not None
+            and not payload.hard_gate.passed
+            and self.gate_enforcement_controller.is_shadow
+        )
+        execution_status = (
+            ExecutionStatus.SUCCESS if shadow_continued else output.status
+        )
+        terminal_error = None if shadow_continued else payload.output_error
         result = AgentResultSchema(
             result_id=f"result_{shared_state.run_id}_scheme",
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
             agent_name=self.agent_name,
             agent_type=self.agent_type,
-            status=output.status,
+            status=execution_status,
             result_type="scheme_writer_output",
             result={
                 "scheme_writer_output": output.model_dump(mode="json"),
@@ -2133,11 +2208,9 @@ class SchemeGenerationStageService:
                 ),
             },
             citations=list(assembly.citations),
-            error=payload.output_error,
+            error=terminal_error,
             error_message=(
-                payload.output_error.message
-                if payload.output_error is not None
-                else None
+                terminal_error.message if terminal_error is not None else None
             ),
             started_at=payload.started_at,
             finished_at=self.runtime_support.now_iso(),
@@ -2146,6 +2219,33 @@ class SchemeGenerationStageService:
                 "output_schema": output.schema_version,
                 "hard_gate_passed": bool(
                     payload.hard_gate and payload.hard_gate.passed
+                ),
+                "execution_status": execution_status.value,
+                "business_quality_status": (
+                    "passed"
+                    if payload.hard_gate and payload.hard_gate.passed
+                    else "failed"
+                ),
+                "gate_enforcement_mode": self.gate_enforcement_controller.mode.value,
+                "gate_enforcement_action": (
+                    "continue" if shadow_continued else (
+                        "continue"
+                        if payload.hard_gate and payload.hard_gate.passed
+                        else "block"
+                    )
+                ),
+                "would_block_in_strict": bool(
+                    payload.hard_gate and not payload.hard_gate.passed
+                ),
+                "final_artifact_generated": bool(assembly.draft.full_text),
+                "release_status": (
+                    "shadow_only"
+                    if shadow_continued
+                    else (
+                        "published"
+                        if payload.release_publication is not None
+                        else "rejected"
+                    )
                 ),
                 "section_count": len(payload.sections),
                 "citation_binding_count": len(assembly.citation_bindings),

@@ -178,6 +178,9 @@ class AppSettings:
     # 同一 durable run 允许进入受控恢复的最大次数。
     max_recovery_attempts: int
 
+    # 业务门禁失败后的统一执行模式：strict 阻断，shadow 记录后继续。
+    gate_enforcement_mode: str
+
     # 是否允许 Supervisor 使用模型进行工作流路由。
     enable_llm_routing: bool
     # Supervisor 路由角色使用的模型注册名。
@@ -211,6 +214,10 @@ class AppSettings:
     deepseek_provider_model_name: str
     # DeepSeek OpenAI 兼容 API 基础地址。
     deepseek_base_url: str
+    # 是否启用 DeepSeek V4 思考模式；Writer A/B 默认关闭以控制变量。
+    deepseek_thinking_enabled: bool
+    # SECTION_GENERATION 角色的可选单模型 profile override；空值保留默认路由。
+    section_generation_model_profile: str
     # DeepSeek API 密钥；不得通过日志或 as_dict 明文输出。
     deepseek_api_key: str
 
@@ -269,6 +276,7 @@ class AppSettings:
             "data_capture_enabled": self.data_capture_enabled,
             "min_eval_output_chars": self.min_eval_output_chars,
             "max_recovery_attempts": self.max_recovery_attempts,
+            "gate_enforcement_mode": self.gate_enforcement_mode,
             "enable_llm_routing": self.enable_llm_routing,
             "supervisor_model_name": self.supervisor_model_name,
             "local_qwen_model_name": self.local_qwen_model_name,
@@ -284,6 +292,8 @@ class AppSettings:
             "deepseek_model_name": self.deepseek_model_name,
             "deepseek_provider_model_name": self.deepseek_provider_model_name,
             "deepseek_base_url": self.deepseek_base_url,
+            "deepseek_thinking_enabled": self.deepseek_thinking_enabled,
+            "section_generation_model_profile": self.section_generation_model_profile,
             # 只说明是否配置，不返回密钥、长度或任何可推测内容。
             "deepseek_api_key_configured": bool(self.deepseek_api_key),
         }
@@ -329,6 +339,9 @@ def get_settings(reload: bool = False) -> AppSettings:
         data_capture_enabled=_to_bool(_get_env("DATA_CAPTURE_ENABLED", "true")),
         min_eval_output_chars=_to_int(_get_env("MIN_EVAL_OUTPUT_CHARS", "100")),
         max_recovery_attempts=_to_int(_get_env("MAX_RECOVERY_ATTEMPTS", "3")),
+        gate_enforcement_mode=_get_env("GATE_ENFORCEMENT_MODE", "strict")
+        .strip()
+        .lower(),
         enable_llm_routing=_to_bool(_get_env("ENABLE_LLM_ROUTING", "true")),
         supervisor_model_name=_get_env(
             "SUPERVISOR_MODEL_NAME",
@@ -380,11 +393,17 @@ def get_settings(reload: bool = False) -> AppSettings:
         ),
         deepseek_model_name=_get_env("DEEPSEEK_MODEL_NAME", "deepseek_api"),
         deepseek_provider_model_name=_get_env(
-            "DEEPSEEK_PROVIDER_MODEL_NAME", "deepseek-chat"
+            "DEEPSEEK_PROVIDER_MODEL_NAME", "deepseek-v4-flash"
         ),
         deepseek_base_url=_get_env(
             "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
         ),
+        deepseek_thinking_enabled=_to_bool(
+            _get_env("DEEPSEEK_THINKING_ENABLED", "false")
+        ),
+        section_generation_model_profile=_get_env(
+            "SECTION_GENERATION_MODEL_PROFILE", ""
+        ).strip(),
         deepseek_api_key=_get_env("DEEPSEEK_API_KEY", ""),
     )
 

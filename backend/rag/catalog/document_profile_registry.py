@@ -93,6 +93,43 @@ class DocumentProfileRegistry:
     def all(self) -> list[DocumentProfileSchema]:
         return list(self._profiles.values())
 
+    def allowed_document_ids_for_current_project(
+        self,
+        current_project_id: str,
+        *,
+        authorized_kb_ids: Iterable[str] | None = None,
+    ) -> list[str]:
+        """Resolve the runtime document whitelist for one current project.
+
+        The frozen V1 catalog stores all current-project source material in
+        ``project_fact_kb``.  Those records are admitted only when their
+        ``project_id`` matches the current run.  Historical/reference, policy,
+        template and technical KBs remain available as non-current evidence.
+        """
+
+        project_id = str(current_project_id or "").strip()
+        if not project_id:
+            raise ValueError("current_project_id is required for project evidence scope")
+
+        authorized = {
+            str(item).strip()
+            for item in (authorized_kb_ids or [])
+            if str(item).strip()
+        }
+        allowed: list[str] = []
+        for profile in self.all():
+            if profile.metadata.get("should_index") is not True:
+                continue
+            if authorized and profile.kb_id not in authorized:
+                continue
+            if (
+                profile.kb_id == "project_fact_kb"
+                and profile.project_relation.project_id != project_id
+            ):
+                continue
+            allowed.append(profile.document_id)
+        return allowed
+
     def __len__(self) -> int:
         return len(self._profiles)
 

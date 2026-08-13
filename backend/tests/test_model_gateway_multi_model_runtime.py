@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Callable
 
 import pytest
 from pydantic import ValidationError
 
+from bootstrap.model_factory import build_default_model_routing
 from context_manager.manager import ContextBudgetExceededError, LLMContextManager
 from contracts.base_client import BaseLLMClient
 from apps.enterprise_document.quality.budget import (
@@ -17,6 +19,7 @@ from apps.enterprise_document.quality.budget import (
 from apps.enterprise_document.quality.model_adapter import (
     reserve_current_workflow_budget,
 )
+from core.config import get_settings
 from core.runtime.execution_control import (
     WorkflowExecutionCancelled,
     WorkflowExecutionControl,
@@ -113,6 +116,7 @@ def _profile(
     max_output_tokens: int = 2048,
     input_cost: float | None = None,
     output_cost: float | None = None,
+    metadata: dict | None = None,
 ) -> ModelProfile:
     return ModelProfile(
         profile_id=profile_id,
@@ -124,6 +128,7 @@ def _profile(
         max_output_tokens=max_output_tokens,
         input_cost_per_million=input_cost,
         output_cost_per_million=output_cost,
+        metadata=metadata or {},
     )
 
 
@@ -160,6 +165,31 @@ def _gateway(
         ],
     )
     return ModelGateway(default_model_name=profiles[0].model_name, router=router)
+
+
+def test_section_generation_profile_override_is_writer_only() -> None:
+    settings = replace(
+        get_settings(reload=True),
+        default_model_name="local_qwen2_5_1_5b",
+        section_generation_model_profile="deepseek",
+    )
+
+    routing = build_default_model_routing(settings)
+    candidates_by_role = {
+        policy.role: list(policy.candidates) for policy in routing.policies
+    }
+
+    assert candidates_by_role[ModelRole.SECTION_GENERATION] == ["deepseek"]
+    assert candidates_by_role[ModelRole.REPAIR] == [
+        "local_1_5b",
+        "local_3b",
+        "deepseek",
+    ]
+    assert candidates_by_role[ModelRole.SEMANTIC_GATE] == [
+        "local_3b",
+        "local_1_5b",
+        "deepseek",
+    ]
 
 
 def test_role_resolves_to_primary_profile() -> None:
@@ -459,6 +489,53 @@ def test_on_demand_profile_is_released_after_call() -> None:
 
     assert response.success is True
     assert client.release_count == 1
+
+
+def test_exclusive_residency_switch_releases_previous_model_before_invoke() -> None:
+    group = {"exclusive_residency_group": "single_cuda_llm"}
+    profiles = [
+        _profile("writer", "m1", metadata=group),
+        _profile("semantic", "m2", metadata=group),
+    ]
+    gateway = _gateway(profiles, ["writer", "semantic"])
+    writer = _StubClient("m1", _success("m1"))
+
+    def semantic_response(request: ModelRequestSchema) -> ModelResponseSchema:
+        assert writer.release_count == 1
+        return _success("m2", content="semantic")(request)
+
+    semantic = _StubClient("m2", semantic_response)
+    gateway.register_client(writer)
+    gateway.register_client(semantic)
+
+    writer_response = gateway.generate(_request(model_name="m1"))
+    semantic_response_value = gateway.generate(_request(model_name="m2"))
+
+    assert writer_response.success is True
+    assert semantic_response_value.content == "semantic"
+    assert writer.release_count == 1
+    assert semantic.release_count == 0
+
+
+def test_exclusive_residency_reuses_same_model_without_repeated_release() -> None:
+    group = {"exclusive_residency_group": "single_cuda_llm"}
+    profiles = [
+        _profile("writer", "m1", metadata=group),
+        _profile("semantic", "m2", metadata=group),
+    ]
+    gateway = _gateway(profiles, ["writer", "semantic"])
+    writer = _StubClient("m1", _success("m1"))
+    semantic = _StubClient("m2", _success("m2"))
+    gateway.register_client(writer)
+    gateway.register_client(semantic)
+
+    gateway.generate(_request(model_name="m1"))
+    gateway.generate(_request(model_name="m1"))
+    gateway.generate(_request(model_name="m2"))
+    gateway.generate(_request(model_name="m2"))
+
+    assert writer.release_count == 1
+    assert semantic.release_count == 0
 
 
 def test_fallback_safe_capabilities_use_smallest_candidate_window() -> None:

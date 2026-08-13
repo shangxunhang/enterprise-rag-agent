@@ -241,6 +241,85 @@ def type_aware_metadata(
     }
 
 
+def _bounded_parent_specs(
+    parents: Sequence[LogicalParentSpec], *, max_parent_chars: int
+) -> list[LogicalParentSpec]:
+    """Split logical parents by whole-child boundaries under a hard char budget."""
+
+    if max_parent_chars <= 0:
+        raise ValueError("max_parent_chars must be positive")
+
+    bounded: list[LogicalParentSpec] = []
+    for parent_spec in parents:
+        non_empty_children = [
+            child for child in parent_spec.children if str(child.text or "").strip()
+        ]
+        current: list[LogicalChildSpec] = []
+        current_chars = 0
+
+        def flush() -> None:
+            nonlocal current, current_chars
+            if not current:
+                return
+            seen_unit_ids: set[str] = set()
+            group_units: list[dict[str, Any]] = []
+            for child in current:
+                for unit in child.units:
+                    unit_id = str(unit.get("unit_id") or "")
+                    if unit_id and unit_id in seen_unit_ids:
+                        continue
+                    if unit_id:
+                        seen_unit_ids.add(unit_id)
+                    group_units.append(unit)
+
+            metadata = dict(parent_spec.metadata)
+            if "row_count" in metadata:
+                metadata["row_count"] = len(current)
+            if "structured_fact_count" in metadata:
+                metadata["structured_fact_count"] = sum(
+                    child.representation_type == "fact_record" for child in current
+                )
+            if "fallback_chunk_count" in metadata:
+                metadata["fallback_chunk_count"] = sum(
+                    child.fallback_used for child in current
+                )
+
+            bounded.append(
+                LogicalParentSpec(
+                    children=list(current),
+                    units=group_units,
+                    representation_type=parent_spec.representation_type,
+                    structure_path=list(parent_spec.structure_path),
+                    title=parent_spec.title,
+                    metadata=metadata,
+                    fallback_used=parent_spec.fallback_used,
+                    fallback_reason=parent_spec.fallback_reason,
+                    fallback_strategy=parent_spec.fallback_strategy,
+                    actual_strategy=parent_spec.actual_strategy,
+                )
+            )
+            current = []
+            current_chars = 0
+
+        for child in non_empty_children:
+            child_text = str(child.text or "").strip()
+            child_chars = len(child_text)
+            if child_chars > max_parent_chars:
+                raise ValueError(
+                    "structured child exceeds parent char budget; "
+                    f"child_chars={child_chars}, max_parent_chars={max_parent_chars}"
+                )
+            addition = child_chars + (2 if current else 0)
+            if current and current_chars + addition > max_parent_chars:
+                flush()
+                addition = child_chars
+            current.append(child)
+            current_chars += addition
+        flush()
+
+    return bounded
+
+
 def materialize_document(
     *,
     doc_id: str,
@@ -250,14 +329,20 @@ def materialize_document(
     child_chunk_version: str = DEFAULT_CHILD_CHUNK_VERSION,
     created_at: str | None = None,
     chunker_name: str,
+    max_parent_chars: int | None = None,
 ) -> ParentChildChunkResult:
     """Materialize logical structured records into canonical parent/child chunks."""
 
     parent_records: list[dict[str, Any]] = []
     child_records: list[dict[str, Any]] = []
     global_child_index = 1
+    materialized_parents = (
+        _bounded_parent_specs(parents, max_parent_chars=max_parent_chars)
+        if max_parent_chars is not None
+        else list(parents)
+    )
 
-    for parent_index, parent_spec in enumerate(parents, start=1):
+    for parent_index, parent_spec in enumerate(materialized_parents, start=1):
         if not parent_spec.children:
             continue
         parent_units = parent_spec.units or [

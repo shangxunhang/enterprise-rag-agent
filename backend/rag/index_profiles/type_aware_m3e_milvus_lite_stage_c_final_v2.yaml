@@ -15,8 +15,8 @@ chunker:
   params:
     unit: char
     require_document_profile: true
-    semantic_revision: stage_c_final_v2_r4
-    parent_chunk_version: parent_chunk_profiled_v2.0
+    semantic_revision: stage_c_final_v2_r5
+    parent_chunk_version: parent_chunk_profiled_v2.1
     child_chunk_version: child_chunk_profiled_v2.0
     strategy_params:
       heading_parent_paragraph_child:

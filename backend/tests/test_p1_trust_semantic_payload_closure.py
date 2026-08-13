@@ -140,6 +140,77 @@ def test_production_mainline_rejects_business_scope_without_trusted_context(
         )
 
 
+def test_production_mainline_requires_current_project_id_for_project_fact_kb(
+    tmp_path: Path,
+) -> None:
+    project_input = _project_input(
+        tenant_id="default",
+        kb_ids=["project_fact_kb"],
+    ).model_dump()
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=["project_fact_kb"],
+    )
+
+    with pytest.raises(ValueError, match="current_project_id is required"):
+        MainlineApplicationService().run(
+            project_root=Path(__file__).resolve().parents[2],
+            user_input=project_input["user_query"],
+            task_id="task-auth",
+            run_id="run-current-project-required",
+            output_root=tmp_path,
+            project_input=project_input,
+            allow_demo_defaults=False,
+            retrieval_access_scope=scope,
+        )
+
+
+def test_mainline_current_project_scope_intersects_existing_doc_authority() -> None:
+    root = Path(__file__).resolve().parents[2]
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=[
+            "project_fact_kb",
+            "historical_case_kb",
+            "policy_standard_kb",
+            "technical_reference_kb",
+            "template_style_kb",
+        ],
+        allowed_doc_ids=[
+            "doc_5bd4faa071c0d2cb316c1add",
+            "doc_dc9385d9cce409724dabdd8b",
+        ],
+    )
+
+    narrowed = MainlineApplicationService._bind_current_project_retrieval_scope(
+        project_root=root,
+        current_project_id="gov_cloud_framework",
+        retrieval_access_scope=scope,
+    )
+
+    assert narrowed.allowed_doc_ids == ["doc_dc9385d9cce409724dabdd8b"]
+    assert scope.allowed_doc_ids == [
+        "doc_5bd4faa071c0d2cb316c1add",
+        "doc_dc9385d9cce409724dabdd8b",
+    ]
+
+
+def test_mainline_current_project_scope_fails_closed_on_empty_intersection() -> None:
+    root = Path(__file__).resolve().parents[2]
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=["project_fact_kb"],
+        allowed_doc_ids=["doc_5bd4faa071c0d2cb316c1add"],
+    )
+
+    with pytest.raises(ValueError, match="resolved to no authorized documents"):
+        MainlineApplicationService._bind_current_project_retrieval_scope(
+            project_root=root,
+            current_project_id="gov_cloud_framework",
+            retrieval_access_scope=scope,
+        )
+
+
 def test_scheme_evidence_service_cannot_promote_project_input_into_authority() -> None:
     service, rag = _service(None)
 

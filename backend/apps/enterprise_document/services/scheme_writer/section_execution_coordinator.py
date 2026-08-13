@@ -22,6 +22,11 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     SectionExecutionRequestSchema,
     SectionExecutionResultSchema,
 )
+from apps.enterprise_document.services.gate_enforcement import (
+    GateEnforcementController,
+    GateEnforcementDecision,
+    GateFailureKind,
+)
 from apps.enterprise_document.services.output_validation import detect_truncation
 from agent.runtime.state_access import SharedStateWriter
 from schemas.common import ErrorSourceSchema, WarningSchema
@@ -53,9 +58,33 @@ class SectionExecutionCoordinator:
         self.evidence_service = evidence_service
         self.query_builder = query_builder
         self.section_generation_service = section_generation_service
+        self.gate_enforcement_controller = getattr(
+            section_generation_service,
+            "gate_enforcement_controller",
+            GateEnforcementController(),
+        )
         self.runtime_support = runtime_support
         self.generation_quality_metadata = dict(generation_quality_metadata or {})
         self.section_agent_adapter: MainlineSectionAgentAdapter | None = None
+
+    def resolve_writer_gate_enforcement(
+        self,
+        binding: WriterGateBindingSchema | None,
+    ) -> GateEnforcementDecision:
+        """Resolve writer-gate blocking with a strict-compatible test seam."""
+
+        if binding is None or binding.legacy_artifact_incomplete:
+            return self.gate_enforcement_controller.resolve(
+                gate_passed=False,
+                failure_kind=GateFailureKind.TECHNICAL,
+            )
+        return self.gate_enforcement_controller.resolve(
+            gate_passed=binding.ordinary_generation_permitted,
+            failure_kind=GateFailureKind.BUSINESS,
+        )
+
+    def writer_gate_blocks(self, binding: WriterGateBindingSchema | None) -> bool:
+        return self.resolve_writer_gate_enforcement(binding).should_block
 
     def attach_section_agent_adapter(
         self,
@@ -422,9 +451,12 @@ class SectionExecutionCoordinator:
                     )
 
             writer_gate_missing = active_writer_gate is None
-            evidence_blocked = bool(
-                writer_gate_missing
-                or not active_writer_gate.ordinary_generation_permitted
+            writer_enforcement = (
+                self.resolve_writer_gate_enforcement(active_writer_gate)
+            )
+            evidence_blocked = writer_enforcement.should_block
+            retrieval_metadata["writer_gate_enforcement"] = (
+                writer_enforcement.as_metadata(gate_id="G06/G11")
             )
             if evidence_blocked:
                 block_reason = (
@@ -585,7 +617,7 @@ class SectionExecutionCoordinator:
                 )
                 current_generation_permitted = bool(
                     active_writer_gate is not None
-                    and active_writer_gate.ordinary_generation_permitted
+                    and not self.writer_gate_blocks(active_writer_gate)
                 )
                 recovered_context_available = bool(
                     recovered_context.context_text.strip()
@@ -593,7 +625,7 @@ class SectionExecutionCoordinator:
                 recovered_generation_permitted = bool(
                     recovered_context_available
                     and recovered_writer_gate is not None
-                    and recovered_writer_gate.ordinary_generation_permitted
+                    and not self.writer_gate_blocks(recovered_writer_gate)
                 )
                 if (
                     not recovered_generation_permitted
@@ -646,10 +678,7 @@ class SectionExecutionCoordinator:
                     if active_writer_gate is not None
                     else None
                 )
-                if (
-                    active_writer_gate is None
-                    or not active_writer_gate.ordinary_generation_permitted
-                ):
+                if self.writer_gate_blocks(active_writer_gate):
                     evidence_blocked = True
                     block_reason = (
                         "writer_gate_missing_after_self_rag_retrieval"
@@ -872,7 +901,7 @@ class SectionExecutionCoordinator:
                     )
                     current_generation_permitted = bool(
                         active_writer_gate is not None
-                        and active_writer_gate.ordinary_generation_permitted
+                        and not self.writer_gate_blocks(active_writer_gate)
                     )
                     recovery_context_available = bool(
                         recovery_context.context_text.strip()
@@ -880,7 +909,7 @@ class SectionExecutionCoordinator:
                     recovery_generation_permitted = bool(
                         recovery_context_available
                         and recovery_writer_gate is not None
-                        and recovery_writer_gate.ordinary_generation_permitted
+                        and not self.writer_gate_blocks(recovery_writer_gate)
                     )
                     if recovery_generation_permitted:
                         active_context = recovery_context

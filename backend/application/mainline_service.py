@@ -30,6 +30,7 @@ from bootstrap.runtime_options import RuntimeOptions
 from bootstrap.supervisor_factory import SupervisorFactory
 from core.config import AppSettings, get_settings
 from core.runtime.clock import Clock, SystemClock
+from rag.catalog.document_profile_registry import DocumentProfileRegistry
 from schemas.rag import RetrievalAccessScopeSchema
 from schemas.agent import AgentResultSchema
 from schemas.task import TaskSchema
@@ -70,6 +71,40 @@ class MainlineApplicationService:
     def _timestamp(self) -> str:
         """把统一时钟输出转换为仅用于默认运行标识的紧凑时间戳。"""
         return datetime.fromisoformat(self.clock.now_iso()).strftime("%Y%m%d_%H%M%S")
+
+    @staticmethod
+    def _bind_current_project_retrieval_scope(
+        *,
+        project_root: Path,
+        current_project_id: str,
+        retrieval_access_scope: RetrievalAccessScopeSchema,
+    ) -> RetrievalAccessScopeSchema:
+        """Narrow trusted retrieval authority to the current project's evidence boundary."""
+
+        catalog_path = project_root / "data/catalog/document_profiles_v1.jsonl"
+        registry = DocumentProfileRegistry.from_jsonl(catalog_path)
+        project_allowed_doc_ids = registry.allowed_document_ids_for_current_project(
+            current_project_id,
+            authorized_kb_ids=retrieval_access_scope.authorized_kb_ids,
+        )
+
+        existing_allowed = list(retrieval_access_scope.allowed_doc_ids)
+        if existing_allowed:
+            project_allowed = set(project_allowed_doc_ids)
+            effective_allowed = [
+                doc_id for doc_id in existing_allowed if doc_id in project_allowed
+            ]
+        else:
+            effective_allowed = project_allowed_doc_ids
+
+        if not effective_allowed:
+            raise ValueError(
+                "current project retrieval scope resolved to no authorized documents"
+            )
+
+        return retrieval_access_scope.model_copy(
+            update={"allowed_doc_ids": effective_allowed}
+        )
 
     def run(
         self,
@@ -112,6 +147,7 @@ class MainlineApplicationService:
         created_at = self.clock.now_iso()
         run_id = run_id or f"run_demo_{self._timestamp()}"
         input_task_id = ""
+        current_project_id = ""
         if project_input is not None:
             ingress_schema = (
                 ProjectInputDemoSeedV1Schema
@@ -133,6 +169,24 @@ class MainlineApplicationService:
                     "ProjectInput tenant_id conflicts with authenticated "
                     "retrieval tenant"
                 )
+            current_project_id = str(
+                getattr(validated_ingress, "current_project_id", None) or ""
+            ).strip()
+            if retrieval_access_scope is not None and current_project_id:
+                retrieval_access_scope = self._bind_current_project_retrieval_scope(
+                    project_root=project_root,
+                    current_project_id=current_project_id,
+                    retrieval_access_scope=retrieval_access_scope,
+                )
+        if (
+            retrieval_access_scope is not None
+            and "project_fact_kb" in retrieval_access_scope.authorized_kb_ids
+            and not current_project_id
+            and not allow_demo_defaults
+        ):
+            raise ValueError(
+                "current_project_id is required when project_fact_kb is authorized"
+            )
         if task_id is None:
             task_id = input_task_id or f"task_{run_id}"
         elif input_task_id and task_id != input_task_id:
@@ -368,6 +422,7 @@ class MainlineApplicationService:
         created_at = self.clock.now_iso()
         run_id = run_id or f"run_demo_{self._timestamp()}"
         input_task_id = ""
+        current_project_id = ""
         if project_input is not None:
             ingress_schema = (
                 ProjectInputDemoSeedV1Schema
@@ -388,6 +443,24 @@ class MainlineApplicationService:
                     "ProjectInput tenant_id conflicts with authenticated "
                     "retrieval tenant"
                 )
+            current_project_id = str(
+                getattr(validated_ingress, "current_project_id", None) or ""
+            ).strip()
+            if retrieval_access_scope is not None and current_project_id:
+                retrieval_access_scope = self._bind_current_project_retrieval_scope(
+                    project_root=project_root,
+                    current_project_id=current_project_id,
+                    retrieval_access_scope=retrieval_access_scope,
+                )
+        if (
+            retrieval_access_scope is not None
+            and "project_fact_kb" in retrieval_access_scope.authorized_kb_ids
+            and not current_project_id
+            and not allow_demo_defaults
+        ):
+            raise ValueError(
+                "current_project_id is required when project_fact_kb is authorized"
+            )
         if task_id is None:
             task_id = input_task_id or f"task_{run_id}"
         elif input_task_id and task_id != input_task_id:
@@ -552,6 +625,24 @@ class MainlineApplicationService:
         if task_state.task_type != workflow.task_type:
             raise ValueError(
                 "persisted task type is not supported by this application service"
+            )
+        current_project_id = str(
+            task_state.metadata.get("current_project_id") or ""
+        ).strip()
+        if (
+            retrieval_access_scope is not None
+            and "project_fact_kb" in retrieval_access_scope.authorized_kb_ids
+            and not current_project_id
+            and not allow_demo_defaults
+        ):
+            raise ExistingRunAuthorizationError(
+                "existing run is missing current_project_id for project_fact_kb"
+            )
+        if retrieval_access_scope is not None and current_project_id:
+            retrieval_access_scope = self._bind_current_project_retrieval_scope(
+                project_root=project_root,
+                current_project_id=current_project_id,
+                retrieval_access_scope=retrieval_access_scope,
             )
         options = RuntimeOptions.resolve(
             settings,

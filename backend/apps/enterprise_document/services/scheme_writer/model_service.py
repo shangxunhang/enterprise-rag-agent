@@ -16,6 +16,7 @@ from apps.enterprise_document.quality.model_adapter import (
 )
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationSchema
+from schemas.context import ContextBuildRequestSchema, ContextItemSchema
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
 from rag.evidence.citation_sources import prompt_visible_citation_text
@@ -395,12 +396,131 @@ class SectionModelService:
         project_input: ProjectInputSchema,
         citations: List[CitationSchema],
     ) -> ModelResponseSchema:
-        """压缩内容完整但超长的章节，禁止自由重生成或增加新事实。"""
+        """压缩内容完整但超长的章节，禁止自由重生成或增加新事实。
+
+        固定压缩指令作为 Prompt wrapper，不占 ``max_context_chars``；原始正文、章节边界
+        和引用目录作为结构化候选上下文交给 ``LLMContextManager``，与主 Writer 保持
+        ``managed context <= max_context_chars`` 的同一预算语义。
+        """
 
         target_chars = self.prompt_service.target_section_chars(project_input)
         hard_limit = int(target_chars * 1.5)
         contract = self.prompt_service.section_generation_contract(
             section_title, project_input
+        )
+        compression_max_tokens = min(
+            640,
+            max(384, int(target_chars * 0.65)),
+            project_input.generation_requirements.max_tokens_per_section,
+        )
+
+        citation_lines: list[str] = []
+        for item in citations:
+            quote_text = prompt_visible_citation_text(item)
+            if len(quote_text) > 240:
+                quote_text = quote_text[:239].rstrip() + "…"
+            citation_lines.append(
+                json.dumps(
+                    {
+                        "citation_id": item.citation_id,
+                        "marker": f"[{item.citation_id}]",
+                        "title": item.title,
+                        "section": item.section,
+                        "quote_text": quote_text,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+
+        context_items = [
+            ContextItemSchema(
+                item_id="compression_original_content",
+                source_type="generated_content",
+                title="待压缩原始正文",
+                content=original_content,
+                priority=110,
+                required=True,
+                truncate_allowed=False,
+            ),
+            ContextItemSchema(
+                item_id="compression_section_contract",
+                source_type="instruction",
+                title="章节边界",
+                content=contract,
+                priority=105,
+                required=True,
+                truncate_allowed=False,
+            ),
+        ]
+        if citation_lines:
+            context_items.append(
+                ContextItemSchema(
+                    item_id="compression_citation_catalog",
+                    source_type="citation",
+                    title="可用引用目录",
+                    content="\n".join(citation_lines),
+                    priority=70,
+                    required=False,
+                    truncate_allowed=True,
+                    citation_ids=[item.citation_id for item in citations],
+                    metadata={
+                        "compaction_strategy": "line_blocks",
+                        "min_blocks": 0,
+                    },
+                )
+            )
+
+        capability_plan: Dict[str, Any] = {}
+        resolved_role = infer_model_role("scheme_section_compression")
+        resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)
+        if callable(resolve_capabilities):
+            capability_plan = dict(
+                resolve_capabilities(model_role=resolved_role.value)
+            )
+        configured_input_limit = project_input.generation_requirements.extra.get(
+            "max_input_context_tokens"
+        )
+        if capability_plan:
+            safe_context_window = int(capability_plan["safe_context_window"])
+            max_input_tokens = (
+                min(safe_context_window, int(configured_input_limit))
+                if configured_input_limit is not None
+                else safe_context_window
+            )
+            reserved_output_tokens = min(
+                compression_max_tokens,
+                int(capability_plan["safe_max_output_tokens"]),
+            )
+        else:
+            max_input_tokens = int(configured_input_limit or 8192)
+            reserved_output_tokens = compression_max_tokens
+
+        context_package = self.context_manager.build(
+            ContextBuildRequestSchema(
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                call_purpose="scheme_section_compression",
+                section_id=section_id,
+                section_title=section_title,
+                items=context_items,
+                max_context_chars=int(
+                    project_input.generation_requirements.max_context_chars
+                ),
+                max_input_tokens=max_input_tokens,
+                reserved_output_tokens=reserved_output_tokens,
+                safety_margin_tokens=int(
+                    project_input.generation_requirements.extra.get(
+                        "context_safety_margin_tokens"
+                    )
+                    or 256
+                ),
+                lineage={
+                    "context_mode": "managed_compression",
+                    "model_capability_plan": capability_plan,
+                },
+                metadata={"policy_id": "section_compression_context_policy_v1"},
+            )
         )
         prompt = (
             f"下面的‘{section_title}’章节内容完整，但长度超过限制。请执行压缩改写，"
@@ -409,9 +529,7 @@ class SectionModelService:
             "保留核心逻辑和有证据支撑的事实，删除重复说明、空泛形容、跨章节内容和"
             "不必要的小标题；不得增加新事实、资源数量、产品型号或人员承诺；"
             "只输出压缩后的完整正文，并以完整句子结束。\n\n"
-            f"章节边界：\n{contract}\n\n"
-            f"原始正文：\n{original_content}\n\n"
-            f"可用引用目录：\n{self.prompt_service.citation_catalog(citations)}"
+            f"本次压缩上下文：\n{context_package.rendered_context}"
         )
         return self.call_model(
             shared_state,
@@ -422,11 +540,8 @@ class SectionModelService:
             available_citation_ids=[item.citation_id for item in citations],
             purpose="scheme_section_compression",
             suffix="_compress",
-            max_tokens_override=min(
-                640,
-                max(384, int(target_chars * 0.65)),
-                project_input.generation_requirements.max_tokens_per_section,
-            ),
+            max_tokens_override=compression_max_tokens,
+            context_package=context_package.model_dump(),
         )
 
     def _rewrite_invalid_section(

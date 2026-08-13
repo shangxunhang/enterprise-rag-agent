@@ -953,17 +953,33 @@ class SectionExecutionGraph:
             else None
         )
         writer_gate = payload.active_writer_gate
-        blocked = bool(
-            writer_gate is None
-            or not writer_gate.ordinary_generation_permitted
+        writer_enforcement = (
+            self.coordinator.resolve_writer_gate_enforcement(writer_gate)
         )
-        if research_action is ResearchRecommendedAction.HUMAN_REVIEW:
-            blocked = True
-        updates: dict[str, Any] = {"evidence_blocked": blocked}
+        research_enforcement = (
+            self.coordinator.gate_enforcement_controller.resolve(
+                gate_passed=(
+                    research_action is not ResearchRecommendedAction.HUMAN_REVIEW
+                )
+            )
+        )
+        blocked = bool(
+            writer_enforcement.should_block or research_enforcement.should_block
+        )
+        metadata = dict(payload.retrieval_metadata)
+        metadata["gate_enforcement"] = {
+            "writer_gate": writer_enforcement.as_metadata(gate_id="G06/G11"),
+            "research_review": research_enforcement.as_metadata(
+                gate_id="research_human_review"
+            ),
+        }
+        updates: dict[str, Any] = {
+            "evidence_blocked": blocked,
+            "retrieval_metadata": metadata,
+        }
         route = "generate"
         if blocked:
             title = str(payload.section_title)
-            metadata = dict(payload.retrieval_metadata)
             block_reason = (
                 "writer_gate_missing"
                 if writer_gate is None
@@ -1745,6 +1761,12 @@ class SectionExecutionGraph:
             branch_updates: dict[str, Any] = {}
             assessment = dict(updated.active_assessment)
             writer_gate = updated.active_writer_gate
+            writer_enforcement = (
+                self.coordinator.resolve_writer_gate_enforcement(writer_gate)
+            )
+            metadata["writer_gate_enforcement"] = writer_enforcement.as_metadata(
+                gate_id="G06/G11"
+            )
             if (
                 success
                 and updated.active_context is not None
@@ -1756,10 +1778,7 @@ class SectionExecutionGraph:
                     )
                 )
             ):
-                if (
-                    writer_gate is None
-                    or not writer_gate.ordinary_generation_permitted
-                ):
+                if writer_enforcement.should_block:
                     block_reason = (
                         "writer_gate_missing_after_research_tool_retrieval"
                         if writer_gate is None
@@ -1961,6 +1980,12 @@ class SectionExecutionGraph:
                 if writer_gate is not None
                 else None
             )
+            writer_enforcement = (
+                self.coordinator.resolve_writer_gate_enforcement(writer_gate)
+            )
+            metadata["writer_gate_enforcement"] = writer_enforcement.as_metadata(
+                gate_id="G06/G11"
+            )
             if context.context_text.strip() or (
                 writer_gate is not None
                 and not writer_gate.ordinary_generation_permitted
@@ -1974,10 +1999,7 @@ class SectionExecutionGraph:
                         "active_scope": scope,
                     }
                 )
-                if (
-                    writer_gate is None
-                    or not writer_gate.ordinary_generation_permitted
-                ):
+                if writer_enforcement.should_block:
                     block_reason = (
                         "writer_gate_missing_after_retrieval"
                         if writer_gate is None

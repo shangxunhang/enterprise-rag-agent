@@ -107,6 +107,7 @@ class ProjectInputSchema(SchemaBase):
     task_id: str
     tenant_id: str = "default"
     project_name: Optional[str] = None
+    current_project_id: Optional[str] = None
     task_type: str
     user_query: str
     source_materials: List[SourceMaterialSchema] = Field(default_factory=list)

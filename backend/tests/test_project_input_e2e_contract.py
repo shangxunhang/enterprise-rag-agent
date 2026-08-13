@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from application.task_factory import TaskFactory
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     DocumentAssemblyRequestSchema,
@@ -97,3 +98,18 @@ def test_explicit_gov_cloud_project_input_preserves_eight_section_contract() -> 
         "实施工期",
     ]
     assert project_input.metadata["allow_demo_defaults"] is False
+
+
+def test_current_project_id_is_persisted_for_durable_retrieval_scope() -> None:
+    payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    task = TaskFactory().build(
+        task_id=payload["task_id"],
+        run_id="gov_cloud_scope_persistence",
+        user_input=payload["user_query"],
+        created_at="2026-08-09T13:00:00+00:00",
+        project_input=payload,
+        allow_demo_defaults=False,
+    )
+
+    assert task.project_input["current_project_id"] == "gov_cloud_framework"
+    assert task.metadata["current_project_id"] == "gov_cloud_framework"

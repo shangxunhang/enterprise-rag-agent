@@ -22,6 +22,11 @@ from schemas.failure import FailureCategory
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
 from schemas.status import ExecutionStatus
+from apps.enterprise_document.services.gate_enforcement import (
+    GateEnforcementController,
+    GateEnforcementDecision,
+    GateFailureKind,
+)
 from apps.enterprise_document.services.semantic_section_judge import SemanticSectionJudge
 from .advisory_service import SectionAdvisoryService
 from .citation_service import CitationService
@@ -54,6 +59,8 @@ class SectionGenerationService:
         grounding_repair_service: GroundingRepairService,
         advisory_service: SectionAdvisoryService,
         semantic_judge: SemanticSectionJudge,
+        writer_claim_auditor: WriterClaimAuditor | None = None,
+        gate_enforcement_controller: GateEnforcementController | None = None,
         enable_semantic_gate: bool,
         semantic_gate_model_name: str,
         generation_checker: object | None,
@@ -67,7 +74,10 @@ class SectionGenerationService:
         self.grounding_repair_service = grounding_repair_service
         self.advisory_service = advisory_service
         self.high_risk_claim_gate = HighRiskClaimGate()
-        self.writer_claim_auditor = WriterClaimAuditor()
+        self.writer_claim_auditor = writer_claim_auditor or WriterClaimAuditor()
+        self.gate_enforcement_controller = (
+            gate_enforcement_controller or GateEnforcementController()
+        )
         self.semantic_judge = semantic_judge
         self.enable_semantic_gate = enable_semantic_gate
         self.semantic_gate_model_name = semantic_gate_model_name
@@ -83,6 +93,25 @@ class SectionGenerationService:
         self.quality_evaluator = SectionQualityEvaluator(
             runtime_support=self.runtime_support,
         )
+
+    def resolve_writer_gate_enforcement(
+        self,
+        binding: WriterGateBindingSchema | None,
+    ) -> GateEnforcementDecision:
+        """Resolve the execution consequence without mutating the writer gate."""
+
+        if binding is None or binding.legacy_artifact_incomplete:
+            return self.gate_enforcement_controller.resolve(
+                gate_passed=False,
+                failure_kind=GateFailureKind.TECHNICAL,
+            )
+        return self.gate_enforcement_controller.resolve(
+            gate_passed=binding.ordinary_generation_permitted,
+            failure_kind=GateFailureKind.BUSINESS,
+        )
+
+    def writer_gate_blocks(self, binding: WriterGateBindingSchema | None) -> bool:
+        return self.resolve_writer_gate_enforcement(binding).should_block
 
     def build_insufficient_evidence_section(
         self,
@@ -310,12 +339,16 @@ class SectionGenerationService:
         """
         started_at = self.runtime_support.now_iso()
         section_id = f"section_{shared_state.run_id}_{section_order:03d}"
+        writer_enforcement: GateEnforcementDecision | None = None
         if writer_gate_binding is not None:
             if writer_gate_binding.section_id != section_id:
                 raise ValueError("writer gate section_id does not match generation section")
             if writer_gate_binding.section_title != section_title:
                 raise ValueError("writer gate section_title does not match generation section")
-            if not writer_gate_binding.ordinary_generation_permitted:
+            writer_enforcement = self.resolve_writer_gate_enforcement(
+                writer_gate_binding
+            )
+            if writer_enforcement.should_block:
                 return self.build_gate_blocked_section(
                     shared_state,
                     project_input=project_input,
@@ -347,6 +380,15 @@ class SectionGenerationService:
         writer_prompt = prompt_result.rendered_text
         if writer_gate_binding is not None:
             writer_prompt += writer_gate_prompt_contract(writer_gate_binding)
+            if (
+                writer_enforcement is not None
+                and writer_enforcement.would_block_in_strict
+                and writer_enforcement.should_continue
+            ):
+                writer_prompt += (
+                    "\n【Shadow Enforcement】上述门禁判定保持真实失败；"
+                    "本次仅为链路观察而继续生成草稿，不代表门禁已通过，也不得改写门禁约束。\n"
+                )
             context_package["writer_gate_binding"] = writer_gate_binding.model_dump(
                 mode="json", exclude_none=True
             )
@@ -852,10 +894,33 @@ class SectionGenerationService:
                 content,
                 binding=writer_gate_binding,
                 applied_qualifiers=applied_qualifiers,
+                runtime_context={
+                    "task_id": shared_state.task_id,
+                    "workflow_run_id": shared_state.run_id,
+                    "run_id": shared_state.run_id,
+                    "section_id": section_id,
+                    "section_title": section_title,
+                    "shared_state": shared_state,
+                },
+                force_evaluate=bool(
+                    writer_enforcement is not None
+                    and writer_enforcement.would_block_in_strict
+                    and writer_enforcement.should_continue
+                ),
             )
             if writer_gate_binding is not None
             else None
         )
+        if claim_audit is not None and writer_enforcement is not None:
+            claim_audit = claim_audit.model_copy(
+                update={
+                    "metadata": {
+                        **dict(claim_audit.metadata),
+                        **writer_enforcement.as_metadata(gate_id="G15"),
+                    }
+                },
+                deep=True,
+            )
 
         quality = self.quality_evaluator.evaluate(
             section_id=section_id,
@@ -1002,6 +1067,11 @@ class SectionGenerationService:
                 "claim_audit": (
                     claim_audit.model_dump(mode="json", exclude_none=True)
                     if claim_audit is not None
+                    else None
+                ),
+                "gate_enforcement": (
+                    writer_enforcement.as_metadata(gate_id="G06/G11")
+                    if writer_enforcement is not None
                     else None
                 ),
                 "formal_deliverable_eligible": bool(

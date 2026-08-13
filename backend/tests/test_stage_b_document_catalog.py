@@ -124,6 +124,55 @@ def test_current_project_scope_is_limited_to_dajian_transport() -> None:
     assert {profile.kb_id for profile in current_profiles} == {"project_fact_kb"}
 
 
+def test_runtime_whitelist_keeps_matching_project_sources_and_all_reference_roles() -> None:
+    registry = DocumentProfileRegistry.from_jsonl(PROFILE_PATH)
+    allowed = registry.allowed_document_ids_for_current_project(
+        "dajian_transport"
+    )
+    profiles = {profile.document_id: profile for profile in registry.all()}
+
+    assert len(allowed) == 30
+    project_fact_ids = {
+        document_id
+        for document_id in allowed
+        if profiles[document_id].kb_id == "project_fact_kb"
+    }
+    assert project_fact_ids == {
+        "doc_41a218696b126f8270238a45",
+        "doc_5bd4faa071c0d2cb316c1add",
+        "doc_9237648465447a2b4a396140",
+        "doc_da8cd497ed9aa16c5cd1dd16",
+    }
+    assert "doc_a8144d5d4e2b2478bbdfc1cd" not in allowed
+
+
+def test_runtime_whitelist_blocks_other_project_sources_without_blocking_references() -> None:
+    registry = DocumentProfileRegistry.from_jsonl(PROFILE_PATH)
+    allowed = registry.allowed_document_ids_for_current_project(
+        "gov_cloud_framework"
+    )
+    profiles = {profile.document_id: profile for profile in registry.all()}
+
+    assert len(allowed) == 26
+    assert all(profiles[document_id].kb_id != "project_fact_kb" for document_id in allowed)
+    assert any(
+        profiles[document_id].evidence_role is EvidenceRole.HISTORICAL_CASE
+        for document_id in allowed
+    )
+    assert any(
+        profiles[document_id].evidence_role is EvidenceRole.POLICY_STANDARD
+        for document_id in allowed
+    )
+    assert any(
+        profiles[document_id].evidence_role is EvidenceRole.TEMPLATE_STYLE
+        for document_id in allowed
+    )
+    assert any(
+        profiles[document_id].evidence_role is EvidenceRole.TECHNICAL_REFERENCE
+        for document_id in allowed
+    )
+
+
 def test_historical_cases_cannot_support_current_project_claims() -> None:
     profiles = DocumentProfileRegistry.from_jsonl(PROFILE_PATH).all()
     historical = [

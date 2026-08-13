@@ -91,6 +91,21 @@ class ModelProviderFactory:
                     base_url=base_url,
                     timeout=float(profile.timeout_seconds),
                     max_retries=0,
+                    extra_body={
+                        "thinking": {
+                            "type": (
+                                "enabled"
+                                if bool(
+                                    getattr(
+                                        settings,
+                                        "deepseek_thinking_enabled",
+                                        False,
+                                    )
+                                )
+                                else "disabled"
+                            )
+                        }
+                    },
                 )
 
         return LangChainChatModelClient(

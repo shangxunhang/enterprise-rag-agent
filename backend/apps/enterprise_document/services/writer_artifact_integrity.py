@@ -11,11 +11,12 @@ from apps.enterprise_document.schemas.writer_governance import (
     WriterGateBindingSchema,
 )
 from apps.enterprise_document.services.scheme_writer.writer_governance import (
-    WriterClaimAuditor,
+    SEMANTIC_CLASSIFICATION_FAILURE_CODES,
     blocked_claim_audit,
     classifier_policy_is_supported,
     clean_claim_span_text,
     content_sha256,
+    extract_substantive_sentence_spans,
     normalized_content_sha256,
     writer_gate_binding_sha256,
 )
@@ -56,6 +57,201 @@ def _claim_audit_projection(audit: ClaimAuditResultSchema) -> dict[str, Any]:
         "required_qualifiers": list(audit.required_qualifiers),
         "applied_qualifiers": list(audit.applied_qualifiers),
         "checks": dict(audit.checks),
+    }
+
+
+_POLICY_VIOLATION_CODES = frozenset(
+    {
+        "forbidden_claim_type_generated",
+        "claim_type_not_allowed",
+        "required_qualifier_missing",
+    }
+)
+
+
+def _sentence_coverage_key(
+    *,
+    sentence_index: Any,
+    span_start: Any,
+    span_end: Any,
+    text: str,
+) -> tuple[int, int, int, str] | None:
+    try:
+        return (
+            int(sentence_index),
+            int(span_start),
+            int(span_end),
+            str(text),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _recompute_recorded_audit_consistency(
+    *,
+    content: str,
+    binding: WriterGateBindingSchema,
+    audit: ClaimAuditResultSchema,
+) -> tuple[bool, dict[str, Any]]:
+    """Recompute deterministic policy from persisted semantic ClaimTypes.
+
+    This deliberately does not call the semantic model again.  It validates that every
+    substantive sentence is covered by either persisted ClaimTypes or an explicit
+    fail-closed classification failure, then re-runs the Writer Gate allow/forbid policy.
+    """
+
+    qualifiers = set(binding.gate_decision.required_qualifiers)
+    substantive_rows = extract_substantive_sentence_spans(
+        content,
+        governance_qualifiers=qualifiers,
+    )
+    expected_sentence_keys = {
+        _sentence_coverage_key(
+            sentence_index=row["sentence_index"],
+            span_start=row["span_start"],
+            span_end=row["span_end"],
+            text=str(row["text"]),
+        )
+        for row in substantive_rows
+    }
+    expected_sentence_keys.discard(None)
+
+    claim_sentence_keys = {
+        _sentence_coverage_key(
+            sentence_index=claim.sentence_index,
+            span_start=claim.span_start,
+            span_end=claim.span_end,
+            text=claim.text,
+        )
+        for claim in audit.generated_claims
+    }
+    claim_sentence_keys.discard(None)
+
+    failure_sentence_keys: list[tuple[int, int, int, str]] = []
+    for violation in audit.violations:
+        if violation.violation_code not in SEMANTIC_CLASSIFICATION_FAILURE_CODES:
+            continue
+        metadata = dict(violation.metadata or {})
+        key = _sentence_coverage_key(
+            sentence_index=metadata.get("sentence_index"),
+            span_start=metadata.get("span_start"),
+            span_end=metadata.get("span_end"),
+            text=violation.text,
+        )
+        if key is not None:
+            failure_sentence_keys.append(key)
+    failure_sentence_key_set = set(failure_sentence_keys)
+
+    coverage_valid = bool(
+        claim_sentence_keys.issubset(expected_sentence_keys)
+        and failure_sentence_key_set.issubset(expected_sentence_keys)
+        and not (claim_sentence_keys & failure_sentence_key_set)
+        and len(failure_sentence_keys) == len(failure_sentence_key_set)
+        and expected_sentence_keys == (claim_sentence_keys | failure_sentence_key_set)
+    )
+
+    gate = binding.gate_decision
+    allowed = set(gate.allowed_claim_types)
+    forbidden = set(gate.forbidden_claim_types)
+    expected_policy_signatures: list[tuple[str, str | None, str | None, str]] = []
+    for claim in audit.generated_claims:
+        if claim.claim_type in forbidden:
+            expected_policy_signatures.append(
+                (
+                    "forbidden_claim_type_generated",
+                    claim.claim_id,
+                    claim.claim_type.value,
+                    claim.text,
+                )
+            )
+        elif claim.claim_type not in allowed:
+            expected_policy_signatures.append(
+                (
+                    "claim_type_not_allowed",
+                    claim.claim_id,
+                    claim.claim_type.value,
+                    claim.text,
+                )
+            )
+    for qualifier in gate.required_qualifiers:
+        if qualifier not in content:
+            expected_policy_signatures.append(
+                ("required_qualifier_missing", None, None, qualifier)
+            )
+
+    recorded_policy_signatures = [
+        (
+            violation.violation_code,
+            violation.claim_id,
+            violation.claim_type.value if violation.claim_type is not None else None,
+            violation.text,
+        )
+        for violation in audit.violations
+        if violation.violation_code in _POLICY_VIOLATION_CODES
+    ]
+    policy_valid = recorded_policy_signatures == expected_policy_signatures
+
+    recognized_codes = _POLICY_VIOLATION_CODES | SEMANTIC_CLASSIFICATION_FAILURE_CODES
+    unexpected_violation_codes = sorted(
+        {
+            violation.violation_code
+            for violation in audit.violations
+            if violation.violation_code not in recognized_codes
+        }
+    )
+    classifier_supported = classifier_policy_is_supported(
+        classifier_id=audit.integrity.classifier_id,
+        classifier_version=audit.integrity.classifier_version,
+        policy_sha256=audit.integrity.classifier_policy_sha256,
+    )
+    has_classification_failure = any(
+        violation.violation_code in SEMANTIC_CLASSIFICATION_FAILURE_CODES
+        for violation in audit.violations
+    )
+    expected_checks = {
+        "generation_allowed": binding.generation_allowed,
+        "claim_types_within_allowed_set": not any(
+            code in {"forbidden_claim_type_generated", "claim_type_not_allowed"}
+            for code, _, _, _ in expected_policy_signatures
+        ),
+        "all_substantive_sentences_classified": (
+            coverage_valid and not has_classification_failure
+        ),
+        "required_qualifiers_visible": all(
+            qualifier in content for qualifier in gate.required_qualifiers
+        ),
+        "classifier_policy_supported": classifier_supported,
+    }
+    if not gate.required_qualifiers:
+        expected_checks["required_qualifiers_visible"] = True
+    checks_valid = all(
+        audit.checks.get(name) is value for name, value in expected_checks.items()
+    )
+    expected_passed = not audit.violations and all(expected_checks.values())
+    expected_human_review = bool(audit.violations) or gate.human_review_required
+    state_valid = (
+        audit.passed is expected_passed
+        and audit.human_review_required is expected_human_review
+    )
+
+    valid = bool(
+        coverage_valid
+        and policy_valid
+        and not unexpected_violation_codes
+        and checks_valid
+        and state_valid
+    )
+    return valid, {
+        "semantic_sentence_coverage_valid": coverage_valid,
+        "recorded_policy_recomputation_valid": policy_valid,
+        "recorded_policy_expected_violation_count": len(expected_policy_signatures),
+        "recorded_policy_actual_violation_count": len(recorded_policy_signatures),
+        "unexpected_claim_audit_violation_codes": unexpected_violation_codes,
+        "recorded_claim_audit_checks_valid": checks_valid,
+        "recorded_claim_audit_state_valid": state_valid,
+        "substantive_sentence_count": len(expected_sentence_keys),
+        "classified_sentence_count": len(claim_sentence_keys),
+        "semantic_unclassified_sentence_count": len(failure_sentence_key_set),
     }
 
 
@@ -363,21 +559,29 @@ def validate_writer_section_artifact(
             audit_created_at=audit.audit_created_at,
             legacy_incomplete=True,
         )
-    elif binding.generation_allowed:
-        recomputed_audit = WriterClaimAuditor().audit(
-            content,
-            binding=binding,
-            audit_created_at=audit.audit_created_at,
+        recomputed_valid = (
+            _claim_audit_projection(recomputed_audit)
+            == _claim_audit_projection(audit)
         )
+    elif binding.generation_allowed:
+        recomputed_valid, recomputation_metadata = (
+            _recompute_recorded_audit_consistency(
+                content=content,
+                binding=binding,
+                audit=audit,
+            )
+        )
+        metadata.update(recomputation_metadata)
     else:
         recomputed_audit = blocked_claim_audit(
             content,
             binding,
             audit_created_at=audit.audit_created_at,
         )
-    recomputed_valid = (
-        _claim_audit_projection(recomputed_audit) == _claim_audit_projection(audit)
-    )
+        recomputed_valid = (
+            _claim_audit_projection(recomputed_audit)
+            == _claim_audit_projection(audit)
+        )
     checks["writer_claim_audit_recomputed_valid"] = recomputed_valid
     if not recomputed_valid:
         failure_codes.append("writer_claim_audit_recomputation_mismatch")
