@@ -8,14 +8,150 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+import unicodedata
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import ConfigDict, Field, model_validator
 
 from schemas.citation import CitationSchema
+from schemas.claim import ClaimType
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
 from schemas.status import ExecutionStatus
+
+
+def _normalized_contract_text(value: str) -> str:
+    """Return a stable normalized representation used only for contract identity."""
+
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value).strip()).casefold()
+
+
+def build_evidence_requirement_id(
+    *,
+    section_id: str,
+    topic: str,
+    ordinal: int,
+) -> str:
+    """Build a replay-stable requirement id without random UUID state."""
+
+    if ordinal < 1:
+        raise ValueError("requirement ordinal must be at least 1")
+    identity = "\x1f".join(
+        (
+            _normalized_contract_text(section_id),
+            _normalized_contract_text(topic),
+            str(ordinal),
+        )
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+    return f"requirement_{digest}"
+
+
+class EvidenceRequirementSchema(SchemaBase):
+    """One public evidence need within a section requirements envelope."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    requirement_id: str
+    topic: str
+    purpose: Optional[str] = None
+    importance: Literal["required", "optional"] = "required"
+    expected_source_types: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_requirement(self) -> "EvidenceRequirementSchema":
+        object.__setattr__(self, "requirement_id", self.requirement_id.strip())
+        object.__setattr__(self, "topic", self.topic.strip())
+        purpose = self.purpose.strip() if self.purpose is not None else None
+        object.__setattr__(self, "purpose", purpose or None)
+        object.__setattr__(
+            self,
+            "expected_source_types",
+            list(
+                dict.fromkeys(
+                    item.strip()
+                    for item in self.expected_source_types
+                    if item.strip()
+                )
+            )
+        )
+        if not self.requirement_id or not self.topic:
+            raise ValueError("requirement_id and topic cannot be empty")
+        return self
+
+
+class EvidenceRequirementsSchema(SchemaBase):
+    """Canonical section envelope containing item-level evidence requirements."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    schema_version: str = "evidence_requirements_v2"
+    section_id: str
+    section_title: Optional[str] = None
+    section_type: str
+    requirements: List[EvidenceRequirementSchema] = Field(default_factory=list)
+
+    @classmethod
+    def from_topics(
+        cls,
+        *,
+        section_id: str,
+        section_type: str,
+        topics: List[str],
+        section_title: Optional[str] = None,
+    ) -> "EvidenceRequirementsSchema":
+        """Create fallback items from legacy topics at the RAG compatibility edge."""
+
+        stable_topics = list(
+            dict.fromkeys(str(topic).strip() for topic in topics if str(topic).strip())
+        )
+        requirements = [
+            EvidenceRequirementSchema(
+                requirement_id=build_evidence_requirement_id(
+                    section_id=section_id,
+                    topic=topic,
+                    ordinal=ordinal,
+                ),
+                topic=topic,
+            )
+            for ordinal, topic in enumerate(stable_topics, start=1)
+        ]
+        return cls(
+            section_id=section_id,
+            section_title=section_title,
+            section_type=section_type,
+            requirements=requirements,
+        )
+
+    @property
+    def required_topics(self) -> List[str]:
+        """Legacy read-only projection; item requirements remain authority."""
+
+        return [item.topic for item in self.requirements]
+
+    @model_validator(mode="after")
+    def validate_envelope(self) -> "EvidenceRequirementsSchema":
+        object.__setattr__(self, "section_id", self.section_id.strip())
+        section_title = (
+            self.section_title.strip() if self.section_title is not None else None
+        )
+        object.__setattr__(self, "section_title", section_title or None)
+        object.__setattr__(self, "section_type", self.section_type.strip())
+        if not self.section_id or not self.section_type:
+            raise ValueError("section_id and section_type cannot be empty")
+        if not self.requirements:
+            raise ValueError("requirements cannot be empty")
+        requirement_ids = [item.requirement_id for item in self.requirements]
+        if len(requirement_ids) != len(set(requirement_ids)):
+            raise ValueError("requirement_id values must be unique")
+        normalized_topics = [
+            _normalized_contract_text(item.topic) for item in self.requirements
+        ]
+        if len(normalized_topics) != len(set(normalized_topics)):
+            raise ValueError("requirement topics must be unique within a section")
+        return self
 
 
 class RetrievalAccessScopeSchema(SchemaBase):
@@ -146,6 +282,39 @@ class RetrievalNarrowingSchema(SchemaBase):
             return default
 
 
+class RAGDocumentContextSchema(SchemaBase):
+    """Stable document semantics needed by RAG retrieval and correction."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+    )
+
+    project_name: Optional[str] = None
+    document_title: Optional[str] = None
+    required_sections: List[str] = Field(default_factory=list)
+    citation_required_sections: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_document_context(self) -> "RAGDocumentContextSchema":
+        project_name = self.project_name.strip() if self.project_name else None
+        document_title = self.document_title.strip() if self.document_title else None
+        object.__setattr__(self, "project_name", project_name or None)
+        object.__setattr__(self, "document_title", document_title or None)
+        for field_name in ("required_sections", "citation_required_sections"):
+            values = list(
+                dict.fromkeys(
+                    item.strip()
+                    for item in getattr(self, field_name)
+                    if item.strip()
+                )
+            )
+            object.__setattr__(self, field_name, values)
+        return self
+
+
 class RAGToolInputSchema(SchemaBase):
     """表示 Agent 提交给 RAG 工具的一次标准检索请求。"""
 
@@ -181,11 +350,24 @@ class RAGToolInputSchema(SchemaBase):
     need_citation: bool = True
 
     # 最终拼接证据上下文的最大字符数。
-    max_context_chars: Optional[int] = 6000
+    max_context_chars: Optional[int] = Field(default=6000, ge=1)
     # 最终允许进入上下文的最大证据项数量。
-    max_context_items: Optional[int] = 3
+    max_context_items: Optional[int] = Field(default=3, ge=1)
+    # 调用方声明的证据上下文 token 上限；RAG 内部安全上限仍然优先。
+    max_context_tokens: Optional[int] = Field(default=None, ge=1)
 
-    # 检索用途、策略提示和其他尚未进入稳定输入契约的信息。
+    # 一次检索在 caller、gateway 和 RAG trace 中共享的稳定标识。
+    retrieval_trace_id: Optional[str] = None
+    # 文档、章节或恢复等稳定业务检索范围。
+    retrieval_scope: str = "document"
+    # RetrievalPlanner 使用的稳定调用任务类型。
+    task_type: Optional[str] = None
+    # Canonical Section Envelope；requirements[] 是唯一 authority。
+    evidence_requirements: Optional[EvidenceRequirementsSchema] = None
+    # RAG 确认需要理解的最小稳定文档语义。
+    document_context: Optional[RAGDocumentContextSchema] = None
+
+    # 仅承载 optional/diagnostic/experimental metadata，不承载 canonical 语义。
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -356,17 +538,16 @@ class EvidenceDisposition(str, Enum):
     DROPPED = "dropped"
 
 
-class EvidenceAssessmentStatus(str, Enum):
-    """表示对证据语义充分性的独立评估状态。"""
+class EvidenceStatus(str, Enum):
+    """Canonical public status of completed evidence assessment."""
 
-    # 尚未执行语义充分性判断。
-    NOT_ASSESSED = "not_assessed"
-    # 证据足以支持当前生成目标。
     SUFFICIENT = "sufficient"
-    # 证据只能支持部分目标或部分声明。
-    PARTIAL = "partial"
-    # 证据不足，不能在禁止臆测约束下可靠生成。
     INSUFFICIENT = "insufficient"
+    CONFLICTED = "conflicted"
+
+
+# Import compatibility only: both names resolve to the same three-state Enum object.
+EvidenceAssessmentStatus = EvidenceStatus
 
 
 class RAGEvidenceLineageSchema(SchemaBase):
@@ -477,13 +658,15 @@ class RAGEvidenceItemSchema(SchemaBase):
 
 
 class RAGEvidenceAssessmentSchema(SchemaBase):
-    """保存证据可用性和可选语义充分性判断。"""
+    """Public evidence facts consumed across the RAG/Application boundary."""
 
     # 当前证据评估契约版本。
     schema_version: str = "rag_evidence_assessment_v1"
 
-    # 语义充分性评估状态。
-    status: EvidenceAssessmentStatus = EvidenceAssessmentStatus.NOT_ASSESSED
+    # Assessment lifecycle is separate from the canonical three-state result.
+    assessment_state: Literal["pending", "completed"] = "pending"
+    # Kept as ``status`` for wire compatibility; it is the canonical EvidenceStatus.
+    status: Optional[EvidenceStatus] = None
     # 是否至少有一个证据项进入最终上下文。
     evidence_available: bool = False
     # 进入上下文的证据项数量。
@@ -499,10 +682,116 @@ class RAGEvidenceAssessmentSchema(SchemaBase):
     judge_version: Optional[str] = None
     # 评估器输出的可选分数。
     score: Optional[float] = None
-    # 解释充分、不充分或部分充分的稳定原因码。
+    # Coverage and conflict facts distinguish partial-like and absent-like insufficiency.
+    coverage_ratio: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    required_topics: List[str] = Field(default_factory=list)
+    covered_topics: List[str] = Field(default_factory=list)
+    missing_topics: List[str] = Field(default_factory=list)
+    conflicts: List[Dict[str, Any]] = Field(default_factory=list)
+    # Claim capabilities are evidence facts, not generation permissions.
+    supported_claim_types: List[ClaimType] = Field(default_factory=list)
+    forbidden_claim_types: List[ClaimType] = Field(default_factory=list)
+    # Set-level source facts needed by the Application-owned Gate policy.
+    authoritative_evidence_present: bool = False
+    historical_or_reference_evidence_present: bool = False
+    # Usage constraints derived from evidence certainty (for example estimates).
+    required_qualifiers: List[str] = Field(default_factory=list)
+    # Facts about the evidence that was actually exposed to the prompt.
+    prompt_evidence_source: Optional[str] = None
+    prompt_evidence_contract_missing: bool = False
+    # 解释充分、不充分或冲突的稳定原因码。
     reason_codes: List[str] = Field(default_factory=list)
     # 评估明细。
     details: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def project_legacy_status(cls, value: Any) -> Any:
+        """Normalize legacy PARTIAL/ABSENT without restoring them as enum members."""
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        raw_status = data.get("status", data.get("evidence_status"))
+        normalized = (
+            str(getattr(raw_status, "value", raw_status) or "").strip().lower()
+        )
+        if normalized in {"partial", "absent"}:
+            data["status"] = EvidenceStatus.INSUFFICIENT
+        elif normalized == "not_assessed" or not normalized:
+            data["status"] = None
+        elif raw_status is not None:
+            data["status"] = raw_status
+        data.pop("evidence_status", None)
+        data.setdefault(
+            "assessment_state",
+            "pending" if data.get("status") is None else "completed",
+        )
+        return data
+
+    @model_validator(mode="after")
+    def validate_assessment_lifecycle(self) -> "RAGEvidenceAssessmentSchema":
+        object.__setattr__(
+            self,
+            "supported_claim_types",
+            list(dict.fromkeys(self.supported_claim_types)),
+        )
+        object.__setattr__(
+            self,
+            "forbidden_claim_types",
+            list(dict.fromkeys(self.forbidden_claim_types)),
+        )
+        object.__setattr__(
+            self,
+            "required_qualifiers",
+            list(
+                dict.fromkeys(
+                    item.strip()
+                    for item in self.required_qualifiers
+                    if item.strip()
+                )
+            ),
+        )
+        prompt_source = (
+            self.prompt_evidence_source.strip()
+            if self.prompt_evidence_source is not None
+            else None
+        )
+        object.__setattr__(self, "prompt_evidence_source", prompt_source or None)
+        if self.assessment_state == "pending" and self.status is not None:
+            raise ValueError("pending assessment requires status=null")
+        if self.assessment_state == "completed" and self.status is None:
+            raise ValueError("completed assessment requires a canonical EvidenceStatus")
+        for field_name in (
+            "required_topics",
+            "covered_topics",
+            "missing_topics",
+            "reason_codes",
+        ):
+            values = getattr(self, field_name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{field_name} must be unique")
+        if set(self.covered_topics) & set(self.missing_topics):
+            raise ValueError("topics cannot be both covered and missing")
+        claim_overlap = set(self.supported_claim_types) & set(
+            self.forbidden_claim_types
+        )
+        if claim_overlap:
+            raise ValueError(
+                "claim types cannot be both supported and forbidden: "
+                + ", ".join(sorted(item.value for item in claim_overlap))
+            )
+        if self.status is EvidenceStatus.SUFFICIENT and self.conflicts:
+            raise ValueError("sufficient evidence cannot contain conflicts")
+        if self.status is EvidenceStatus.CONFLICTED and not self.conflicts:
+            raise ValueError("conflicted evidence requires conflicts")
+        return self
+
+    @property
+    def evidence_status(self) -> Optional[EvidenceStatus]:
+        """Explicit public name for callers migrating from the ``status`` field."""
+
+        return self.status
 
 
 class EvidenceBundleSchema(SchemaBase):

@@ -212,7 +212,8 @@ def test_presence_does_not_claim_semantic_sufficiency() -> None:
     )
 
     assert contract.assessment.evidence_available is True
-    assert contract.assessment.status == EvidenceAssessmentStatus.NOT_ASSESSED
+    assert contract.assessment.assessment_state == "pending"
+    assert contract.assessment.status is None
     assert contract.assessment.details["presence_is_not_semantic_sufficiency"] is True
 
 

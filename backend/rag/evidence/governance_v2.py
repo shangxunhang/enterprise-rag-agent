@@ -1,9 +1,9 @@
-"""Stage D deterministic evidence eligibility, coverage and delivery gate.
+"""Stage D deterministic evidence eligibility and coverage assessment.
 
 C-RAG first decides whether retrieved evidence is relevant to the current
 section.  This module consumes that decision and answers the narrower claim-
-governance question from canonical Document Profiles, Structured Evidence and,
-for the final gate, the exact prompt-visible text.
+eligibility question from canonical Document Profiles, Structured Evidence and
+the exact prompt-visible text.
 """
 
 from __future__ import annotations
@@ -18,16 +18,18 @@ from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from apps.enterprise_document.schemas.gate_decision import (
-    ClaimRiskLevel,
-    DeliveryMode,
-    GateDecisionSchema,
-)
-from rag.catalog.document_profile import (
+from schemas.claim import (
     CURRENT_PROJECT_CLAIM_TYPES,
     TEMPLATE_ONLY_CLAIM_TYPES,
-    AuthorityLevel,
     ClaimType,
+)
+from schemas.rag import (
+    EvidenceRequirementsSchema,
+    EvidenceStatus,
+    RAGEvidenceAssessmentSchema,
+)
+from rag.catalog.document_profile import (
+    AuthorityLevel,
     DocumentType,
     EvidenceRole,
     ProjectRelation,
@@ -39,7 +41,6 @@ from rag.schema.evidence_assessment_v2 import (
     EvidenceConflictSchema,
     EvidenceRelevance,
     EvidenceSetAssessmentSchema,
-    EvidenceStatus,
 )
 from rag.schema.prompt_evidence_candidate_v1 import (
     PromptEvidenceCandidateV1Schema,
@@ -51,30 +52,21 @@ from rag.schema.retrieval_candidate_v2 import (
 from rag.schema.structured_evidence import FactStatus
 
 
-class EvidenceRequirementsV2Schema(BaseModel):
+class RAGEvidenceRequirementsPolicySchema(EvidenceRequirementsSchema):
+    """RAG-internal policy wrapper around the public requirements envelope."""
+
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
-    schema_version: str = "evidence_requirements_v2"
     policy_id: str = "conservative_section_policy_v1"
-    section_id: str
-    section_type: str
-    required_topics: list[str] = Field(default_factory=list)
+    # Legacy ignored data remains readable/serializable but does not drive retrieval.
     requested_claim_types: list[ClaimType] = Field(default_factory=list)
-    claim_risk_level: ClaimRiskLevel = ClaimRiskLevel.LOW
     coverage_strategy: CoverageStrategy = CoverageStrategy.TOPIC_UNION
-    allow_framework_only: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _unique_values(self) -> "EvidenceRequirementsV2Schema":
-        for field_name in ("required_topics", "requested_claim_types"):
-            values = getattr(self, field_name)
-            if len(values) != len(set(values)):
-                raise ValueError(f"{field_name} must be unique")
-        if not self.section_id.strip() or not self.section_type.strip():
-            raise ValueError("section_id and section_type cannot be empty")
-        if not self.required_topics:
-            raise ValueError("required_topics cannot be empty")
+    def _unique_values(self) -> "RAGEvidenceRequirementsPolicySchema":
+        if len(self.requested_claim_types) != len(set(self.requested_claim_types)):
+            raise ValueError("requested_claim_types must be unique")
         return self
 
 
@@ -83,7 +75,6 @@ class FactClaimPolicyResult:
     eligible: bool
     certainty_level: str
     required_qualifiers: tuple[str, ...] = ()
-    human_review_required: bool = False
     reason_codes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -91,18 +82,17 @@ class FactClaimPolicyResult:
             "eligible": self.eligible,
             "certainty_level": self.certainty_level,
             "required_qualifiers": list(self.required_qualifiers),
-            "human_review_required": self.human_review_required,
             "reason_codes": list(self.reason_codes),
         }
 
 
 @dataclass(frozen=True)
 class EvidenceGovernanceV2Result:
-    requirements: EvidenceRequirementsV2Schema
+    requirements: RAGEvidenceRequirementsPolicySchema
     candidates: tuple[RetrievalCandidateV2Schema, ...]
     item_assessments: tuple[EvidenceAssessmentV2Schema, ...]
     set_assessment: EvidenceSetAssessmentSchema
-    gate_decision: GateDecisionSchema
+    public_assessment: RAGEvidenceAssessmentSchema
     eligible_candidate_ids: tuple[str, ...]
     rejected_candidate_ids: tuple[str, ...]
     candidate_contract_errors: tuple[dict[str, Any], ...] = ()
@@ -131,7 +121,7 @@ class EvidenceGovernanceV2Result:
             "set_assessment": self.set_assessment.model_dump(
                 mode="json", exclude_none=True
             ),
-            "gate_decision": self.gate_decision.model_dump(
+            "public_assessment": self.public_assessment.model_dump(
                 mode="json", exclude_none=True
             ),
             "eligible_candidate_ids": list(self.eligible_candidate_ids),
@@ -139,12 +129,6 @@ class EvidenceGovernanceV2Result:
             "candidate_contract_errors": [
                 dict(item) for item in self.candidate_contract_errors
             ],
-            "generation_allowed": self.gate_decision.delivery_mode
-            in {
-                DeliveryMode.GROUNDED,
-                DeliveryMode.QUALIFIED,
-                DeliveryMode.FRAMEWORK_ONLY,
-            },
         }
 
 
@@ -170,37 +154,11 @@ def _slug(value: str, fallback: str) -> str:
     return normalized or fallback
 
 
-def _infer_claim_policy(text: str) -> tuple[list[ClaimType], ClaimRiskLevel, str]:
-    normalized = str(text or "")
-    rules: list[tuple[tuple[str, ...], list[ClaimType], ClaimRiskLevel, str]] = [
-        (("投资", "预算", "概算", "费用", "金额", "造价"), [ClaimType.CURRENT_PROJECT_COST], ClaimRiskLevel.HIGH, "current_project_cost"),
-        (("数量", "台数", "规模", "容量", "套数"), [ClaimType.CURRENT_PROJECT_QUANTITY], ClaimRiskLevel.HIGH, "current_project_quantity"),
-        (("工期", "进度", "建设周期", "实施周期", "上线时间", "计划日期"), [ClaimType.CURRENT_PROJECT_SCHEDULE], ClaimRiskLevel.HIGH, "current_project_schedule"),
-        (("配置", "设备选型", "资源配置", "技术参数", "规格参数"), [ClaimType.CURRENT_PROJECT_CONFIGURATION], ClaimRiskLevel.HIGH, "current_project_configuration"),
-        (("采购", "招标", "投标", "磋商", "合同"), [ClaimType.PROCUREMENT_REQUIREMENT], ClaimRiskLevel.HIGH, "procurement_requirement"),
-        (("政策", "法规", "标准", "规范", "合规", "等保"), [ClaimType.POLICY_REQUIREMENT], ClaimRiskLevel.MEDIUM, "policy_requirement"),
-        (("模板", "目录", "章节结构", "格式", "写作风格"), [ClaimType.TEMPLATE_STRUCTURE, ClaimType.STYLE_GUIDANCE], ClaimRiskLevel.LOW, "template_structure"),
-        (("项目背景", "建设目标", "建设内容", "建设范围", "现状"), [ClaimType.CURRENT_PROJECT_FACT], ClaimRiskLevel.MEDIUM, "current_project_fact"),
-    ]
-    for keywords, claims, risk, policy in rules:
-        if any(keyword in normalized for keyword in keywords):
-            return claims, risk, policy
-    return (
-        [
-            ClaimType.GENERAL_METHOD,
-            ClaimType.TYPICAL_ARCHITECTURE,
-            ClaimType.REFERENCE_CASE,
-        ],
-        ClaimRiskLevel.LOW,
-        "general_reference",
-    )
-
-
 def resolve_evidence_requirements_v2(
     *,
     query: str,
     runtime_context: dict[str, Any] | None,
-) -> EvidenceRequirementsV2Schema:
+) -> RAGEvidenceRequirementsPolicySchema:
     context = dict(runtime_context or {})
     explicit = context.get("evidence_requirements")
     explicit = dict(explicit) if isinstance(explicit, dict) else {}
@@ -220,9 +178,29 @@ def resolve_evidence_requirements_v2(
         or context.get("section_type")
         or section_id
     ).strip()
-    topics = _stable_unique(
-        explicit.get("required_topics") or [section_title or query]
-    )
+    raw_requirements = explicit.get("requirements")
+    if isinstance(raw_requirements, list) and raw_requirements:
+        public_requirements = EvidenceRequirementsSchema.model_validate(
+            {
+                "schema_version": explicit.get(
+                    "schema_version", "evidence_requirements_v2"
+                ),
+                "section_id": _slug(section_id, "document"),
+                "section_title": section_title or None,
+                "section_type": _slug(section_type, "document"),
+                "requirements": raw_requirements,
+            }
+        )
+    else:
+        topics = _stable_unique(
+            explicit.get("required_topics") or [section_title or query]
+        )
+        public_requirements = EvidenceRequirementsSchema.from_topics(
+            section_id=_slug(section_id, "document"),
+            section_title=section_title or None,
+            section_type=_slug(section_type, "document"),
+            topics=topics,
+        )
     raw_claims = explicit.get("requested_claim_types") or []
     claims = [ClaimType(item) for item in raw_claims]
     strategy = explicit.get("coverage_strategy")
@@ -231,17 +209,13 @@ def resolve_evidence_requirements_v2(
         if strategy
         else CoverageStrategy.TOPIC_UNION
     )
-    return EvidenceRequirementsV2Schema(
+    return RAGEvidenceRequirementsPolicySchema(
+        **public_requirements.model_dump(exclude={"required_topics"}),
         policy_id=str(
             explicit.get("policy_id") or "candidate_capability_union_v1"
         ),
-        section_id=_slug(section_id, "document"),
-        section_type=_slug(section_type, "document"),
-        required_topics=topics,
         requested_claim_types=list(dict.fromkeys(claims)),
-        claim_risk_level=ClaimRiskLevel.LOW,
         coverage_strategy=coverage_strategy,
-        allow_framework_only=bool(explicit.get("allow_framework_only", True)),
         metadata={
             "resolution": "candidate_capability_union",
             "claim_resolution_mode": "candidate_capability_union",
@@ -290,7 +264,6 @@ def resolve_fact_claim_eligibility(
         return FactClaimPolicyResult(
             False,
             "wrong_project",
-            human_review_required=True,
             reason_codes=("current_project_claim_requires_current_project_relation",),
         )
 
@@ -304,7 +277,6 @@ def resolve_fact_claim_eligibility(
             False,
             "unconfirmed",
             required_qualifiers=("该信息尚未确认",),
-            human_review_required=True,
             reason_codes=("fact_status_unknown",),
         )
     if fact_status is FactStatus.ESTIMATED:
@@ -315,7 +287,6 @@ def resolve_fact_claim_eligibility(
                 "根据现有估算材料",
                 "最终金额以审批或采购结果为准",
             ),
-            human_review_required=True,
             reason_codes=("fact_status_estimated",),
         )
     if fact_status is FactStatus.PROPOSED:
@@ -323,7 +294,6 @@ def resolve_fact_claim_eligibility(
             True,
             "proposal_only",
             required_qualifiers=("拟", "尚待确认"),
-            human_review_required=True,
             reason_codes=("fact_status_proposed",),
         )
     if fact_status is FactStatus.PLANNED:
@@ -331,7 +301,6 @@ def resolve_fact_claim_eligibility(
             True,
             "plan_only",
             required_qualifiers=("计划", "尚待确认"),
-            human_review_required=True,
             reason_codes=("fact_status_planned",),
         )
     if fact_status is FactStatus.CONFIRMED:
@@ -339,7 +308,6 @@ def resolve_fact_claim_eligibility(
             return FactClaimPolicyResult(
                 False,
                 "confirmed_but_not_authoritative",
-                human_review_required=True,
                 reason_codes=("confirmed_fact_requires_authoritative_document",),
             )
         return FactClaimPolicyResult(
@@ -374,7 +342,6 @@ def resolve_fact_claim_eligibility(
     return FactClaimPolicyResult(
         False,
         "decision_authority_insufficient",
-        human_review_required=True,
         reason_codes=("decided_fact_requires_formal_authoritative_source",),
     )
 
@@ -437,7 +404,7 @@ def _claim_structure_compatible(
 
 def _item_assessment(
     view: _AssessmentView,
-    requirements: EvidenceRequirementsV2Schema,
+    requirements: RAGEvidenceRequirementsPolicySchema,
     query: str,
 ) -> EvidenceAssessmentV2Schema:
     candidate = view.candidate
@@ -473,7 +440,6 @@ def _item_assessment(
     removed_claims: set[ClaimType] = set()
     reason_codes: list[str] = []
     qualifiers: list[str] = []
-    human_review = False
     fact_policies: dict[str, Any] = {}
 
     current_claims = supported_claims & CURRENT_PROJECT_CLAIM_TYPES
@@ -508,7 +474,6 @@ def _item_assessment(
             fact_policies[claim.value] = policy.to_dict()
             reason_codes.extend(policy.reason_codes)
             qualifiers.extend(policy.required_qualifiers)
-            human_review = human_review or policy.human_review_required
             if not policy.eligible:
                 supported_claims.remove(claim)
                 removed_claims.add(claim)
@@ -560,7 +525,6 @@ def _item_assessment(
             ),
             "fact_visible_in_prompt": view.fact_visible_in_prompt,
             "required_qualifiers": _stable_unique(qualifiers),
-            "human_review_required": human_review,
             "fact_claim_policies": fact_policies,
             "claim_resolution_mode": "candidate_capability_union",
             "crag_final_judgement": crag_judgement or None,
@@ -622,7 +586,7 @@ def _structured_fact(
 def _conflicts(
     candidates: list[RetrievalCandidateV2Schema],
     assessments: list[EvidenceAssessmentV2Schema],
-    requirements: EvidenceRequirementsV2Schema,
+    requirements: RAGEvidenceRequirementsPolicySchema,
 ) -> list[EvidenceConflictSchema]:
     candidate_by_id = {item.candidate_id: item for item in candidates}
     groups: dict[tuple[ClaimType, str], list[tuple[RetrievalCandidateV2Schema, str]]] = {}
@@ -673,7 +637,7 @@ def _conflicts(
 def _set_assessment(
     candidates: list[RetrievalCandidateV2Schema],
     assessments: list[EvidenceAssessmentV2Schema],
-    requirements: EvidenceRequirementsV2Schema,
+    requirements: RAGEvidenceRequirementsPolicySchema,
 ) -> EvidenceSetAssessmentSchema:
     eligible = [item for item in assessments if item.eligibility]
     covered = [
@@ -689,7 +653,7 @@ def _set_assessment(
     if conflicts:
         status = EvidenceStatus.CONFLICTED
     elif not eligible or not covered:
-        status = EvidenceStatus.ABSENT
+        status = EvidenceStatus.INSUFFICIENT
         ratio = 0.0
         covered = []
         missing = list(requirements.required_topics)
@@ -697,8 +661,8 @@ def _set_assessment(
         status = EvidenceStatus.SUFFICIENT
         ratio = 1.0
     else:
-        status = EvidenceStatus.PARTIAL
-    supporting = eligible if status is not EvidenceStatus.ABSENT else []
+        status = EvidenceStatus.INSUFFICIENT
+    supporting = eligible if covered else []
     evidence_ids = [item.evidence_id for item in supporting]
     evidence_id_set = set(evidence_ids)
     document_ids = {
@@ -732,43 +696,53 @@ def _set_assessment(
         reason_codes=(
             ["evidence_conflict_detected"]
             if conflicts
-            else [f"coverage_{status.value}"]
+            else (
+                ["coverage_partial"]
+                if status is EvidenceStatus.INSUFFICIENT and covered
+                else ["coverage_absent"]
+                if status is EvidenceStatus.INSUFFICIENT
+                else ["coverage_sufficient"]
+            )
         ),
         metadata={
             "claim_resolution_mode": "candidate_capability_union",
             "requested_claim_types_ignored": True,
+            "legacy_coverage_shape": (
+                "partial" if covered and missing else "absent" if not covered else None
+            ),
         },
     )
 
 
-def _claim_risk_level(claims: set[ClaimType]) -> ClaimRiskLevel:
-    if claims & (CURRENT_PROJECT_CLAIM_TYPES | {ClaimType.PROCUREMENT_REQUIREMENT}):
-        return ClaimRiskLevel.HIGH
-    if claims & {
-        ClaimType.POLICY_REQUIREMENT,
-        ClaimType.TECHNICAL_SPECIFICATION,
-    }:
-        return ClaimRiskLevel.MEDIUM
-    return ClaimRiskLevel.LOW
+@dataclass(frozen=True)
+class _SetEvidenceFacts:
+    """Internal carrier for one-way projection into public evidence facts."""
+
+    supported_claim_types: frozenset[ClaimType]
+    forbidden_claim_types: frozenset[ClaimType]
+    authoritative_evidence_present: bool
+    historical_or_reference_evidence_present: bool
+    required_qualifiers: tuple[str, ...]
+    prompt_evidence_source: str | None
+    prompt_evidence_contract_missing: bool
+    reason_codes: tuple[str, ...]
 
 
-def _gate(
-    requirements: EvidenceRequirementsV2Schema,
+def _set_evidence_facts(
+    requirements: RAGEvidenceRequirementsPolicySchema,
     candidates: list[RetrievalCandidateV2Schema],
     assessments: list[EvidenceAssessmentV2Schema],
     evidence_set: EvidenceSetAssessmentSchema,
-) -> GateDecisionSchema:
+) -> _SetEvidenceFacts:
     eligible = [item for item in assessments if item.eligibility]
     supported = set().union(
         *(set(item.supported_claim_types) for item in eligible),
         set(),
     )
-    allowed = set(supported)
     forbidden = set().union(
         *(set(item.forbidden_claim_types) for item in assessments),
         set(),
-    ) - allowed
-    resolved_risk = _claim_risk_level(supported)
+    ) - supported
     candidate_by_id = {item.candidate_id: item for item in candidates}
     authoritative = any(
         candidate_by_id[item.evidence_id].authority_level
@@ -792,115 +766,79 @@ def _gate(
         for item in eligible
         if item.evidence_id in candidate_by_id
     )
-    status_qualifiers = _stable_unique(
+    qualifiers = _stable_unique(
         qualifier
         for item in eligible
         for qualifier in item.metadata.get("required_qualifiers", [])
     )
-    status_human_review = any(
-        bool(item.metadata.get("human_review_required")) for item in eligible
+    reason_codes = _stable_unique(
+        [
+            *evidence_set.reason_codes,
+            *(
+                reason
+                for item in assessments
+                for reason in item.reason_codes
+            ),
+        ]
     )
-
-    qualifiers: list[str] = []
-    human_review = False
-    reason_codes = list(evidence_set.reason_codes)
-    prompt_source = requirements.metadata.get("prompt_evidence_source")
-    prompt_missing = bool(
-        requirements.metadata.get("prompt_evidence_contract_missing")
-    )
-
-    if prompt_missing:
-        delivery = DeliveryMode.BLOCKED
-        allowed = set()
-        reason_codes.append("prompt_evidence_contract_missing")
-    elif evidence_set.status is EvidenceStatus.CONFLICTED:
-        delivery = DeliveryMode.HUMAN_REVIEW
-        allowed = set()
-        human_review = True
-        reason_codes.append("unresolved_evidence_conflict")
-    elif evidence_set.status is EvidenceStatus.SUFFICIENT:
-        if status_qualifiers:
-            delivery = DeliveryMode.QUALIFIED
-            qualifiers = status_qualifiers
-            human_review = status_human_review
-            reason_codes.append("fact_status_requires_qualification")
-        elif allowed and allowed <= TEMPLATE_ONLY_CLAIM_TYPES:
-            delivery = DeliveryMode.GROUNDED
-        elif allowed & CURRENT_PROJECT_CLAIM_TYPES and not authoritative:
-            delivery = DeliveryMode.QUALIFIED
-            qualifiers = ["依据当前可用材料", "相关事实仍需业务确认"]
-            human_review = resolved_risk in {
-                ClaimRiskLevel.HIGH,
-                ClaimRiskLevel.CRITICAL,
-            }
-            reason_codes.append("current_project_evidence_not_authoritative")
-        elif historical_or_reference:
-            delivery = DeliveryMode.QUALIFIED
-            qualifiers = ["建议", "参考同类项目", "需结合本项目确认"]
-            reason_codes.append("reference_evidence_requires_qualification")
-        else:
-            delivery = DeliveryMode.GROUNDED
-    elif evidence_set.status is EvidenceStatus.PARTIAL:
-        if resolved_risk in {
-            ClaimRiskLevel.HIGH,
-            ClaimRiskLevel.CRITICAL,
-        }:
-            delivery = DeliveryMode.HUMAN_REVIEW
-            allowed = set()
-            human_review = True
-            reason_codes.append("partial_high_risk_evidence")
-        else:
-            delivery = DeliveryMode.QUALIFIED
-            qualifiers = _stable_unique(
-                [
-                    *status_qualifiers,
-                    "仅覆盖已具备证据的部分",
-                    "缺失内容待补充确认",
-                ]
-            )
-            human_review = True
-            reason_codes.append("partial_low_or_medium_risk_evidence")
-    else:
-        # An empty prompt cannot synthesize framework evidence from nothing.
-        delivery = DeliveryMode.BLOCKED
-        allowed = set()
-        reason_codes.append("required_prompt_evidence_absent")
-
-    if prompt_source == "legacy_fallback" and delivery in {
-        DeliveryMode.GROUNDED,
-        DeliveryMode.QUALIFIED,
-        DeliveryMode.FRAMEWORK_ONLY,
-    }:
-        delivery = DeliveryMode.QUALIFIED
-        qualifiers = _stable_unique(
-            [*qualifiers, "基于旧版 Prompt 证据兼容投影，需人工复核"]
-        )
-        human_review = True
-        reason_codes.append("legacy_prompt_evidence_fallback")
-
-    return GateDecisionSchema(
-        policy_id=requirements.policy_id,
-        evidence_status=evidence_set.status,
-        delivery_mode=delivery,
-        claim_risk_level=resolved_risk,
-        allowed_claim_types=sorted(allowed, key=lambda item: item.value),
-        forbidden_claim_types=sorted(
-            forbidden, key=lambda item: item.value
+    return _SetEvidenceFacts(
+        supported_claim_types=frozenset(supported),
+        forbidden_claim_types=frozenset(forbidden),
+        authoritative_evidence_present=authoritative,
+        historical_or_reference_evidence_present=historical_or_reference,
+        required_qualifiers=tuple(qualifiers),
+        prompt_evidence_source=(
+            str(requirements.metadata.get("prompt_evidence_source") or "").strip()
+            or None
         ),
-        required_qualifiers=_stable_unique(qualifiers),
+        prompt_evidence_contract_missing=bool(
+            requirements.metadata.get("prompt_evidence_contract_missing")
+        ),
+        reason_codes=tuple(reason_codes),
+    )
+
+
+def _public_assessment(
+    *,
+    candidates: list[RetrievalCandidateV2Schema],
+    evidence_set: EvidenceSetAssessmentSchema,
+    facts: _SetEvidenceFacts,
+) -> RAGEvidenceAssessmentSchema:
+    """Project internal assessment state into the public evidence-fact contract."""
+
+    return RAGEvidenceAssessmentSchema(
+        assessment_state="completed",
+        status=evidence_set.status,
+        evidence_available=bool(candidates),
+        selected_evidence_count=len(candidates),
+        judge_name="document_profile_gate_v2",
+        judge_version="stage_d_v1",
+        score=evidence_set.coverage_ratio,
+        coverage_ratio=evidence_set.coverage_ratio,
+        required_topics=list(evidence_set.required_topics),
         covered_topics=list(evidence_set.covered_topics),
         missing_topics=list(evidence_set.missing_topics),
-        human_review_required=human_review,
-        reason_codes=_stable_unique(reason_codes),
-        metadata={
-            "eligible_evidence_count": len(eligible),
-            "authoritative_evidence_present": authoritative,
-            "historical_or_reference_evidence_present": historical_or_reference,
-            "fact_status_human_review_required": status_human_review,
-            "prompt_evidence_source": prompt_source,
-            "claim_resolution_mode": "candidate_capability_union",
-            "requested_claim_types_ignored": True,
-        },
+        conflicts=[
+            item.model_dump(mode="json", exclude_none=True)
+            for item in evidence_set.conflicts
+        ],
+        supported_claim_types=sorted(
+            facts.supported_claim_types, key=lambda item: item.value
+        ),
+        forbidden_claim_types=sorted(
+            facts.forbidden_claim_types, key=lambda item: item.value
+        ),
+        authoritative_evidence_present=facts.authoritative_evidence_present,
+        historical_or_reference_evidence_present=(
+            facts.historical_or_reference_evidence_present
+        ),
+        required_qualifiers=list(facts.required_qualifiers),
+        prompt_evidence_source=facts.prompt_evidence_source,
+        prompt_evidence_contract_missing=(
+            facts.prompt_evidence_contract_missing
+        ),
+        reason_codes=list(facts.reason_codes),
+        details={"projection_source": "evidence_governance_v2"},
     )
 
 
@@ -930,7 +868,14 @@ class OnlineEvidenceGovernanceV2:
             _item_assessment(item, requirements, query) for item in views
         ]
         evidence_set = _set_assessment(candidates, assessments, requirements)
-        gate = _gate(requirements, candidates, assessments, evidence_set)
+        evidence_facts = _set_evidence_facts(
+            requirements, candidates, assessments, evidence_set
+        )
+        public_assessment = _public_assessment(
+            candidates=candidates,
+            evidence_set=evidence_set,
+            facts=evidence_facts,
+        )
         eligible_ids = tuple(
             item.evidence_id for item in assessments if item.eligibility
         )
@@ -947,7 +892,7 @@ class OnlineEvidenceGovernanceV2:
             ),
             item_assessments=tuple(assessments),
             set_assessment=evidence_set,
-            gate_decision=gate,
+            public_assessment=public_assessment,
             eligible_candidate_ids=eligible_ids,
             rejected_candidate_ids=tuple(_stable_unique(rejected_ids)),
             candidate_contract_errors=tuple(candidate_contract_errors),
@@ -1039,11 +984,16 @@ class OnlineEvidenceGovernanceV2:
         )
 
 
+# Import compatibility only; the public item/envelope authority lives in schemas.rag.
+EvidenceRequirementsV2Schema = RAGEvidenceRequirementsPolicySchema
+
+
 __all__ = [
     "EvidenceGovernanceV2Result",
     "EvidenceRequirementsV2Schema",
     "FactClaimPolicyResult",
     "OnlineEvidenceGovernanceV2",
+    "RAGEvidenceRequirementsPolicySchema",
     "resolve_evidence_requirements_v2",
     "resolve_fact_claim_eligibility",
 ]

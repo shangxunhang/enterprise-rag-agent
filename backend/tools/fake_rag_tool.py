@@ -12,8 +12,9 @@ from typing import Any, Dict
 
 from rag.evidence.contract import RAGEvidenceContractBuilder, RAGEvidenceContractReader
 from schemas.citation import CitationSchema
+from schemas.claim import ClaimType
 from schemas.rag import (
-    EvidenceAssessmentStatus,
+    EvidenceStatus,
     RAGToolOutputSchema,
     RAGTraceSchema,
     RetrievedChunkSchema,
@@ -58,9 +59,11 @@ class FakeRAGTool(BaseTool):
         tool_input: Dict[str, Any] = tool_call.tool_input
         query = str(tool_input.get("query", ""))
         retrieval_mode = tool_input.get("retrieval_mode", "mock")
-        extra_metadata = dict(tool_input.get("extra_metadata") or {})
-        scope = str(extra_metadata.get("retrieval_scope") or "document")
-        section_title = str(extra_metadata.get("section_title") or "").strip()
+        scope = str(tool_input.get("retrieval_scope") or "document")
+        evidence_requirements = dict(tool_input.get("evidence_requirements") or {})
+        section_title = str(
+            evidence_requirements.get("section_title") or ""
+        ).strip()
         scenario = str(os.getenv("FAKE_RAG_SCENARIO", "default")).strip().lower()
 
         source_key = "default"
@@ -213,44 +216,39 @@ class FakeRAGTool(BaseTool):
         # The fake corpus is intentionally authored to answer its fake query.
         # Unlike the generic contract builder, this deterministic test adapter
         # can make that semantic assertion explicitly.
-        evidence.assessment.status = EvidenceAssessmentStatus.SUFFICIENT
+        evidence.assessment = evidence.assessment.model_copy(
+            update={
+                "assessment_state": "completed",
+                "status": EvidenceStatus.SUFFICIENT,
+                "coverage_ratio": 1.0,
+                "required_topics": [
+                    section_title or "企业级 RAG-Agent 架构"
+                ],
+                "covered_topics": [
+                    section_title or "企业级 RAG-Agent 架构"
+                ],
+                "supported_claim_types": [
+                    ClaimType.GENERAL_METHOD,
+                    ClaimType.TYPICAL_ARCHITECTURE,
+                    ClaimType.REFERENCE_CASE,
+                    ClaimType.CURRENT_PROJECT_FACT,
+                    ClaimType.CURRENT_PROJECT_COST,
+                    ClaimType.CURRENT_PROJECT_QUANTITY,
+                    ClaimType.CURRENT_PROJECT_SCHEDULE,
+                    ClaimType.CURRENT_PROJECT_CONFIGURATION,
+                    ClaimType.POLICY_REQUIREMENT,
+                    ClaimType.TECHNICAL_SPECIFICATION,
+                    ClaimType.PROCUREMENT_REQUIREMENT,
+                    ClaimType.TEMPLATE_STRUCTURE,
+                    ClaimType.STYLE_GUIDANCE,
+                ],
+                "authoritative_evidence_present": True,
+                "prompt_evidence_source": "fake_fixture_selected_evidence",
+            }
+        )
         evidence.assessment.reason_codes = ["fake_fixture_semantically_sufficient"]
-        # Stage E requires the exact final Stage D gate even in deterministic
-        # mainline fixtures. Keep this fixture broad so legacy Agent/recovery
-        # tests continue testing their own concern under an explicit writer
-        # authorization contract rather than bypassing governance.
         evidence.extra = {
             **dict(evidence.extra or {}),
-            "gate_decision": {
-                "schema_version": "gate_decision_v1",
-                "policy_id": "fake_fixture_writer_gate_v1",
-                "evidence_status": "sufficient",
-                "delivery_mode": "grounded",
-                "claim_risk_level": "low",
-                "allowed_claim_types": [
-                    "general_method",
-                    "typical_architecture",
-                    "reference_case",
-                    "current_project_fact",
-                    "current_project_cost",
-                    "current_project_quantity",
-                    "current_project_schedule",
-                    "current_project_configuration",
-                    "policy_requirement",
-                    "technical_specification",
-                    "procurement_requirement",
-                    "template_structure",
-                    "style_guidance",
-                ],
-                "forbidden_claim_types": [],
-                "required_qualifiers": [],
-                "covered_topics": [section_title or "企业级 RAG-Agent 架构"],
-                "missing_topics": [],
-                "human_review_required": False,
-                "reason_codes": ["fake_fixture_semantically_sufficient"],
-                "metadata": {"fixture": True, "scenario": scenario},
-            },
-            "generation_allowed": True,
             "prompt_evidence_source": "fake_fixture_selected_evidence",
             "prompt_evidence_contract": {
                 "schema_version": "prompt_evidence_contract_v1",

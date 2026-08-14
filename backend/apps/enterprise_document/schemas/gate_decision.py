@@ -7,12 +7,12 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from rag.catalog.document_profile import (
+from schemas.claim import (
     CURRENT_PROJECT_CLAIM_TYPES,
     TEMPLATE_ONLY_CLAIM_TYPES,
     ClaimType,
 )
-from rag.schema.evidence_assessment_v2 import EvidenceStatus
+from schemas.rag import EvidenceStatus
 
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -54,6 +54,20 @@ class GateDecisionSchema(_FrozenContract):
     reason_codes: list[NonEmptyStr] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def project_legacy_evidence_status(cls, value: Any) -> Any:
+        """Accept old wire values while keeping the model's status three-state."""
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        raw_status = data.get("evidence_status")
+        normalized = str(getattr(raw_status, "value", raw_status) or "").lower()
+        if normalized in {"partial", "absent"}:
+            data["evidence_status"] = EvidenceStatus.INSUFFICIENT
+        return data
+
     @model_validator(mode="after")
     def _decision_is_consistent(self) -> "GateDecisionSchema":
         for field_name in (
@@ -86,15 +100,12 @@ class GateDecisionSchema(_FrozenContract):
             DeliveryMode.HUMAN_REVIEW,
         }:
             raise ValueError("conflicted evidence must be blocked or sent to human_review")
-        if self.evidence_status in {
-            EvidenceStatus.ABSENT,
-            EvidenceStatus.NOT_ASSESSED,
-        } and self.delivery_mode in {
-            DeliveryMode.GROUNDED,
-            DeliveryMode.QUALIFIED,
-        }:
+        if (
+            self.evidence_status is EvidenceStatus.INSUFFICIENT
+            and self.delivery_mode is DeliveryMode.GROUNDED
+        ):
             raise ValueError(
-                "absent or not_assessed evidence cannot produce grounded/qualified delivery"
+                "insufficient evidence cannot produce grounded delivery"
             )
 
         if self.delivery_mode is DeliveryMode.GROUNDED:
@@ -105,31 +116,36 @@ class GateDecisionSchema(_FrozenContract):
         elif self.delivery_mode is DeliveryMode.QUALIFIED:
             if self.evidence_status not in {
                 EvidenceStatus.SUFFICIENT,
-                EvidenceStatus.PARTIAL,
+                EvidenceStatus.INSUFFICIENT,
             }:
-                raise ValueError("qualified delivery requires sufficient or partial evidence")
+                raise ValueError(
+                    "qualified delivery requires sufficient or insufficient evidence"
+                )
             if not self.required_qualifiers:
                 raise ValueError("qualified delivery requires required_qualifiers")
             if (
-                self.evidence_status is EvidenceStatus.PARTIAL
-                and not self.missing_topics
+                self.evidence_status is EvidenceStatus.INSUFFICIENT
+                and (not self.covered_topics or not self.missing_topics)
             ):
-                raise ValueError("partial qualified delivery requires missing_topics")
+                raise ValueError(
+                    "insufficient qualified delivery requires covered_topics and missing_topics"
+                )
             if (
-                self.evidence_status is EvidenceStatus.PARTIAL
+                self.evidence_status is EvidenceStatus.INSUFFICIENT
                 and self.claim_risk_level
                 in {ClaimRiskLevel.HIGH, ClaimRiskLevel.CRITICAL}
             ):
                 raise ValueError(
-                    "partial high-risk claims must be blocked or sent to human_review"
+                    "insufficient high-risk claims must be blocked or sent to human_review"
                 )
         elif self.delivery_mode is DeliveryMode.FRAMEWORK_ONLY:
-            if self.evidence_status not in {
-                EvidenceStatus.ABSENT,
-                EvidenceStatus.NOT_ASSESSED,
-            }:
+            if self.evidence_status is not EvidenceStatus.INSUFFICIENT:
                 raise ValueError(
-                    "framework_only delivery requires absent or not_assessed evidence"
+                    "framework_only delivery requires insufficient evidence"
+                )
+            if self.covered_topics:
+                raise ValueError(
+                    "framework_only delivery requires zero covered evidence topics"
                 )
             disallowed = set(self.allowed_claim_types) - TEMPLATE_ONLY_CLAIM_TYPES
             if disallowed:

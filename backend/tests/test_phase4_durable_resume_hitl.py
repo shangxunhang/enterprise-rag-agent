@@ -230,7 +230,10 @@ def test_new_engine_resumes_without_replaying_completed_nodes(tmp_path) -> None:
     )
     old_engine = factory.engines[0]
     workflow = factory.workflows[0]
-    model_facade = old_engine.stage_service.evidence_service.model_gateway
+    model_facade = (
+        old_engine.stage_service.section_execution_coordinator
+        .section_generation_service.model_service.model_gateway
+    )
     rag_facade = old_engine.stage_service.evidence_service.rag_service
     model_calls_before = model_facade.runnable_invocation_count
     rag_calls_before = rag_facade.runnable_invocation_count

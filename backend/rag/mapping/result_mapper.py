@@ -10,14 +10,13 @@ from rag.evidence.contract import RAGEvidenceContractBuilder
 from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.mapping.evidence_mapper import EvidenceMapper
 from rag.mapping.request_mapper import RAGInvocation
-from rag.schema.evidence_assessment_v2 import EvidenceStatus
 from rag.schema.prompt_evidence_candidate_v1 import (
     PromptEvidenceCandidateV1Schema,
     build_prompt_evidence_candidate_v1,
 )
 from schemas.rag import (
-    EvidenceAssessmentStatus,
     EvidenceBundleSchema,
+    EvidenceStatus,
     RAGEvidenceAssessmentSchema,
     RAGToolInputSchema,
     RAGTraceSchema,
@@ -112,9 +111,9 @@ class RAGResultMapper:
             else:
                 prompt_evidence_source = "context_pack_selected_results"
         elif strict_prompt_contract:
-            # Strong-gate mode never reconstructs prompt evidence from the
-            # broader retrieval set.  The final gate will publish a blocked
-            # decision with prompt_evidence_contract_missing.
+            # Strict prompt-contract mode never reconstructs prompt evidence
+            # from the broader retrieval set. The public assessment exposes
+            # the explicit missing-contract fact.
             selected_records = []
             prompt_evidence_source = "missing_blocked"
             prompt_contract_missing = True
@@ -227,13 +226,13 @@ class RAGResultMapper:
         )
         sufficient = final_assessment.get("sufficient")
         if sufficient is True:
-            status = EvidenceAssessmentStatus.SUFFICIENT
+            status = EvidenceStatus.SUFFICIENT
             reason_codes = ["retrieval_evidence_sufficient"]
         elif sufficient is False:
-            status = EvidenceAssessmentStatus.INSUFFICIENT
+            status = EvidenceStatus.INSUFFICIENT
             reason_codes = ["retrieval_evidence_insufficient"]
         else:
-            status = EvidenceAssessmentStatus.NOT_ASSESSED
+            status = None
             reason_codes = []
 
         raw_score = final_assessment.get("confidence")
@@ -254,6 +253,7 @@ class RAGResultMapper:
             or final_report.get("quality_mode_degraded")
         )
         return RAGEvidenceAssessmentSchema(
+            assessment_state="completed" if status is not None else "pending",
             status=status,
             judge_name=str(metadata.get("judge") or "") or None,
             judge_version=str(metadata.get("version") or "") or None,
@@ -282,37 +282,32 @@ class RAGResultMapper:
     ) -> RAGEvidenceAssessmentSchema:
         set_assessment = governance.get("set_assessment")
         set_assessment = set_assessment if isinstance(set_assessment, dict) else {}
-        gate = governance.get("gate_decision")
-        gate = gate if isinstance(gate, dict) else {}
-        raw_status = str(set_assessment.get("status") or "not_assessed")
-        if raw_status == EvidenceStatus.SUFFICIENT.value:
-            status = EvidenceAssessmentStatus.SUFFICIENT
-        elif raw_status == EvidenceStatus.PARTIAL.value:
-            status = EvidenceAssessmentStatus.PARTIAL
-        elif raw_status in {
-            EvidenceStatus.ABSENT.value,
-            EvidenceStatus.CONFLICTED.value,
-        }:
-            status = EvidenceAssessmentStatus.INSUFFICIENT
+        public_payload = governance.get("public_assessment")
+        if isinstance(public_payload, dict):
+            assessment = RAGEvidenceAssessmentSchema.model_validate(public_payload)
         else:
-            status = EvidenceAssessmentStatus.NOT_ASSESSED
-        coverage = set_assessment.get("coverage_ratio")
-        try:
-            score = float(coverage) if coverage is not None else None
-        except (TypeError, ValueError):
-            score = None
-        return RAGEvidenceAssessmentSchema(
-            status=status,
-            judge_name="document_profile_gate_v2",
-            judge_version="stage_d_v1",
-            score=score,
-            reason_codes=list(gate.get("reason_codes") or []),
-            details={
+            # Compatibility for pre-Phase-3A internal governance payloads. This
+            # projects set facts only and never recovers business actions.
+            assessment = RAGEvidenceAssessmentSchema.model_validate(
+                {
+                    "status": set_assessment.get("status"),
+                    "coverage_ratio": set_assessment.get("coverage_ratio"),
+                    "score": set_assessment.get("coverage_ratio"),
+                    "required_topics": set_assessment.get("required_topics") or [],
+                    "covered_topics": set_assessment.get("covered_topics") or [],
+                    "missing_topics": set_assessment.get("missing_topics") or [],
+                    "conflicts": set_assessment.get("conflicts") or [],
+                    "reason_codes": set_assessment.get("reason_codes") or [],
+                }
+            )
+        return assessment.model_copy(
+            update={"details": {
+                **dict(assessment.details),
                 "evidence_governance_v2": governance,
-                "gate_decision": gate,
                 "legacy_corrective_assessment": legacy_assessment.model_dump(),
                 "presence_is_not_semantic_sufficiency": True,
-            },
+            }},
+            deep=True,
         )
 
     def map(
@@ -544,8 +539,8 @@ class RAGResultMapper:
         assessment.dropped_evidence_count = len(bundle.dropped_evidence_ids)
         assessment.citation_count = len(bundle.citations)
         trace_id = str(
-            request.extra.get("retrieval_trace_id")
-            or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
+            request.retrieval_trace_id
+            or f"rag_{request.run_id}_{request.retrieval_scope or 'document'}"
         )
         return bundle.model_copy(
             update={
@@ -567,10 +562,6 @@ class RAGResultMapper:
                     "retrieval_plan": retrieval_plan,
                     "evidence_quality": evidence_quality,
                     "evidence_governance_v2": governance_payload,
-                    "gate_decision": governance_payload.get("gate_decision"),
-                    "generation_allowed": bool(
-                        governance_payload.get("generation_allowed")
-                    ),
                     "prompt_evidence_contract": prompt_contract_payload,
                     "prompt_evidence_source": prompt_evidence_source,
                 },

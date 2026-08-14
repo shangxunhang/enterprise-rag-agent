@@ -49,10 +49,7 @@ def _bundle_from_tool_output(
             context=context,
         )
 
-    trace_id = str(
-        request.extra.get("retrieval_trace_id")
-        or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
-    )
+    trace_id = _retrieval_trace_id(request)
     evidence_quality = (
         output.extra.get("evidence_quality")
         if isinstance(output.extra, dict)
@@ -90,6 +87,15 @@ def _bundle_from_tool_output(
                 },
             },
         }
+    )
+
+
+def _retrieval_trace_id(request: RAGToolInputSchema) -> str:
+    """Resolve one deterministic identity at the RAG service edge."""
+
+    return str(
+        request.retrieval_trace_id
+        or f"rag_{request.run_id}_{request.retrieval_scope or 'document'}"
     )
 
 
@@ -187,10 +193,7 @@ class RAGService(RAGServicePort):
                 run_id=request.run_id,
                 status=ExecutionStatus.FAILED,
                 query=request.query,
-                retrieval_trace_id=str(
-                    request.extra.get("retrieval_trace_id")
-                    or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
-                ),
+                retrieval_trace_id=_retrieval_trace_id(request),
                 context=RAGContextSchema(
                     context_text="",
                     max_context_chars=int(request.max_context_chars or 6000),
@@ -222,17 +225,14 @@ class FakeRAGService(RAGServicePort):
         self.tool = tool or FakeRAGTool()
 
     def retrieve(self, request: RAGToolInputSchema) -> EvidenceBundleSchema:
-        tool_call_id = str(
-            request.extra.get("retrieval_trace_id")
-            or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
-        )
+        tool_call_id = _retrieval_trace_id(request)
         result = self.tool.run(
             ToolCallSchema(
                 tool_call_id=tool_call_id,
                 task_id=request.task_id,
                 run_id=request.run_id,
                 tool_name=self.tool.tool_name,
-                tool_input={**request.model_dump(), **dict(request.extra)},
+                tool_input=request.model_dump(mode="json"),
                 caller_agent=request.agent_name,
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
@@ -261,9 +261,7 @@ class ObservedRAGService(RAGServicePort):
             span_kind="client",
             parent=current_span(),
         )
-        call_id = str(
-            request.extra.get("retrieval_trace_id") or f"rag_{request.run_id}"
-        )
+        call_id = _retrieval_trace_id(request)
         self._record(
             task_id=request.task_id,
             run_id=request.run_id,
@@ -283,7 +281,7 @@ class ObservedRAGService(RAGServicePort):
             started_at=span.started_at,
             input_summary={
                 "query": request.query,
-                "scope": request.extra.get("retrieval_scope"),
+                "scope": request.retrieval_scope,
             },
             tags=["trace_v2", "rag"],
         )

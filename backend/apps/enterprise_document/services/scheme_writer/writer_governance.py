@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 from observability.trace_summary import canonical_sha256
 
-from apps.enterprise_document.schemas.gate_decision import DeliveryMode, GateDecisionSchema
+from apps.enterprise_document.schemas.gate_decision import DeliveryMode
 from apps.enterprise_document.schemas.writer_governance import (
     ClaimAuditIntegritySchema,
     ClaimAuditResultSchema,
@@ -21,7 +21,9 @@ from apps.enterprise_document.schemas.writer_governance import (
     WriterExecutionStatus,
     WriterGateBindingSchema,
 )
-from rag.catalog.document_profile import ClaimType
+from schemas.claim import ClaimType
+from schemas.rag import EvidenceBundleSchema
+from .evidence_gate_policy import EvidenceGatePolicy
 from .semantic_claim_classifier import (
     SEMANTIC_CLAIM_CLASSIFIER_ID,
     SEMANTIC_CLAIM_CLASSIFIER_POLICY_SHA256,
@@ -412,7 +414,7 @@ def extract_writer_gate_binding(
     run_id: str | None = None,
     evidence_contract_sha256: str | None = None,
 ) -> WriterGateBindingSchema | None:
-    """Read only the final Stage D gate published by the canonical Evidence Bundle."""
+    """Bind an Application-owned Gate decision to one writer invocation."""
 
     contract = normalized_output.get("evidence")
     contract = contract if isinstance(contract, dict) else {}
@@ -421,14 +423,18 @@ def extract_writer_gate_binding(
     normalized_extra = normalized_output.get("extra")
     normalized_extra = normalized_extra if isinstance(normalized_extra, dict) else {}
 
-    if contract:
-        gate_payload = contract_extra.get("gate_decision")
-        generation_allowed = contract_extra.get("generation_allowed")
-    else:
-        gate_payload = normalized_extra.get("gate_decision")
-        generation_allowed = normalized_extra.get("generation_allowed")
-    if not isinstance(gate_payload, dict) or generation_allowed is None:
+    try:
+        evidence_bundle = EvidenceBundleSchema.model_validate(contract)
+        gate_decision = EvidenceGatePolicy().evaluate(
+            evidence_bundle.assessment
+        )
+    except (TypeError, ValueError):
         return None
+    generation_allowed = gate_decision.delivery_mode in {
+        DeliveryMode.GROUNDED,
+        DeliveryMode.QUALIFIED,
+        DeliveryMode.FRAMEWORK_ONLY,
+    }
 
     prompt_contract = contract_extra.get("prompt_evidence_contract")
     prompt_contract = prompt_contract if isinstance(prompt_contract, dict) else {}
@@ -448,16 +454,14 @@ def extract_writer_gate_binding(
         section_order=section_order,
         document_id=document_id,
         run_id=run_id,
-        gate_decision=GateDecisionSchema.model_validate(gate_payload),
-        generation_allowed=bool(generation_allowed),
+        gate_decision=gate_decision,
+        generation_allowed=generation_allowed,
         evidence_contract_sha256=contract_sha,
         prompt_evidence_source=(str(prompt_source).strip() if prompt_source else None),
         prompt_evidence_contract_sha256=prompt_contract_sha,
         metadata={
-            "source": "evidence_bundle_final_gate",
-            "evidence_status": str(
-                gate_payload.get("evidence_status") or "not_assessed"
-            ),
+            "source": "application_evidence_gate_policy",
+            "evidence_status": gate_decision.evidence_status.value,
         },
     )
 

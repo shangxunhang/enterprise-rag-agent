@@ -31,7 +31,11 @@ from apps.enterprise_document.services.scheme_writer.writer_governance import (
 from rag.schema.evidence_assessment_v2 import EvidenceStatus
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
 from schemas.model import ModelResponseSchema
-from schemas.rag import RAGContextSchema
+from schemas.rag import (
+    EvidenceBundleSchema,
+    RAGContextSchema,
+    RAGEvidenceAssessmentSchema,
+)
 
 
 def _gate(
@@ -44,7 +48,7 @@ def _gate(
 ) -> GateDecisionSchema:
     status = EvidenceStatus.SUFFICIENT
     if mode in {DeliveryMode.BLOCKED, DeliveryMode.FRAMEWORK_ONLY}:
-        status = EvidenceStatus.ABSENT
+        status = EvidenceStatus.INSUFFICIENT
     elif mode is DeliveryMode.HUMAN_REVIEW:
         status = EvidenceStatus.CONFLICTED
     return GateDecisionSchema(
@@ -55,8 +59,8 @@ def _gate(
         allowed_claim_types=allowed or [],
         forbidden_claim_types=forbidden or [],
         required_qualifiers=qualifiers or [],
-        covered_topics=["预算金额"] if status is not EvidenceStatus.ABSENT else [],
-        missing_topics=["预算金额"] if status is EvidenceStatus.ABSENT else [],
+        covered_topics=["预算金额"] if status is not EvidenceStatus.INSUFFICIENT else [],
+        missing_topics=["预算金额"] if status is EvidenceStatus.INSUFFICIENT else [],
         human_review_required=human_review,
         reason_codes=["stage_e_test"],
     )
@@ -128,21 +132,40 @@ def _project_input() -> ProjectInputSchema:
     )
 
 
-def test_writer_binding_reads_canonical_evidence_bundle_gate() -> None:
-    gate = _gate(
-        DeliveryMode.GROUNDED,
-        allowed=["general_method"],
-    ).model_dump(mode="json")
-    normalized = {
-        "evidence": {
-            "schema_version": "rag_evidence_contract_v1",
-            "extra": {
-                "gate_decision": gate,
-                "generation_allowed": True,
-                "prompt_evidence_source": "context_pack_selected_results",
-            },
+def test_writer_binding_produces_application_gate_from_public_assessment() -> None:
+    assessment = RAGEvidenceAssessmentSchema(
+        assessment_state="completed",
+        status="sufficient",
+        coverage_ratio=1.0,
+        required_topics=["投资估算"],
+        covered_topics=["投资估算"],
+        supported_claim_types=["general_method"],
+        authoritative_evidence_present=True,
+        prompt_evidence_source="context_pack_selected_results",
+    )
+    evidence_bundle = EvidenceBundleSchema(
+        query="投资估算",
+        context=RAGContextSchema(
+            context_text="",
+            max_context_chars=6000,
+            used_context_chars=0,
+            context_item_count=0,
+        ),
+        assessment=assessment,
+        extra={
+            "prompt_evidence_source": "context_pack_selected_results",
+            # These contradictory legacy fields must not drive the decision.
+            "gate_decision": _gate(
+                DeliveryMode.BLOCKED,
+                forbidden=["general_method"],
+            ).model_dump(mode="json"),
+            "generation_allowed": False,
         },
+    )
+    normalized = {
+        "evidence": evidence_bundle.model_dump(mode="json"),
         "extra": {
+            # Old RAG actions must be ignored by the Application producer.
             "gate_decision": _gate(
                 DeliveryMode.BLOCKED,
                 forbidden=["general_method"],
@@ -160,10 +183,11 @@ def test_writer_binding_reads_canonical_evidence_bundle_gate() -> None:
     assert binding.generation_allowed is True
 
 
-def test_writer_binding_does_not_accept_top_level_override_when_contract_exists() -> None:
+def test_writer_binding_requires_public_assessment_not_old_gate_fields() -> None:
     normalized = {
         "evidence": {
             "schema_version": "rag_evidence_contract_v1",
+            "assessment": {},
             "extra": {},
         },
         "extra": {

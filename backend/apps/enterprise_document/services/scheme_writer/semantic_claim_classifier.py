@@ -16,7 +16,7 @@ from typing import Any, Iterable
 from apps.enterprise_document.quality.model_adapter import reserve_current_workflow_budget
 from model_gateway.call_boundary import ModelCallBoundary
 from model_gateway.model_contract import ModelRole
-from rag.catalog.document_profile import ClaimType
+from schemas.claim import ClaimType
 
 
 SEMANTIC_CLAIM_CLASSIFIER_ID = "semantic_stage_e_claim_classifier"

@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import pytest
 
+from apps.enterprise_document.services.scheme_writer.evidence_gate_policy import (
+    EvidenceGatePolicy,
+)
 from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.mapping.request_mapper import RAGRequestMapper
 from rag.mapping.result_mapper import RAGResultMapper
 from rag.schema.prompt_evidence_candidate_v1 import (
     build_prompt_evidence_candidate_v1,
 )
-from schemas.rag import RAGToolInputSchema, RetrievalAccessScopeSchema
+from schemas.rag import (
+    EvidenceRequirementsSchema,
+    RAGToolInputSchema,
+    RetrievalAccessScopeSchema,
+)
 
 from test_support.stage_d_fixtures import (
     document_profile,
@@ -20,6 +27,7 @@ from test_support.stage_d_fixtures import (
 
 def _request() -> tuple[RAGToolInputSchema, object]:
     requirements = evidence_requirements()
+    legacy_requirements = requirements["evidence_requirements"]
     request = RAGToolInputSchema(
         task_id="stage-d-prompt-task",
         run_id="stage-d-prompt-run",
@@ -31,11 +39,14 @@ def _request() -> tuple[RAGToolInputSchema, object]:
         ),
         max_context_chars=6000,
         max_context_items=5,
-        extra={
-            "retrieval_trace_id": "stage-d-prompt-trace",
-            "retrieval_scope": "section",
-            "extra_metadata": requirements,
-        },
+        retrieval_trace_id="stage-d-prompt-trace",
+        retrieval_scope="section",
+        evidence_requirements=EvidenceRequirementsSchema.from_topics(
+            section_id=requirements["section_id"],
+            section_title=requirements["section_title"],
+            section_type=requirements["section_type"],
+            topics=legacy_requirements["required_topics"],
+        ),
     )
     return request, RAGRequestMapper().map(request)
 
@@ -94,11 +105,14 @@ def test_empty_selected_results_is_authoritative_and_never_falls_back() -> None:
 
     governance = bundle.extra["evidence_governance_v2"]
     assert governance["prompt_evidence_candidates"] == []
-    assert governance["set_assessment"]["status"] == "absent"
+    assert governance["set_assessment"]["status"] == "insufficient"
     assert governance["set_assessment"]["coverage_ratio"] == 0.0
-    assert bundle.extra["gate_decision"]["delivery_mode"] == "blocked"
-    assert bundle.extra["gate_decision"]["allowed_claim_types"] == []
-    assert bundle.extra["generation_allowed"] is False
+    assert governance["set_assessment"]["metadata"]["legacy_coverage_shape"] == "absent"
+    assert governance["set_assessment"]["coverage_ratio"] == 0.0
+    decision = EvidenceGatePolicy().evaluate(bundle.assessment)
+    assert decision.delivery_mode.value == "blocked"
+    assert decision.allowed_claim_types == []
+    assert "generation_allowed" not in bundle.extra
     assert bundle.extra["prompt_evidence_source"] == "context_pack_selected_results"
     assert bundle.selected_evidence_ids == []
 
@@ -118,12 +132,12 @@ def test_missing_selected_results_blocks_in_strong_gate_mode() -> None:
         },
     )
 
-    gate = bundle.extra["gate_decision"]
+    gate = EvidenceGatePolicy().evaluate(bundle.assessment)
     assert bundle.extra["prompt_evidence_source"] == "missing_blocked"
     assert bundle.extra["prompt_evidence_contract"]["contract_missing"] is True
-    assert gate["delivery_mode"] == "blocked"
-    assert "prompt_evidence_contract_missing" in gate["reason_codes"]
-    assert bundle.extra["generation_allowed"] is False
+    assert gate.delivery_mode.value == "blocked"
+    assert "prompt_evidence_contract_missing" in gate.reason_codes
+    assert "generation_allowed" not in bundle.extra
 
 
 def test_truncated_topic_is_not_counted_from_full_parent() -> None:
@@ -153,8 +167,8 @@ def test_truncated_topic_is_not_counted_from_full_parent() -> None:
     assert prompt_candidate["context_truncated"] is True
     assert prompt_candidate["fact_visible_in_prompt"] is False
     assert "预算金额" not in governance["set_assessment"]["covered_topics"]
-    assert bundle.extra["gate_decision"]["allowed_claim_types"] == []
-    assert bundle.extra["generation_allowed"] is False
+    assert EvidenceGatePolicy().evaluate(bundle.assessment).allowed_claim_types == []
+    assert "generation_allowed" not in bundle.extra
 
 
 def test_structured_value_not_visible_in_prompt_cannot_support_claim() -> None:
@@ -172,9 +186,12 @@ def test_structured_value_not_visible_in_prompt_cannot_support_claim() -> None:
     )
 
     assert candidate.fact_visible_in_prompt is False
-    assert governance.set_assessment.status.value == "absent"
-    assert governance.gate_decision.delivery_mode.value == "blocked"
-    assert governance.gate_decision.allowed_claim_types == []
+    assert governance.set_assessment.status.value == "insufficient"
+    assert governance.set_assessment.coverage_ratio == 0.0
+    assert governance.set_assessment.metadata["legacy_coverage_shape"] == "absent"
+    decision = EvidenceGatePolicy().evaluate(governance.public_assessment)
+    assert decision.delivery_mode.value == "blocked"
+    assert decision.allowed_claim_types == []
 
 
 def test_selected_results_with_empty_rendered_context_is_hard_failure() -> None:

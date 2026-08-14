@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .document_profile import ChunkStrategy, ClaimType, DocumentType, EvidenceRole, ParserStrategy
+from schemas.claim import ClaimType
+
+from .document_profile import ChunkStrategy, DocumentType, EvidenceRole, ParserStrategy
 
 
 CURRENT_PROJECT_CLAIMS = (

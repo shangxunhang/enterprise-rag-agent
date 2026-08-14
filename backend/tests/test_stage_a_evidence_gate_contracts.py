@@ -172,13 +172,13 @@ def test_ineligible_evidence_cannot_expose_supported_claim_types() -> None:
         )
 
 
-def test_partial_evidence_set_requires_covered_and_missing_topics() -> None:
+def test_insufficient_evidence_set_preserves_partial_coverage_facts() -> None:
     assessment = EvidenceSetAssessmentSchema(
         assessment_id="assessment_security_001",
         section_id="security_design",
         section_type="security_design",
         strategy=CoverageStrategy.TOPIC_UNION,
-        status=EvidenceStatus.PARTIAL,
+        status=EvidenceStatus.INSUFFICIENT,
         coverage_ratio=0.57,
         required_topics=[
             "身份认证",
@@ -197,16 +197,16 @@ def test_partial_evidence_set_requires_covered_and_missing_topics() -> None:
         evidence_ids=["parent_001", "parent_002", "parent_003", "parent_004"],
     )
 
-    assert assessment.status is EvidenceStatus.PARTIAL
+    assert assessment.status is EvidenceStatus.INSUFFICIENT
     assert assessment.coverage_ratio == pytest.approx(0.57)
 
-    with pytest.raises(ValidationError, match="both covered_topics and missing_topics"):
+    with pytest.raises(ValidationError, match="requires missing_topics"):
         EvidenceSetAssessmentSchema(
             assessment_id="invalid_partial",
             section_id="security_design",
             section_type="security_design",
             strategy=CoverageStrategy.TOPIC_UNION,
-            status=EvidenceStatus.PARTIAL,
+            status=EvidenceStatus.INSUFFICIENT,
             coverage_ratio=0.5,
             required_topics=["访问控制"],
             covered_topics=["访问控制"],
@@ -262,7 +262,7 @@ def test_gate_decision_supports_all_delivery_modes() -> None:
     )
     qualified = GateDecisionSchema(
         policy_id="historical_case_scheme_v1",
-        evidence_status=EvidenceStatus.PARTIAL,
+        evidence_status=EvidenceStatus.INSUFFICIENT,
         delivery_mode=DeliveryMode.QUALIFIED,
         claim_risk_level=ClaimRiskLevel.LOW,
         allowed_claim_types=[ClaimType.GENERAL_METHOD, ClaimType.REFERENCE_CASE],
@@ -274,14 +274,14 @@ def test_gate_decision_supports_all_delivery_modes() -> None:
     )
     framework = GateDecisionSchema(
         policy_id="ordinary_section_absent_v1",
-        evidence_status=EvidenceStatus.ABSENT,
+        evidence_status=EvidenceStatus.INSUFFICIENT,
         delivery_mode=DeliveryMode.FRAMEWORK_ONLY,
         allowed_claim_types=[ClaimType.TEMPLATE_STRUCTURE],
         missing_topics=["资源配置"],
     )
     blocked = GateDecisionSchema(
         policy_id="high_risk_absent_v1",
-        evidence_status=EvidenceStatus.ABSENT,
+        evidence_status=EvidenceStatus.INSUFFICIENT,
         delivery_mode=DeliveryMode.BLOCKED,
         claim_risk_level=ClaimRiskLevel.CRITICAL,
         forbidden_claim_types=[ClaimType.CURRENT_PROJECT_COST],
@@ -306,11 +306,11 @@ def test_gate_decision_supports_all_delivery_modes() -> None:
     )} == set(DeliveryMode)
 
 
-def test_gate_rejects_partial_high_risk_qualified_delivery() -> None:
-    with pytest.raises(ValidationError, match="partial high-risk claims"):
+def test_gate_rejects_insufficient_high_risk_qualified_delivery() -> None:
+    with pytest.raises(ValidationError, match="insufficient high-risk claims"):
         GateDecisionSchema(
             policy_id="invalid_high_risk_partial_v1",
-            evidence_status=EvidenceStatus.PARTIAL,
+            evidence_status=EvidenceStatus.INSUFFICIENT,
             delivery_mode=DeliveryMode.QUALIFIED,
             claim_risk_level=ClaimRiskLevel.HIGH,
             allowed_claim_types=[ClaimType.CURRENT_PROJECT_QUANTITY],

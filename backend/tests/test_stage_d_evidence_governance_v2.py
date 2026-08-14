@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import pytest
+
 from apps.enterprise_document.schemas.gate_decision import DeliveryMode
+from apps.enterprise_document.services.scheme_writer.evidence_gate_policy import (
+    EvidenceGatePolicy,
+)
 from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.schema.evidence_assessment_v2 import EvidenceStatus
+
+
+def _gate(result):
+    return EvidenceGatePolicy().evaluate(result.public_assessment)
 
 
 def _profile(
@@ -196,11 +205,11 @@ def test_historical_evidence_cannot_support_current_project_cost_but_retains_ref
 
     assert result.item_assessments[0].eligibility is True
     assert result.set_assessment.status is EvidenceStatus.SUFFICIENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.QUALIFIED
+    assert _gate(result).delivery_mode is DeliveryMode.QUALIFIED
     assert "current_project_cost" not in {
-        item.value for item in result.gate_decision.allowed_claim_types
+        item.value for item in _gate(result).allowed_claim_types
     }
-    assert {item.value for item in result.gate_decision.allowed_claim_types} == {
+    assert {item.value for item in _gate(result).allowed_claim_types} == {
         "general_method",
         "reference_case",
     }
@@ -235,8 +244,8 @@ def test_historical_method_evidence_is_qualified_not_grounded() -> None:
     )
 
     assert result.set_assessment.status is EvidenceStatus.SUFFICIENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.QUALIFIED
-    assert "参考同类项目" in result.gate_decision.required_qualifiers
+    assert _gate(result).delivery_mode is DeliveryMode.QUALIFIED
+    assert "参考同类项目" in _gate(result).required_qualifiers
 
 
 def test_official_current_project_cost_can_be_grounded() -> None:
@@ -269,8 +278,8 @@ def test_official_current_project_cost_can_be_grounded() -> None:
 
     assert result.item_assessments[0].eligibility is True
     assert result.set_assessment.status is EvidenceStatus.SUFFICIENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.GROUNDED
-    assert result.gate_decision.allowed_claim_types[0].value == "current_project_cost"
+    assert _gate(result).delivery_mode is DeliveryMode.GROUNDED
+    assert _gate(result).allowed_claim_types[0].value == "current_project_cost"
 
 
 def test_reference_current_project_cost_requires_qualification_and_review() -> None:
@@ -304,8 +313,8 @@ def test_reference_current_project_cost_requires_qualification_and_review() -> N
     )
 
     assert result.set_assessment.status is EvidenceStatus.SUFFICIENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.QUALIFIED
-    assert result.gate_decision.human_review_required is True
+    assert _gate(result).delivery_mode is DeliveryMode.QUALIFIED
+    assert _gate(result).human_review_required is True
 
 
 def test_partial_high_risk_coverage_requires_human_review() -> None:
@@ -336,9 +345,12 @@ def test_partial_high_risk_coverage_requires_human_review() -> None:
         ),
     )
 
-    assert result.set_assessment.status is EvidenceStatus.PARTIAL
-    assert result.gate_decision.delivery_mode is DeliveryMode.HUMAN_REVIEW
-    assert result.gate_decision.allowed_claim_types == []
+    assert result.set_assessment.status is EvidenceStatus.INSUFFICIENT
+    assert result.set_assessment.coverage_ratio == pytest.approx(0.5)
+    assert result.set_assessment.missing_topics == ["资金来源"]
+    assert result.set_assessment.metadata["legacy_coverage_shape"] == "partial"
+    assert _gate(result).delivery_mode is DeliveryMode.HUMAN_REVIEW
+    assert _gate(result).allowed_claim_types == []
 
 
 def test_conflicting_current_project_facts_are_not_silently_selected() -> None:
@@ -390,8 +402,8 @@ def test_conflicting_current_project_facts_are_not_silently_selected() -> None:
 
     assert result.set_assessment.status is EvidenceStatus.CONFLICTED
     assert len(result.set_assessment.conflicts) == 1
-    assert result.gate_decision.delivery_mode is DeliveryMode.HUMAN_REVIEW
-    assert result.gate_decision.human_review_required is True
+    assert _gate(result).delivery_mode is DeliveryMode.HUMAN_REVIEW
+    assert _gate(result).human_review_required is True
 
 
 def test_template_evidence_only_supports_template_claims() -> None:
@@ -423,8 +435,8 @@ def test_template_evidence_only_supports_template_claims() -> None:
     )
 
     assert result.item_assessments[0].eligibility is True
-    assert result.gate_decision.delivery_mode is DeliveryMode.GROUNDED
-    assert [item.value for item in result.gate_decision.allowed_claim_types] == [
+    assert _gate(result).delivery_mode is DeliveryMode.GROUNDED
+    assert [item.value for item in _gate(result).allowed_claim_types] == [
         "style_guidance",
         "template_structure",
     ]
@@ -474,7 +486,7 @@ def test_query_wording_does_not_change_candidate_derived_claim_capabilities() ->
             runtime_context=runtime_context,
         )
         allowed_by_query[query] = tuple(
-            item.value for item in result.gate_decision.allowed_claim_types
+            item.value for item in _gate(result).allowed_claim_types
         )
 
     assert len(set(allowed_by_query.values())) == 1
@@ -519,7 +531,7 @@ def test_other_project_profile_cannot_retain_current_project_cost_capability() -
         },
     )
 
-    allowed = {item.value for item in result.gate_decision.allowed_claim_types}
+    allowed = {item.value for item in _gate(result).allowed_claim_types}
     assert "current_project_cost" not in allowed
     assert allowed == {"reference_case", "typical_architecture"}
     assert result.item_assessments[0].eligibility is True
@@ -580,8 +592,8 @@ def test_negative_cost_wording_does_not_eliminate_all_reference_evidence() -> No
     )
 
     assert result.eligible_candidate_ids
-    assert result.gate_decision.delivery_mode is not DeliveryMode.BLOCKED
-    assert {item.value for item in result.gate_decision.allowed_claim_types} == {
+    assert _gate(result).delivery_mode is not DeliveryMode.BLOCKED
+    assert {item.value for item in _gate(result).allowed_claim_types} == {
         "general_method",
         "reference_case",
         "typical_architecture",
@@ -615,8 +627,10 @@ def test_missing_profile_is_rejected_and_absent() -> None:
 
     assert result.candidates == ()
     assert result.rejected_candidate_ids == ("child-1",)
-    assert result.set_assessment.status is EvidenceStatus.ABSENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.BLOCKED
+    assert result.set_assessment.status is EvidenceStatus.INSUFFICIENT
+    assert result.set_assessment.coverage_ratio == 0.0
+    assert result.set_assessment.metadata["legacy_coverage_shape"] == "absent"
+    assert _gate(result).delivery_mode is DeliveryMode.BLOCKED
 
 
 def test_governance_cannot_revive_candidate_rejected_by_final_crag() -> None:
@@ -658,6 +672,8 @@ def test_governance_cannot_revive_candidate_rejected_by_final_crag() -> None:
 
     assert result.eligible_candidate_ids == ()
     assert result.rejected_candidate_ids == ("history-storage-child",)
-    assert result.set_assessment.status is EvidenceStatus.ABSENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.BLOCKED
+    assert result.set_assessment.status is EvidenceStatus.INSUFFICIENT
+    assert result.set_assessment.coverage_ratio == 0.0
+    assert result.set_assessment.metadata["legacy_coverage_shape"] == "absent"
+    assert _gate(result).delivery_mode is DeliveryMode.BLOCKED
     assert "rejected_by_final_crag_irrelevant" in result.item_assessments[0].reason_codes

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from apps.enterprise_document.schemas.gate_decision import DeliveryMode
+from apps.enterprise_document.services.scheme_writer.evidence_gate_policy import (
+    EvidenceGatePolicy,
+)
 from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.mapping.request_mapper import RAGRequestMapper
 from rag.mapping.result_mapper import RAGResultMapper
 from schemas.rag import (
     EvidenceAssessmentStatus,
     EvidenceDisposition,
+    EvidenceRequirementsSchema,
     RAGToolInputSchema,
     RetrievalAccessScopeSchema,
 )
@@ -210,16 +214,14 @@ def test_result_mapper_publishes_v2_gate_and_context_selection() -> None:
         ),
         max_context_chars=6000,
         max_context_items=3,
-        extra={
-            "retrieval_trace_id": "trace-stage-d",
-            "retrieval_scope": "section",
-            "extra_metadata": {
-                "section_id": "investment",
-                "section_title": "投资估算",
-                "section_type": "investment",
-                "evidence_requirements": requirements,
-            },
-        },
+        retrieval_trace_id="trace-stage-d",
+        retrieval_scope="section",
+        evidence_requirements=EvidenceRequirementsSchema.from_topics(
+            section_id="investment",
+            section_title="投资估算",
+            section_type="investment",
+            topics=["预算金额"],
+        ),
     )
     invocation = RAGRequestMapper().map(request)
     pre_context = OnlineEvidenceGovernanceV2().evaluate(
@@ -313,13 +315,14 @@ def test_result_mapper_publishes_v2_gate_and_context_selection() -> None:
 
     assert bundle.assessment.status is EvidenceAssessmentStatus.SUFFICIENT
     assert bundle.assessment.judge_name == "document_profile_gate_v2"
-    gate = bundle.extra["gate_decision"]
-    assert gate["delivery_mode"] == DeliveryMode.GROUNDED.value
-    assert gate["allowed_claim_types"] == [
+    gate = EvidenceGatePolicy().evaluate(bundle.assessment)
+    assert gate.delivery_mode is DeliveryMode.GROUNDED
+    assert [item.value for item in gate.allowed_claim_types] == [
         "current_project_cost",
         "procurement_requirement",
     ]
-    assert bundle.extra["generation_allowed"] is True
+    assert "gate_decision" not in bundle.extra
+    assert "generation_allowed" not in bundle.extra
     assert bundle.selected_evidence_ids == ["E1"]
     assert bundle.items[0].doc_id == "current-1"
     assert bundle.items[0].disposition is EvidenceDisposition.SELECTED
@@ -329,5 +332,8 @@ def test_result_mapper_publishes_v2_gate_and_context_selection() -> None:
     assert bundle.items[1].citation_ids == []
     assert "历史同类项目" not in bundle.context.context_text
     details = bundle.assessment.details
+    assert "gate_decision" not in details
+    assert "generation_allowed" not in details
+    assert "human_review_required" not in details
     assert details["legacy_corrective_assessment"]["status"] == "insufficient"
     assert details["presence_is_not_semantic_sufficiency"] is True

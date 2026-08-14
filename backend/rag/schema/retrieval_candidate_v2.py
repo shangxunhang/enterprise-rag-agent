@@ -11,9 +11,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from schemas.claim import ClaimType
 from rag.catalog.document_profile import (
     AuthorityLevel,
-    ClaimType,
     DocumentType,
     EvidenceRole,
     ProjectRelation,

@@ -234,7 +234,7 @@ class ParentChildRetrievalPipeline:
         checkpoint_current_execution()
         return assessment
 
-    def _gate(
+    def _decide_correction(
         self,
         *,
         assessment: EvidenceAssessment,
@@ -275,13 +275,13 @@ class ParentChildRetrievalPipeline:
 
         while True:
             checkpoint_current_execution()
-            decision = self._gate(
+            decision = self._decide_correction(
                 assessment=assessment,
                 correction_budget=correction_budget,
                 completed_rounds=completed_rounds,
                 request_context=request_context,
             )
-            trace["last_gate_decision"] = decision.to_dict()
+            trace["last_correction_decision"] = decision.to_dict()
             if not decision.required:
                 trace["final_reason"] = decision.reason
                 break
@@ -339,7 +339,7 @@ class ParentChildRetrievalPipeline:
             trace["rounds"].append(
                 {
                     "round": round_index,
-                    "gate_decision": decision.to_dict(),
+                    "correction_decision": decision.to_dict(),
                     "query_plan": query_plan.to_dict(),
                     "query_execution": query_execution,
                     "query_fusion_execution": fusion_metadata,

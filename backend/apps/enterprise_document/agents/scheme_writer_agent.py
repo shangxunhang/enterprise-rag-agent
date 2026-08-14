@@ -100,7 +100,6 @@ class SchemeWriterAgent(BaseAgent):
         self.evidence_service = SchemeEvidenceService(
             rag_service=rag_service,
             agent_name=self.agent_name,
-            model_gateway=model_gateway,
             retrieval_access_scope=retrieval_access_scope,
         )
         self.prompt_service = SectionPromptService(

@@ -3,11 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agent.runtime.shared_state_schema import SharedStateSchema
-from apps.enterprise_document.schemas.gate_decision import (
-    ClaimRiskLevel,
-    DeliveryMode,
-    GateDecisionSchema,
-)
+from apps.enterprise_document.schemas.gate_decision import DeliveryMode
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeSectionSchema,
@@ -38,7 +34,7 @@ from rag.ports.quality import EvidenceAssessment, EvidenceJudgement
 from rag.schema.evidence_assessment_v2 import EvidenceStatus
 from schemas.citation import CitationSchema
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
-from schemas.rag import RAGContextSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema, RAGEvidenceAssessmentSchema
 from schemas.status import ExecutionStatus
 
 
@@ -171,43 +167,46 @@ def test_crag_partial_only_survives_even_when_collection_is_insufficient() -> No
 
 def _gate_output(mode: DeliveryMode) -> dict:
     if mode is DeliveryMode.GROUNDED:
-        gate = GateDecisionSchema(
-            policy_id="recovery_regression_v1",
-            evidence_status=EvidenceStatus.SUFFICIENT,
-            delivery_mode=DeliveryMode.GROUNDED,
-            claim_risk_level=ClaimRiskLevel.LOW,
-            allowed_claim_types=[ClaimType.GENERAL_METHOD],
+        assessment = RAGEvidenceAssessmentSchema(
+            assessment_state="completed",
+            status=EvidenceStatus.SUFFICIENT,
+            coverage_ratio=1.0,
+            required_topics=["存储资源建设方案"],
             covered_topics=["存储资源建设方案"],
+            supported_claim_types=[ClaimType.GENERAL_METHOD],
+            authoritative_evidence_present=True,
+            prompt_evidence_source="test",
             reason_codes=["initial_evidence_permitted"],
         )
-        generation_allowed = True
-        assessment_status = "sufficient"
+        context_text = "INITIAL_SAFE_EVIDENCE"
     else:
-        gate = GateDecisionSchema(
-            policy_id="recovery_regression_v1",
-            evidence_status=EvidenceStatus.ABSENT,
-            delivery_mode=DeliveryMode.BLOCKED,
-            claim_risk_level=ClaimRiskLevel.LOW,
-            allowed_claim_types=[],
+        assessment = RAGEvidenceAssessmentSchema(
+            assessment_state="completed",
+            status=EvidenceStatus.INSUFFICIENT,
+            coverage_ratio=0.0,
+            required_topics=["存储资源建设方案"],
             missing_topics=["存储资源建设方案"],
+            prompt_evidence_source="test",
             reason_codes=["recovery_evidence_absent"],
         )
-        generation_allowed = False
-        assessment_status = "insufficient"
-    return {
-        "evidence": {
-            "assessment": {"status": assessment_status, "details": {}},
-            "extra": {
-                "gate_decision": gate.model_dump(mode="json"),
-                "generation_allowed": generation_allowed,
-                "evidence_contract_sha256": "a" * 64,
-                "prompt_evidence_contract": {
-                    "schema_version": "prompt_evidence_contract_v1",
-                    "source": "test",
-                },
+        context_text = ""
+    bundle = EvidenceBundleSchema(
+        query="存储资源建设方案",
+        context=RAGContextSchema(
+            context_text=context_text,
+            used_context_chars=len(context_text),
+            context_item_count=0,
+        ),
+        assessment=assessment,
+        extra={
+            "evidence_contract_sha256": "a" * 64,
+            "prompt_evidence_contract": {
+                "schema_version": "prompt_evidence_contract_v1",
+                "source": "test",
             },
-        }
-    }
+        },
+    )
+    return {"evidence": bundle.model_dump(mode="json")}
 
 
 class _RecoveryEvidenceService:

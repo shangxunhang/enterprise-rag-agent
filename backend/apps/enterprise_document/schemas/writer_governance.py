@@ -12,7 +12,7 @@ from apps.enterprise_document.schemas.gate_decision import (
     DeliveryMode,
     GateDecisionSchema,
 )
-from rag.catalog.document_profile import ClaimType
+from schemas.claim import ClaimType
 
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]

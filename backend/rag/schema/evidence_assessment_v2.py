@@ -7,11 +7,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from rag.catalog.document_profile import (
+from schemas.claim import (
     CURRENT_PROJECT_CLAIM_TYPES,
     TEMPLATE_ONLY_CLAIM_TYPES,
-    AuthorityLevel,
     ClaimType,
+)
+from schemas.rag import EvidenceStatus
+from rag.catalog.document_profile import (
+    AuthorityLevel,
     DocumentType,
     EvidenceRole,
     ProjectRelation,
@@ -29,14 +32,6 @@ class EvidenceRelevance(str, Enum):
     RELEVANT = "relevant"
     PARTIAL = "partial"
     IRRELEVANT = "irrelevant"
-
-
-class EvidenceStatus(str, Enum):
-    SUFFICIENT = "sufficient"
-    PARTIAL = "partial"
-    ABSENT = "absent"
-    CONFLICTED = "conflicted"
-    NOT_ASSESSED = "not_assessed"
 
 
 class CoverageStrategy(str, Enum):
@@ -144,6 +139,20 @@ class EvidenceSetAssessmentSchema(_FrozenContract):
     reason_codes: list[NonEmptyStr] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def project_legacy_status(cls, value: Any) -> Any:
+        """Map legacy completed states into the frozen canonical status."""
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        raw_status = data.get("status")
+        normalized = str(getattr(raw_status, "value", raw_status) or "").lower()
+        if normalized in {"partial", "absent"}:
+            data["status"] = EvidenceStatus.INSUFFICIENT
+        return data
+
     @model_validator(mode="after")
     def _set_assessment_is_consistent(self) -> "EvidenceSetAssessmentSchema":
         for field_name in (
@@ -182,36 +191,18 @@ class EvidenceSetAssessmentSchema(_FrozenContract):
                 raise ValueError("sufficient evidence cannot have missing_topics")
             if self.conflicts:
                 raise ValueError("sufficient evidence cannot contain conflicts")
-        elif self.status is EvidenceStatus.PARTIAL:
-            if self.coverage_ratio is None or not 0.0 < self.coverage_ratio < 1.0:
-                raise ValueError("partial evidence requires 0 < coverage_ratio < 1")
-            if not self.covered_topics or not self.missing_topics:
-                raise ValueError(
-                    "partial evidence requires both covered_topics and missing_topics"
-                )
+        elif self.status is EvidenceStatus.INSUFFICIENT:
+            if self.coverage_ratio is None or self.coverage_ratio >= 1.0:
+                raise ValueError("insufficient evidence requires coverage_ratio < 1.0")
+            if not self.missing_topics:
+                raise ValueError("insufficient evidence requires missing_topics")
+            if self.coverage_ratio == 0.0 and self.covered_topics:
+                raise ValueError("zero-coverage evidence cannot have covered_topics")
             if self.conflicts:
-                raise ValueError("partial evidence cannot contain unresolved conflicts")
-        elif self.status is EvidenceStatus.ABSENT:
-            if self.coverage_ratio != 0.0:
-                raise ValueError("absent evidence requires coverage_ratio=0.0")
-            if self.covered_topics:
-                raise ValueError("absent evidence cannot have covered_topics")
-            if self.direct_evidence_count or self.partial_evidence_count:
-                raise ValueError("absent evidence cannot have supporting evidence counts")
-            if self.conflicts:
-                raise ValueError("absent evidence cannot contain conflicts")
+                raise ValueError("insufficient evidence cannot contain unresolved conflicts")
         elif self.status is EvidenceStatus.CONFLICTED:
             if not self.conflicts:
                 raise ValueError("conflicted evidence requires at least one conflict")
-        elif self.status is EvidenceStatus.NOT_ASSESSED:
-            if self.coverage_ratio is not None:
-                raise ValueError("not_assessed evidence requires coverage_ratio=None")
-            if self.covered_topics or self.missing_topics:
-                raise ValueError("not_assessed evidence cannot declare coverage results")
-            if self.direct_evidence_count or self.partial_evidence_count:
-                raise ValueError("not_assessed evidence cannot have evidence counts")
-            if self.conflicts:
-                raise ValueError("not_assessed evidence cannot contain conflicts")
         return self
 
 

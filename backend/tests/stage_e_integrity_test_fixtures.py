@@ -39,7 +39,7 @@ def make_binding(
 ) -> WriterGateBindingSchema:
     status = EvidenceStatus.SUFFICIENT
     if mode in {DeliveryMode.BLOCKED, DeliveryMode.FRAMEWORK_ONLY}:
-        status = EvidenceStatus.ABSENT
+        status = EvidenceStatus.INSUFFICIENT
     elif mode is DeliveryMode.HUMAN_REVIEW:
         status = EvidenceStatus.CONFLICTED
     gate = GateDecisionSchema(
@@ -50,8 +50,8 @@ def make_binding(
         allowed_claim_types=allowed or [],
         forbidden_claim_types=forbidden or [],
         required_qualifiers=qualifiers or [],
-        covered_topics=[section_title] if status is not EvidenceStatus.ABSENT else [],
-        missing_topics=[] if status is not EvidenceStatus.ABSENT else [section_title],
+        covered_topics=[section_title] if status is not EvidenceStatus.INSUFFICIENT else [],
+        missing_topics=[] if status is not EvidenceStatus.INSUFFICIENT else [section_title],
         human_review_required=human_review,
         reason_codes=["stage_e_integrity_test"],
     )

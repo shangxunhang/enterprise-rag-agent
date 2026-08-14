@@ -31,7 +31,7 @@ def _binding(
 ) -> WriterGateBindingSchema:
     status = EvidenceStatus.SUFFICIENT
     if mode is DeliveryMode.BLOCKED:
-        status = EvidenceStatus.ABSENT
+        status = EvidenceStatus.INSUFFICIENT
     elif mode is DeliveryMode.HUMAN_REVIEW:
         status = EvidenceStatus.CONFLICTED
     gate = GateDecisionSchema(
@@ -42,8 +42,8 @@ def _binding(
         allowed_claim_types=allowed or [],
         forbidden_claim_types=forbidden or [],
         required_qualifiers=qualifiers or [],
-        covered_topics=["实施方法"] if status is not EvidenceStatus.ABSENT else [],
-        missing_topics=["实施方法"] if status is EvidenceStatus.ABSENT else [],
+        covered_topics=["实施方法"] if status is not EvidenceStatus.INSUFFICIENT else [],
+        missing_topics=["实施方法"] if status is EvidenceStatus.INSUFFICIENT else [],
         human_review_required=human_review,
         reason_codes=["stage_e_document_test"],
     )

@@ -6,11 +6,12 @@ from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from schemas.claim import ClaimType
+
 from .document_profile import (
     AuthorityLevel,
     AuthorityProfileSchema,
     ChunkStrategy,
-    ClaimType,
     ClassificationMethod,
     ClassificationProfileSchema,
     ContentCapabilitiesSchema,

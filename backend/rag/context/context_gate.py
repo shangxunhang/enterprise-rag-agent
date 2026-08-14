@@ -32,27 +32,43 @@ class ContextRequirements:
         *,
         defaults: "ContextRequirements",
     ) -> "ContextRequirements":
+        """Apply caller constraints without allowing internal limits to expand."""
+
         raw = dict(value or {})
+
+        def constrained_int(
+            public_name: str,
+            *,
+            internal_default: int,
+            legacy_name: str | None = None,
+        ) -> int:
+            requested = raw.get(public_name)
+            if requested is None and legacy_name is not None:
+                # TODO(Interface V2 post-Phase 2): retire this RAG-internal
+                # compatibility key after all direct engine tests migrate.
+                # It may only narrow the limit and never become public authority.
+                requested = raw.get(legacy_name)
+            if requested is None:
+                return int(internal_default)
+            return min(int(internal_default), max(1, int(requested)))
+
         return cls(
-            model_context_window=max(
-                512,
-                int(raw.get("model_context_window", defaults.model_context_window)),
+            # These two values are RAG internal config and are never caller-controlled.
+            model_context_window=defaults.model_context_window,
+            prompt_reserved_tokens=defaults.prompt_reserved_tokens,
+            section_token_budget=constrained_int(
+                "max_context_tokens",
+                internal_default=defaults.section_token_budget,
+                legacy_name="section_token_budget",
             ),
-            prompt_reserved_tokens=max(
-                0,
-                int(raw.get("prompt_reserved_tokens", defaults.prompt_reserved_tokens)),
+            max_evidence_items=constrained_int(
+                "max_context_items",
+                internal_default=defaults.max_evidence_items,
+                legacy_name="max_evidence_items",
             ),
-            section_token_budget=max(
-                256,
-                int(raw.get("section_token_budget", defaults.section_token_budget)),
-            ),
-            max_evidence_items=max(
-                1,
-                int(raw.get("max_evidence_items", defaults.max_evidence_items)),
-            ),
-            max_context_chars=max(
-                256,
-                int(raw.get("max_context_chars", defaults.max_context_chars)),
+            max_context_chars=constrained_int(
+                "max_context_chars",
+                internal_default=defaults.max_context_chars,
             ),
         )
 

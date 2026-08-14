@@ -3,6 +3,9 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from apps.enterprise_document.services.scheme_writer.evidence_gate_policy import (
+    EvidenceGatePolicy,
+)
 from rag.application.retrieval_scope import resolve_canonical_retrieval_scope
 from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.mapping.request_mapper import RAGRequestMapper
@@ -101,10 +104,13 @@ def test_empty_prompt_does_not_create_framework_only_from_template_profile() -> 
     )
 
     assert retrieval  # prove a retrievable template exists but is not prompt-visible
-    assert governance.set_assessment.status.value == "absent"
-    assert governance.gate_decision.delivery_mode.value == "blocked"
-    assert governance.gate_decision.allowed_claim_types == []
-    assert governance.to_dict()["generation_allowed"] is False
+    assert governance.set_assessment.status.value == "insufficient"
+    assert governance.set_assessment.coverage_ratio == 0.0
+    assert governance.set_assessment.metadata["legacy_coverage_shape"] == "absent"
+    decision = EvidenceGatePolicy().evaluate(governance.public_assessment)
+    assert decision.delivery_mode.value == "blocked"
+    assert decision.allowed_claim_types == []
+    assert "generation_allowed" not in governance.to_dict()
 
 
 def test_legacy_prompt_fallback_is_explicit_and_requires_review() -> None:
@@ -115,7 +121,7 @@ def test_legacy_prompt_fallback_is_explicit_and_requires_review() -> None:
         query="预算金额",
         max_context_chars=6000,
         max_context_items=3,
-        extra={"retrieval_scope": "预算金额"},
+        retrieval_scope="预算金额",
     )
     invocation = RAGRequestMapper(allow_legacy_unscoped=True).map(request)
     result = retrieval_result()
@@ -150,14 +156,12 @@ def test_legacy_prompt_fallback_is_explicit_and_requires_review() -> None:
         service_name="legacy-stage-d-test",
     )
 
-    gate = bundle.extra["gate_decision"]
+    gate = EvidenceGatePolicy().evaluate(bundle.assessment)
     assert bundle.extra["prompt_evidence_source"] == "legacy_fallback"
-    assert gate["delivery_mode"] == "qualified"
-    assert gate["human_review_required"] is True
-    assert "legacy_prompt_evidence_fallback" in gate["reason_codes"]
-    assert "基于旧版 Prompt 证据兼容投影，需人工复核" in gate[
-        "required_qualifiers"
-    ]
+    assert gate.delivery_mode.value == "qualified"
+    assert gate.human_review_required is True
+    assert "legacy_prompt_evidence_fallback" in gate.reason_codes
+    assert "基于旧版 Prompt 证据兼容投影，需人工复核" in gate.required_qualifiers
 
 
 def test_legacy_crag_result_cannot_expand_document_profile_capabilities() -> None:
@@ -183,12 +187,13 @@ def test_legacy_crag_result_cannot_expand_document_profile_capabilities() -> Non
         runtime_context=evidence_requirements(),
     )
 
-    assert governance.gate_decision.delivery_mode.value == "qualified"
+    decision = EvidenceGatePolicy().evaluate(governance.public_assessment)
+    assert decision.delivery_mode.value == "qualified"
     assert {
-        item.value for item in governance.gate_decision.allowed_claim_types
+        item.value for item in decision.allowed_claim_types
     } == {"general_method", "reference_case"}
     assert "current_project_cost" not in {
-        item.value for item in governance.gate_decision.allowed_claim_types
+        item.value for item in decision.allowed_claim_types
     }
     # An external/legacy "sufficient" flag is deliberately absent from the
     # function inputs and therefore cannot expand the candidate Profile.

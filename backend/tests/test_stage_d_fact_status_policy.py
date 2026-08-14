@@ -3,6 +3,9 @@ from __future__ import annotations
 import pytest
 
 from apps.enterprise_document.schemas.gate_decision import DeliveryMode
+from apps.enterprise_document.services.scheme_writer.evidence_gate_policy import (
+    EvidenceGatePolicy,
+)
 from rag.evidence.governance_v2 import OnlineEvidenceGovernanceV2
 from rag.schema.evidence_assessment_v2 import EvidenceStatus
 
@@ -33,12 +36,17 @@ def _evaluate(*, status: str, authority: str = "official", form: str = "procurem
     )
 
 
+def _gate(result):
+    return EvidenceGatePolicy().evaluate(result.public_assessment)
+
+
 def test_unknown_fact_status_cannot_be_grounded() -> None:
     result = _evaluate(status="unknown")
 
-    assert result.set_assessment.status is EvidenceStatus.ABSENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.BLOCKED
-    assert result.gate_decision.allowed_claim_types == []
+    assert result.set_assessment.status is EvidenceStatus.INSUFFICIENT
+    assert result.set_assessment.coverage_ratio == 0.0
+    assert _gate(result).delivery_mode is DeliveryMode.BLOCKED
+    assert _gate(result).allowed_claim_types == []
     assert "fact_status_unknown" in result.item_assessments[0].reason_codes
 
 
@@ -46,10 +54,10 @@ def test_estimated_fact_is_qualified_with_estimate_language() -> None:
     result = _evaluate(status="estimated")
 
     assert result.set_assessment.status is EvidenceStatus.SUFFICIENT
-    assert result.gate_decision.delivery_mode is DeliveryMode.QUALIFIED
-    assert result.gate_decision.human_review_required is True
-    assert "根据现有估算材料" in result.gate_decision.required_qualifiers
-    assert "最终金额以审批或采购结果为准" in result.gate_decision.required_qualifiers
+    assert _gate(result).delivery_mode is DeliveryMode.QUALIFIED
+    assert _gate(result).human_review_required is True
+    assert "根据现有估算材料" in _gate(result).required_qualifiers
+    assert "最终金额以审批或采购结果为准" in _gate(result).required_qualifiers
     assert "fact_status_estimated" in result.item_assessments[0].reason_codes
 
 
@@ -63,18 +71,18 @@ def test_proposed_and_planned_facts_require_qualified_expression(
 ) -> None:
     result = _evaluate(status=status)
 
-    assert result.gate_decision.delivery_mode is DeliveryMode.QUALIFIED
-    assert result.gate_decision.human_review_required is True
-    assert qualifier in result.gate_decision.required_qualifiers
-    assert "尚待确认" in result.gate_decision.required_qualifiers
+    assert _gate(result).delivery_mode is DeliveryMode.QUALIFIED
+    assert _gate(result).human_review_required is True
+    assert qualifier in _gate(result).required_qualifiers
+    assert "尚待确认" in _gate(result).required_qualifiers
 
 
 def test_confirmed_fact_requires_authoritative_document() -> None:
     official = _evaluate(status="confirmed", authority="official")
     reference = _evaluate(status="confirmed", authority="reference")
 
-    assert official.gate_decision.delivery_mode is DeliveryMode.GROUNDED
-    assert reference.gate_decision.delivery_mode is DeliveryMode.BLOCKED
+    assert _gate(official).delivery_mode is DeliveryMode.GROUNDED
+    assert _gate(reference).delivery_mode is DeliveryMode.BLOCKED
     assert "confirmed_fact_requires_authoritative_document" in (
         reference.item_assessments[0].reason_codes
     )
@@ -92,8 +100,8 @@ def test_decided_fact_requires_formal_decision_source() -> None:
         form="feasibility_study",
     )
 
-    assert formal.gate_decision.delivery_mode is DeliveryMode.GROUNDED
-    assert informal.gate_decision.delivery_mode is DeliveryMode.BLOCKED
+    assert _gate(formal).delivery_mode is DeliveryMode.GROUNDED
+    assert _gate(informal).delivery_mode is DeliveryMode.BLOCKED
     assert "decided_fact_requires_formal_authoritative_source" in (
         informal.item_assessments[0].reason_codes
     )
@@ -122,9 +130,9 @@ def test_other_project_drops_current_project_claim_but_retains_reference_capabil
         runtime_context=evidence_requirements(),
     )
 
-    assert result.gate_decision.delivery_mode is DeliveryMode.QUALIFIED
+    assert _gate(result).delivery_mode is DeliveryMode.QUALIFIED
     assert [
-        item.value for item in result.gate_decision.allowed_claim_types
+        item.value for item in _gate(result).allowed_claim_types
     ] == ["reference_case"]
     assert "current_project_claim_requires_current_project_relation" in (
         result.item_assessments[0].reason_codes
@@ -165,10 +173,10 @@ def test_real_structured_fact_conflict_requires_human_review() -> None:
     )
 
     assert result.set_assessment.status is EvidenceStatus.CONFLICTED
-    assert result.gate_decision.delivery_mode is DeliveryMode.HUMAN_REVIEW
-    assert result.gate_decision.allowed_claim_types == []
-    assert result.gate_decision.human_review_required is True
-    assert result.to_dict()["generation_allowed"] is False
+    assert _gate(result).delivery_mode is DeliveryMode.HUMAN_REVIEW
+    assert _gate(result).allowed_claim_types == []
+    assert _gate(result).human_review_required is True
+    assert "generation_allowed" not in result.to_dict()
 
 
 @pytest.mark.parametrize(

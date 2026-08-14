@@ -11,7 +11,6 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from schemas.citation import CitationSchema
 from schemas.rag import (
-    EvidenceAssessmentStatus,
     EvidenceDisposition,
     RAGContextSchema,
     RAGEvidenceAssessmentSchema,
@@ -299,7 +298,8 @@ class RAGEvidenceContractBuilder:
             context=context,
             lineage=cls._lineage(trace),
             assessment=RAGEvidenceAssessmentSchema(
-                status=EvidenceAssessmentStatus.NOT_ASSESSED,
+                assessment_state="pending",
+                status=None,
                 evidence_available=bool(selected_items),
                 selected_evidence_count=len(selected_items),
                 dropped_evidence_count=len(dropped_ids),

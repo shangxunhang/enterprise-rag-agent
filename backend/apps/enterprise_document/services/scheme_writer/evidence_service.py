@@ -15,13 +15,13 @@ from observability.trace_summary import canonical_sha256
 from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from contracts.rag import RAGServicePort
-from model_gateway.model_contract import ModelRole
 from rag.evidence.contract import RAGEvidenceContractReader
-from rag.evidence.governance_v2 import resolve_evidence_requirements_v2
 from schemas.citation import CitationSchema
 from schemas.rag import (
     EvidenceBundleSchema,
+    EvidenceRequirementsSchema,
     RAGContextSchema,
+    RAGDocumentContextSchema,
     RAGToolInputSchema,
     RetrievalAccessScopeSchema,
     RetrievedChunkSchema,
@@ -39,17 +39,15 @@ class SchemeEvidenceService:
         *,
         rag_service: RAGServicePort | None,
         agent_name: str,
-        model_gateway: Any | None = None,
         retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
     ) -> None:
-        """注入 RAG 端口、调用 Agent 名称、模型能力查询和可信检索授权范围。
+        """注入 RAG 端口、调用 Agent 名称和可信检索授权范围。
 
         ``retrieval_access_scope`` 必须来自认证后的应用/安全边界；ProjectInput 只能提供
         缩小范围的材料和 KB 请求，不能被提升为授权事实。
         """
         self.rag_service = rag_service
         self.agent_name = agent_name
-        self.model_gateway = model_gateway
         # The composition root injects this object from an authenticated
         # application/security boundary. Business input is never promoted into
         # this authorization truth.
@@ -69,8 +67,9 @@ class SchemeEvidenceService:
         """构造并执行一次文档、章节或恢复范围的 RAG 请求。
 
         方法汇总 ProjectInput 的文件、文档和知识库定位信息，校验租户与可信授权范围一致，
-        再结合目标模型安全上下文窗口计算证据预算。``model_gateway`` 缺失时使用显式保守
-        默认值，而不是虚构模型能力。未配置 RAG 服务时返回 ``None``，由上层决定降级策略。
+        再构造 typed ``RAGToolInputSchema`` 并调用 ``RAGServicePort``。调用方预算只作为
+        public constraint 传入 RAG，内部安全限制由 RAG 自己执行。未配置 RAG 服务时返回
+        ``None``，由上层决定降级策略。
         """
 
         if self.rag_service is None:
@@ -125,77 +124,23 @@ class SchemeEvidenceService:
             or "document"
         )
         retrieval_trace_id = f"rag_{shared_state.run_id}_{safe_suffix}"
-        capability_plan: Dict[str, Any] = {}
-        resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)
-        configured_context_limit = requirements.extra.get("max_input_context_tokens")
-        if callable(resolve_capabilities):
-            capability_plan = dict(
-                resolve_capabilities(model_role=ModelRole.SECTION_GENERATION.value)
-            )
-            safe_context_window = int(capability_plan["safe_context_window"])
-            model_context_window = (
-                min(safe_context_window, int(configured_context_limit))
-                if configured_context_limit is not None
-                else safe_context_window
-            )
-            safe_output_tokens = int(capability_plan["safe_max_output_tokens"])
-        else:
-            model_context_window = int(configured_context_limit or 8192)
-            safe_output_tokens = int(requirements.max_tokens_per_section)
-        requested_reserved_tokens = int(
-            requirements.extra.get(
-                "prompt_reserved_tokens",
-                requirements.max_tokens_per_section + 512,
-            )
+        evidence_requirements = EvidenceRequirementsSchema.from_topics(
+            section_id=section_id or scope,
+            section_title=section_title or resolved_query,
+            section_type=section_id or scope,
+            topics=[section_title or resolved_query],
         )
-        prompt_reserved_tokens = min(
-            requested_reserved_tokens,
-            safe_output_tokens + 512,
-        )
-        evidence_requirements = resolve_evidence_requirements_v2(
-            query=resolved_query,
-            runtime_context={
-                "section_id": section_id or scope,
-                "section_title": section_title or resolved_query,
-                "section_type": section_id or scope,
-                "retrieval_scope": scope,
-            },
-        )
-        extra_metadata = {
-            "task_type": project_input.task_type,
-            "evidence_requirements": evidence_requirements.model_dump(
-                mode="json"
+        document_context = RAGDocumentContextSchema(
+            project_name=project_input.project_name,
+            document_title=project_input.output_schema.document_title,
+            required_sections=list(
+                project_input.generation_requirements.required_sections
+                or project_input.output_schema.required_sections
             ),
-            "retrieval_scope": scope,
-            "section_id": section_id,
-            "section_title": section_title,
-            "context_requirements": {
-                "model_context_window": model_context_window,
-                "prompt_reserved_tokens": prompt_reserved_tokens,
-                "section_token_budget": int(
-                    requirements.extra.get("max_evidence_context_tokens", 4096)
-                ),
-                "max_evidence_items": int(
-                    requirements.extra.get("max_evidence_items", 5)
-                ),
-                "max_context_chars": int(requirements.max_context_chars),
-                "model_capability_plan": capability_plan,
-            },
-            "document_context": {
-                "project_name": project_input.project_name,
-                "project_type": project_input.project_type,
-                "document_title": project_input.output_schema.document_title,
-                "required_sections": list(
-                    project_input.generation_requirements.required_sections
-                    or project_input.output_schema.required_sections
-                ),
-                "citation_required_sections": list(
-                    project_input.generation_requirements.citation_required_sections
-                ),
-                "target_documents": list(project_input.target_documents),
-                "target_templates": list(project_input.target_templates),
-            },
-        }
+            citation_required_sections=list(
+                project_input.generation_requirements.citation_required_sections
+            ),
+        )
         request = RAGToolInputSchema(
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
@@ -210,11 +155,19 @@ class SchemeEvidenceService:
             },
             need_citation=requirements.need_citation,
             max_context_chars=requirements.max_context_chars,
-            max_context_items=5,
+            max_context_items=int(requirements.extra.get("max_evidence_items", 5)),
+            max_context_tokens=int(
+                requirements.extra.get("max_evidence_context_tokens", 4096)
+            ),
+            retrieval_trace_id=retrieval_trace_id,
+            retrieval_scope=scope,
+            task_type=project_input.task_type,
+            evidence_requirements=evidence_requirements,
+            document_context=document_context,
             extra={
-                "retrieval_trace_id": retrieval_trace_id,
-                "retrieval_scope": scope,
-                "extra_metadata": extra_metadata,
+                "project_type": project_input.project_type,
+                "target_documents": list(project_input.target_documents),
+                "target_templates": list(project_input.target_templates),
             },
         )
         return self.rag_service.retrieve(request)

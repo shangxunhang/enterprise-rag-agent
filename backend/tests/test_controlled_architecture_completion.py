@@ -91,7 +91,7 @@ def _rag_request(index: int) -> RAGToolInputSchema:
         need_citation=True,
         max_context_chars=6000,
         max_context_items=3,
-        extra={"retrieval_trace_id": f"controlled_rag_{index}"},
+        retrieval_trace_id=f"controlled_rag_{index}",
     )
 
 
