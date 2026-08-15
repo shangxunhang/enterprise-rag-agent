@@ -20,7 +20,7 @@ from schemas.citation import CitationSchema
 from schemas.common import ErrorSourceSchema, WarningSchema
 from schemas.failure import FailureCategory
 from schemas.model import ModelResponseSchema
-from schemas.rag import RAGContextSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema
 from schemas.status import ExecutionStatus
 from apps.enterprise_document.services.gate_enforcement import (
     GateEnforcementController,
@@ -325,6 +325,7 @@ class SectionGenerationService:
         citations: List[CitationSchema],
         structured_facts: List[StructuredFactSchema],
         previous_sections: List[SchemeSectionSchema],
+        evidence_bundle: EvidenceBundleSchema | None = None,
         generation_attempt: int = 1,
         writer_gate_binding: WriterGateBindingSchema | None = None,
     ) -> SchemeSectionSchema:
@@ -373,6 +374,7 @@ class SectionGenerationService:
             rag_context,
             citations,
             previous_sections,
+            evidence_bundle=evidence_bundle,
         )
         context_package = dict(
             (prompt_result.extra or {}).get("llm_context_package") or {}

@@ -17,6 +17,7 @@ import json
 from typing import Any, Iterator, Mapping
 
 from agent.runtime.graph_state import GraphStateSchema
+from rag.evidence.contract import evidence_bundle_sha256
 from apps.enterprise_document.schemas.agent_rag_v1 import (
     AgentExecutionContextSchema,
     AgentRole,
@@ -34,7 +35,7 @@ from apps.enterprise_document.services.scheme_writer.evidence_service import (
     SchemeEvidenceService,
 )
 from schemas.citation import CitationSchema
-from schemas.rag import RAGContextSchema, RetrievedChunkSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema, RetrievedChunkSchema
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class MainlineResearchRetrieval:
     """Canonical retrieval data returned to the owning Section graph node."""
 
     success: bool
+    evidence_bundle: EvidenceBundleSchema | None
     context: RAGContextSchema | None
     chunks: tuple[RetrievedChunkSchema, ...]
     citations: tuple[CitationSchema, ...]
@@ -73,11 +75,10 @@ _ACTIVE_RESEARCH_REQUEST: ContextVar[BoundResearchToolRequest | None] = ContextV
 )
 
 
-def _assessment(normalized: Mapping[str, Any]) -> dict[str, Any]:
-    contract = normalized.get("evidence")
-    contract = dict(contract) if isinstance(contract, Mapping) else {}
-    value = contract.get("assessment")
-    value = dict(value) if isinstance(value, Mapping) else {}
+def _assessment(bundle: EvidenceBundleSchema) -> dict[str, Any]:
+    """Project assessment from the typed canonical Bundle, never from normalized dict."""
+
+    value = bundle.assessment.model_dump(mode="json", exclude_none=True)
     raw_status = value.get("status") or "not_assessed"
     if hasattr(raw_status, "value"):
         raw_status = raw_status.value
@@ -248,6 +249,7 @@ class MainlineResearchToolGateway:
             if result is None:
                 execution = MainlineResearchRetrieval(
                     success=False,
+                    evidence_bundle=None,
                     context=None,
                     chunks=(),
                     citations=(),
@@ -283,6 +285,7 @@ class MainlineResearchToolGateway:
                 )
                 execution = MainlineResearchRetrieval(
                     success=False,
+                    evidence_bundle=None,
                     context=None,
                     chunks=(),
                     citations=(),
@@ -329,7 +332,8 @@ class MainlineResearchToolGateway:
                 scope=request.scope,
                 query=request.query,
             )
-            assessment = _assessment(normalized)
+            assessment = _assessment(result)
+            evidence_contract_sha256 = evidence_bundle_sha256(result)
             accepted_ids = [
                 str(item.citation_id).strip()
                 for item in citations
@@ -343,6 +347,7 @@ class MainlineResearchToolGateway:
                 ]
             execution = MainlineResearchRetrieval(
                 success=True,
+                evidence_bundle=result,
                 context=context_value,
                 chunks=tuple(chunks),
                 citations=tuple(citations),
@@ -371,13 +376,7 @@ class MainlineResearchToolGateway:
                     "retrieval_scope": request.scope,
                     "citation_count": len(citations),
                     "retrieved_chunk_count": len(chunks),
-                    "evidence_contract_sha256": str(
-                        (context_value.extra or {}).get(
-                            "evidence_contract_sha256"
-                        )
-                        or ""
-                    )
-                    or None,
+                    "evidence_contract_sha256": evidence_contract_sha256,
                 },
                 provenance=provenance.model_copy(
                     update={"source_refs": list(dict.fromkeys(accepted_ids))},
@@ -388,6 +387,7 @@ class MainlineResearchToolGateway:
             error_message = f"{type(exc).__name__}: {exc}"
             request.execution = MainlineResearchRetrieval(
                 success=False,
+                evidence_bundle=None,
                 context=None,
                 chunks=(),
                 citations=(),

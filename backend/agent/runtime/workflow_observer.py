@@ -102,14 +102,6 @@ class WorkflowObserver:
                     "step_order": step.order,
                     "target_name": step.target_name,
                     "current_state_status": getattr(state.status, "value", state.status),
-                    # 只记录是否存在证据契约，不把证据正文放入节点开始摘要。
-                    "has_evidence_contract": bool(
-                        getattr(
-                            getattr(state.context_bundle, "evidence", None),
-                            "contract",
-                            None,
-                        )
-                    ),
                     "graph_state_schema": getattr(state, "schema_version", None),
                     "graph_revision": getattr(state, "graph_revision", None),
                     # 输入哈希允许重放时确认节点看到的投影是否一致。

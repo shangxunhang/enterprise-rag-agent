@@ -9,7 +9,6 @@ from apps.enterprise_document.schemas.release_publication import PublishedReleas
 from apps.enterprise_document.schemas.scheme_writer.document import SchemeDraftSchema
 from apps.enterprise_document.schemas.scheme_writer.evaluation import HardGateResultSchema
 from apps.enterprise_document.schemas.scheme_writer.planning import DocumentPlanSchema
-from apps.enterprise_document.schemas.scheme_writer.evidence import SectionEvidenceBundleSchema
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
 from schemas.rag import RAGContextSchema, RetrievedChunkSchema
@@ -54,7 +53,8 @@ class SchemeWriterOutputSchema(SchemaBase):
     rag_context: Optional[RAGContextSchema] = None
     retrieved_chunks: List[RetrievedChunkSchema] = Field(default_factory=list)
     citations: List[CitationSchema] = Field(default_factory=list)
-    section_evidence: List[SectionEvidenceBundleSchema] = Field(default_factory=list)
+    # Lightweight final Evidence summaries only; canonical section Bundles stay in lifecycle state.
+    section_evidence: List[Dict[str, Any]] = Field(default_factory=list)
     hard_gate: Optional[HardGateResultSchema] = None
     warnings: List[WarningSchema] = Field(default_factory=list)
     error: Optional[ErrorSchema] = None

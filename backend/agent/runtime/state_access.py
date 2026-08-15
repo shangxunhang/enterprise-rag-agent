@@ -197,60 +197,6 @@ class SharedStateWriter:
         for error in errors:
             self.add_error(state, error)
 
-    def set_evidence_context(
-        self,
-        state: SharedStateSchema,
-        *,
-        query: str,
-        context_text: str,
-        retrieved_chunks: list[Dict[str, Any]],
-        citations: list[Dict[str, Any]],
-        used_doc_ids: list[str],
-        evidence_sufficient: Optional[bool] = None,
-        evidence_contract: Optional[Dict[str, Any]] = None,
-        evidence_available: Optional[bool] = None,
-        assessment_status: str = "not_assessed",
-    ) -> None:
-        """一次性发布规范检索证据上下文。
-
-        Args:
-            state: 要更新的共享状态。
-            query: 本次检索对应的规范查询。
-            context_text: 按证据契约投影给生成模型的上下文文本。
-            retrieved_chunks: 召回并重排后的结构化片段。
-            citations: 与片段和文档来源绑定的引用集合。
-            used_doc_ids: 实际进入上下文的文档标识。
-            evidence_sufficient: 质量判断后的证据充分性；未评估时为 ``None``。
-            evidence_contract: 上下文投影和引用约束的结构化契约。
-            evidence_available: 是否存在可用证据；未提供时根据片段非空推导。
-            assessment_status: 证据评估阶段状态。
-        """
-
-        # 第一步：取得规范 evidence 子上下文，后续所有字段写入同一事实对象。
-        evidence = state.context_bundle.evidence
-
-        # 第二步：发布查询、契约和模型可见上下文。
-        evidence.query = query
-        evidence.contract = dict(evidence_contract or {})
-        evidence.context_text = context_text
-
-        # 第三步：发布可审计召回结果、引用和实际使用的文档范围。
-        evidence.retrieved_chunks = retrieved_chunks
-        evidence.citations = citations
-        evidence.used_doc_ids = used_doc_ids
-
-        # 第四步：显式值优先；调用方未判断时仅以是否有片段推导 available。
-        evidence.evidence_available = (
-            bool(retrieved_chunks) if evidence_available is None else evidence_available
-        )
-
-        # 第五步：分别保存评估进度和充分性，避免“未评估”被误写成“不充分”。
-        evidence.assessment_status = assessment_status
-        evidence.evidence_sufficient = evidence_sufficient
-
-        # 第六步：有证据契约表示 context_text 是受控投影，而非任意拼接原文。
-        evidence.metadata["context_is_projection"] = bool(evidence.contract)
-
     def initialize_generation(
         self,
         state: SharedStateSchema,

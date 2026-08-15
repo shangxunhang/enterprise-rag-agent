@@ -53,11 +53,11 @@ from schemas.human_review import (
     HumanReviewRequestSchema,
     HumanReviewStatus,
 )
-from schemas.rag import RAGContextSchema, RetrievedChunkSchema
+from schemas.rag import EvidenceBundleSchema
 from schemas.status import ExecutionStatus
 
 
-SCHEME_GENERATION_GRAPH_STATE_VERSION = 1
+SCHEME_GENERATION_GRAPH_STATE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -116,22 +116,15 @@ class SchemeGenerationGraphPayloadSchema(SchemaBase):
     section_states: dict[str, SectionStateSchema] = Field(default_factory=dict)
     scheme_input: SchemeWriterInputSchema | None = None
 
-    document_rag_context: RAGContextSchema | None = None
-    document_retrieved_chunks: list[RetrievedChunkSchema] = Field(
-        default_factory=list
-    )
-    document_citations: list[CitationSchema] = Field(default_factory=list)
-    document_rag_output: dict[str, Any] = Field(default_factory=dict)
-    document_evidence_assessment: dict[str, Any] = Field(default_factory=dict)
-    document_evidence_available: bool = False
-    document_assessment_status: str = "not_assessed"
+    # Sole document-lifecycle canonical Evidence carrier.
+    document_evidence_bundle: EvidenceBundleSchema | None = None
     document_tool_call_ids: list[str] = Field(default_factory=list)
 
     section_retrieval_enabled: bool = False
     corrective_retrieval_enabled: bool = False
     sections: list[SchemeSectionSchema] = Field(default_factory=list)
     section_evidence: list[SectionEvidenceBundleSchema] = Field(default_factory=list)
-    all_retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
+    # Application-owned document citation projection/catalog.
     all_citations: list[CitationSchema] = Field(default_factory=list)
     all_rag_outputs: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -8,14 +8,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from observability.trace_summary import canonical_sha256
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from contracts.rag import RAGServicePort
-from rag.evidence.contract import RAGEvidenceContractReader
+from rag.evidence.contract import RAGEvidenceContractReader, evidence_bundle_sha256
 from schemas.citation import CitationSchema
 from schemas.rag import (
     EvidenceBundleSchema,
@@ -170,7 +169,11 @@ class SchemeEvidenceService:
                 "target_templates": list(project_input.target_templates),
             },
         )
-        return self.rag_service.retrieve(request)
+        result = self.rag_service.retrieve(request)
+        if result is None or isinstance(result, EvidenceBundleSchema):
+            return result
+        # Sole legacy ingress: upgrade once, then re-enter the normal typed path.
+        return LegacyEvidenceAdapter.upgrade(shared_state, result)
 
     @staticmethod
     def extract_rag_output(
@@ -182,31 +185,83 @@ class SchemeEvidenceService:
         List[CitationSchema],
         Dict[str, Any],
     ]:
-        """Project canonical evidence; delegate legacy ToolResult upgrades."""
+        """Project typed canonical Evidence into compatibility-safe lightweight views.
 
+        Legacy ToolResult values are first upgraded at the single compatibility ingress,
+        then follow the same typed Bundle -> projection path as normal RAG results.  The
+        returned projections deliberately contain no reconstructable full Bundle copy.
+        """
         if isinstance(result, EvidenceBundleSchema):
             contract = result
-            context, chunks, citations = RAGEvidenceContractReader.projections(contract)
-            context.extra = {
-                **dict(context.extra or {}),
-                "evidence_contract": contract.model_dump(),
-                "evidence_contract_sha256": canonical_sha256(contract.model_dump()),
-                "lineage": contract.lineage.model_dump(),
-            }
-            normalized = {
-                "schema_version": "evidence_bundle_v1",
-                "task_id": contract.task_id or shared_state.task_id,
-                "run_id": contract.run_id or shared_state.run_id,
-                "status": contract.status.value,
-                "query": contract.query,
-                "rewritten_queries": list(contract.rewritten_queries),
-                "evidence": contract.model_dump(),
-                "context": context.model_dump(),
-                "retrieved_chunks": [item.model_dump() for item in chunks],
-                "citations": [item.model_dump() for item in citations],
-                "trace": contract.trace.model_dump() if contract.trace else None,
-                "extra": dict(contract.extra or {}),
-            }
-            return context, chunks, citations, normalized
+        else:
+            contract = LegacyEvidenceAdapter.upgrade(shared_state, result)
 
-        return LegacyEvidenceAdapter.extract(shared_state, result)
+        context, chunks, citations = RAGEvidenceContractReader.projections(contract)
+        normalized = {
+            "schema_version": "rag_tool_output_projection_v2",
+            "task_id": contract.task_id or shared_state.task_id,
+            "run_id": contract.run_id or shared_state.run_id,
+            "status": (
+                contract.status.value
+                if hasattr(contract.status, "value")
+                else str(contract.status)
+            ),
+            "query": contract.query,
+            "rewritten_queries": list(contract.rewritten_queries),
+            "retrieval_scope": contract.retrieval_scope,
+            "retrieval_trace_id": contract.retrieval_trace_id,
+            "evidence_contract_sha256": evidence_bundle_sha256(contract),
+            "lineage": contract.lineage.model_dump(),
+            "context": context.model_dump(),
+            "retrieved_chunks": [item.model_dump() for item in chunks],
+            "citations": [item.model_dump() for item in citations],
+            "trace": contract.trace.model_dump() if contract.trace else None,
+            "extra": dict(contract.extra or {}),
+        }
+        return context, chunks, citations, normalized
+
+    @staticmethod
+    def retrieval_history_projection(
+        normalized: Mapping[str, Any],
+        *,
+        scope: str | None = None,
+        evidence_bundle: EvidenceBundleSchema | None = None,
+    ) -> Dict[str, Any]:
+        """Return a lightweight retrieval audit record without persisting Evidence copies.
+
+        Phase 4B keeps retrieval history as trace/ref metadata only. Canonical Evidence lives
+        in ``document_evidence_bundle`` / ``active_evidence_bundle``; this projection must
+        never contain the full evidence/context/chunk/citation payloads.
+        """
+
+        if evidence_bundle is not None:
+            raw_status = evidence_bundle.status
+            status = raw_status.value if hasattr(raw_status, "value") else str(raw_status)
+            return {
+                "scope": scope or evidence_bundle.retrieval_scope,
+                "retrieval_scope": evidence_bundle.retrieval_scope,
+                "query": evidence_bundle.query,
+                "retrieval_trace_id": evidence_bundle.retrieval_trace_id,
+                "evidence_contract_sha256": evidence_bundle_sha256(evidence_bundle),
+                "status": status,
+                "retrieved_chunk_count": len(evidence_bundle.selected_evidence_ids),
+                "citation_count": len(evidence_bundle.citations),
+            }
+
+        retrieved_chunks = normalized.get("retrieved_chunks")
+        citations = normalized.get("citations")
+        return {
+            "scope": scope or normalized.get("retrieval_scope") or "legacy",
+            "retrieval_scope": normalized.get("retrieval_scope") or scope,
+            "query": normalized.get("query"),
+            "retrieval_trace_id": (
+                normalized.get("retrieval_trace_id")
+                or normalized.get("trace_id")
+            ),
+            "evidence_contract_sha256": normalized.get("evidence_contract_sha256"),
+            "status": normalized.get("status"),
+            "retrieved_chunk_count": (
+                len(retrieved_chunks) if isinstance(retrieved_chunks, list) else 0
+            ),
+            "citation_count": len(citations) if isinstance(citations, list) else 0,
+        }

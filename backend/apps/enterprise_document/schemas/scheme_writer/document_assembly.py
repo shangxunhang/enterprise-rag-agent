@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Set
+from typing import List, Literal, Set
 
 from pydantic import Field
 
 from schemas.citation import CitationBindingSchema, CitationSchema
 from schemas.common import SchemaBase
-from schemas.rag import RetrievedChunkSchema
+from schemas.rag import EvidenceBundleSchema, RetrievedChunkSchema
 
 from .document import SchemeDraftSchema, SchemeSectionSchema
 from .evidence import SectionEvidenceBundleSchema
@@ -34,10 +34,7 @@ class DocumentAssemblyRequestSchema(SchemaBase):
     retrieved_chunks: List[RetrievedChunkSchema] = Field(default_factory=list)
     citations: List[CitationSchema] = Field(default_factory=list)
     section_evidence: List[SectionEvidenceBundleSchema] = Field(default_factory=list)
-
-    document_evidence_available: bool = False
-    document_assessment_status: str = "not_assessed"
-    document_evidence_assessment: Dict[str, Any] = Field(default_factory=dict)
+    document_evidence_bundle: EvidenceBundleSchema | None = None
     citation_required_sections: List[str] = Field(default_factory=list)
 
     created_at: str

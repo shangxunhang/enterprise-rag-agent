@@ -208,16 +208,16 @@ def test_research_agent_tool_gateway_owns_section_retrieval(tmp_path) -> None:
         ),
     )
     assert summary["status"] == "success"
-    required = {
-        item["section_title"]
-        for item in summary["scheme_writer_output"]["section_evidence"]
-        if item["retrieval_scope"] == "section"
-    }
-    assert required
+    section_gateway_calls = [
+        item for item in gateway_calls if item["scope"] == "section"
+    ]
     section_evidence_calls = [
         item for item in evidence_calls if item["scope"] == "section"
     ]
-    assert len(gateway_calls) == len(required)
+    required = {item["section_id"] for item in section_gateway_calls}
+    assert required
+    assert {item["section_id"] for item in section_evidence_calls} == required
+    assert len(section_gateway_calls) == len(required)
     assert len(section_evidence_calls) == len(required)
     assert all(item["role"] == "research" for item in gateway_calls)
     assert all(

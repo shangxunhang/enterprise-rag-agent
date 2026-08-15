@@ -63,6 +63,14 @@ def _bundle_by_title(summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 # 阅读注释（函数）：处理 Trace events 相关逻辑。
+def _section_by_title(summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    draft = summary.get("generated_draft") or {}
+    return {
+        str(item.get("section_title") or ""): item
+        for item in (draft.get("sections") or [])
+    }
+
+
 def _trace_events(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     """处理 Trace events 相关逻辑。
 
@@ -174,6 +182,8 @@ def main() -> int:
         )
 
     corrective_safety = _bundle_by_title(corrective).get("安全设计") or {}
+    corrective_section = _section_by_title(corrective).get("安全设计") or {}
+    corrective_extra = corrective_section.get("extra") or {}
     corrective_tool_events = [
         item
         for item in _trace_events(corrective)
@@ -183,7 +193,7 @@ def main() -> int:
         "corrective_retrieval_branch",
         corrective.get("status") == "success"
         and corrective_safety.get("recovery_count") == 1
-        and corrective_safety.get("retrieval_scope") == "recovery"
+        and corrective_extra.get("evidence_scope") == "recovery"
         and any("recovery_1" in str(item.get("call_id") or "") for item in corrective_tool_events),
         {
             "status": corrective.get("status"),

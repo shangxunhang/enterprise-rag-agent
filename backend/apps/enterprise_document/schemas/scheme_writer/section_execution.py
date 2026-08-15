@@ -15,7 +15,7 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 from apps.enterprise_document.schemas.table_agent_schema import StructuredFactSchema
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
-from schemas.rag import RAGContextSchema, RetrievedChunkSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema, RetrievedChunkSchema
 
 from .document import SchemeSectionSchema
 from .evidence import SectionEvidenceBundleSchema
@@ -43,11 +43,11 @@ class SectionExecutionRequestSchema(SchemaBase):
     structured_facts: List[StructuredFactSchema] = Field(default_factory=list)
     previous_sections: List[SchemeSectionSchema] = Field(default_factory=list)
 
+    document_evidence_bundle: Optional[EvidenceBundleSchema] = None
     document_rag_context: RAGContextSchema
     document_retrieved_chunks: List[RetrievedChunkSchema] = Field(default_factory=list)
     document_citations: List[CitationSchema] = Field(default_factory=list)
     document_rag_output: Dict[str, Any] = Field(default_factory=dict)
-    document_evidence_assessment: Dict[str, Any] = Field(default_factory=dict)
     document_tool_call_ids: List[str] = Field(default_factory=list)
 
     section_retrieval_enabled: bool = True
@@ -59,10 +59,10 @@ class SectionExecutionRequestSchema(SchemaBase):
 class SectionExecutionResultSchema(SchemaBase):
     """一个章节的业务结果以及整个生命周期产生的全部检索产物。
 
-    ``evidence`` is the final active evidence used by the section. In contrast,
-    ``retrieved_chunks`` and ``rag_outputs`` retain every retrieval call made by
-    this section lifecycle, in original call order, so document assembly,
-    capture and lineage do not lose historical recovery evidence.
+    ``evidence`` is the final active evidence used by the section. The legacy
+    ``retrieved_chunks`` field retains compatibility history, while ``rag_outputs``
+    stores only lightweight retrieval trace/ref projections in call order. Phase 4B
+    must never persist historical full EvidenceBundle copies in this result.
     """
 
     schema_version: str = "section_execution_result_v1"

@@ -46,7 +46,13 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     SectionExecutionResultSchema,
 )
 from apps.enterprise_document.services.output_validation import detect_truncation
+from rag.evidence.contract import (
+    RAGEvidenceContractReader,
+    bundle_first_assessment_projection,
+    evidence_bundle_sha256,
+)
 from schemas.common import ErrorSourceSchema, WarningSchema
+from schemas.rag import EvidenceBundleSchema
 from schemas.status import ExecutionStatus
 
 from ..runtime.agent_rag_v1.mainline_recovery import (
@@ -60,6 +66,7 @@ from ..services.agent_rag_v1.streaming_writer import (
 from ..services.scheme_writer.document_citation_registry import (
     DocumentCitationRegistry,
 )
+from ..services.scheme_writer.evidence_service import SchemeEvidenceService
 from ..services.scheme_writer.section_execution_coordinator import (
     SectionExecutionCoordinator,
 )
@@ -189,27 +196,44 @@ class SectionExecutionGraph:
         return str(state.get("section_route") or "finalize")
 
     @staticmethod
-    def _assessment(normalized: dict[str, Any]) -> dict[str, Any]:
-        contract = normalized.get("evidence")
-        contract = contract if isinstance(contract, dict) else {}
-        assessment = contract.get("assessment")
-        assessment = dict(assessment) if isinstance(assessment, dict) else {}
-        raw_status = assessment.get("status") or "not_assessed"
-        if hasattr(raw_status, "value"):
-            raw_status = raw_status.value
-        assessment["status"] = str(raw_status).strip().lower() or "not_assessed"
-        details = assessment.get("details")
-        assessment["details"] = dict(details) if isinstance(details, dict) else {}
-        return assessment
+    def _assessment_from_bundle(bundle: EvidenceBundleSchema) -> dict[str, Any]:
+        return bundle_first_assessment_projection(bundle)
+
+    @staticmethod
+    def _document_projection(
+        payload: SectionExecutionGraphPayloadSchema,
+    ) -> tuple:
+        bundle = payload.document_evidence_bundle
+        if bundle is None:
+            raise ValueError("section graph requires canonical document_evidence_bundle")
+        context, chunks, citations = RAGEvidenceContractReader.projections(bundle)
+        registry = DocumentCitationRegistry.from_citations(payload.citation_registry)
+        context, chunks, citations, normalized = registry.remap_bundle(
+            context=context,
+            chunks=chunks,
+            citations=citations,
+            normalized={"extra": dict(bundle.extra or {})},
+            scope="document",
+            query=bundle.query,
+        )
+        return context, chunks, citations, normalized
+
+    @classmethod
+    def _active_context_projection(
+        cls,
+        payload: SectionExecutionGraphPayloadSchema,
+    ) -> RAGContextSchema:
+        if payload.active_context is not None:
+            return payload.active_context
+        context, _, _, _ = cls._document_projection(payload)
+        return context
 
     @staticmethod
     def _evidence_contract_sha(
         payload: SectionExecutionGraphPayloadSchema,
     ) -> str | None:
-        context = payload.active_context or payload.document_rag_context
-        return str(
-            (context.extra or {}).get("evidence_contract_sha256") or ""
-        ) or None
+        bundle = payload.active_evidence_bundle or payload.document_evidence_bundle
+        return evidence_bundle_sha256(bundle) if bundle is not None else None
 
     @staticmethod
     def _active_evidence_ids(
@@ -228,6 +252,55 @@ class SectionExecutionGraph:
             if str(getattr(item, "chunk_id", "") or "").strip()
         ]
         return list(dict.fromkeys(chunk_ids))
+
+    def _recovery_candidate_decision(
+        self,
+        *,
+        current_writer_gate,
+        candidate_writer_gate,
+        candidate_context,
+    ) -> tuple[bool, bool, bool, str | None]:
+        """Decide whether a recovery candidate may replace current active Evidence.
+
+        Retrieval success is only a technical fact. Application acceptance is a
+        separate decision and must happen before any active Evidence field changes.
+        This mirrors the frozen coordinator semantics without introducing ranking.
+        """
+
+        current_generation_permitted = bool(
+            current_writer_gate is not None
+            and not self.coordinator.writer_gate_blocks(current_writer_gate)
+        )
+        candidate_context_available = bool(
+            candidate_context is not None
+            and candidate_context.context_text.strip()
+        )
+        candidate_generation_permitted = bool(
+            candidate_context_available
+            and candidate_writer_gate is not None
+            and not self.coordinator.writer_gate_blocks(candidate_writer_gate)
+        )
+        if candidate_generation_permitted:
+            return True, current_generation_permitted, True, None
+        if current_generation_permitted:
+            rejection_reason = (
+                "empty_recovery_context"
+                if not candidate_context_available
+                else "recovery_not_ordinary_generation_permitted"
+            )
+            return False, True, False, rejection_reason
+        # Existing coordinator semantics: when both current and candidate are
+        # non-generatable, the newest failed Evidence may remain the final active
+        # Evidence if the recovery returned any meaningful context or Gate result.
+        accept_failed_candidate = bool(
+            candidate_context_available or candidate_writer_gate is not None
+        )
+        return (
+            accept_failed_candidate,
+            False,
+            False,
+            None if accept_failed_candidate else "empty_recovery_context",
+        )
 
     @staticmethod
     def _append_agent_payload(
@@ -284,6 +357,7 @@ class SectionExecutionGraph:
         query: str = "",
         call_suffix: str = "",
         citation_registry: list | None = None,
+        recovery_candidate: bool = False,
     ) -> SectionExecutionGraphPayloadSchema:
         adapter = self.section_agent_adapter
         if adapter is None:
@@ -304,7 +378,9 @@ class SectionExecutionGraph:
             research_mode=research_mode,
             research_round=max(1, payload.recovery_count + 1),
             citation_required=payload.citation_required,
-            assessment=dict(payload.active_assessment),
+            assessment=bundle_first_assessment_projection(
+                payload.active_evidence_bundle,
+            ),
             accepted_evidence_ids=self._active_evidence_ids(payload),
             rejected_evidence_ids=[],
             evidence_contract_sha256=self._evidence_contract_sha(payload),
@@ -358,6 +434,7 @@ class SectionExecutionGraph:
         if retrieval is not None:
             writer_gate = self.coordinator._writer_gate_binding(
                 dict(retrieval.normalized),
+                evidence_bundle=retrieval.evidence_bundle,
                 section_id=str(payload.section_id),
                 section_title=str(
                     payload.section_title or payload.section_plan.section_title
@@ -377,53 +454,119 @@ class SectionExecutionGraph:
                 {
                     "research_tool_retrieval_success": retrieval.success,
                     "research_tool_error": retrieval.error_message,
-                    "evidence_assessment_status": retrieval.assessment.get(
-                        "status", "not_assessed"
-                    ),
-                    "evidence_assessment": dict(retrieval.assessment),
-                    "writer_gate_bound": bool(writer_gate is not None),
-                    "writer_gate_binding": (
-                        writer_gate.model_dump(mode="json", exclude_none=True)
-                        if writer_gate is not None
-                        else None
-                    ),
+                    (
+                        "recovery_candidate_writer_gate_bound"
+                        if recovery_candidate
+                        else "writer_gate_bound"
+                    ): bool(writer_gate is not None),
                 }
             )
             updates.update(
                 {
                     "tool_call_ids": list(dict.fromkeys(tool_call_ids)),
-                    "active_assessment": dict(retrieval.assessment),
-                    "active_writer_gate": writer_gate,
                     "retrieval_metadata": metadata,
                 }
             )
             if retrieval.success:
-                updates.update(
-                    {
-                        "citation_registry": list(retrieval.citation_registry),
-                        "retrieved_chunks": [
-                            *payload.retrieved_chunks,
-                            *retrieval.chunks,
-                        ],
-                        "rag_outputs": [
-                            *payload.rag_outputs,
-                            dict(retrieval.normalized),
-                        ],
-                    }
-                )
-                if (
+                # History is lightweight and may record rejected attempts.  Citation
+                # registry/chunk projection commits are transactional: recovery
+                # candidates are promoted only after Application acceptance below.
+                updates["rag_outputs"] = [
+                    *payload.rag_outputs,
+                    SchemeEvidenceService.retrieval_history_projection(
+                        retrieval.normalized,
+                        scope=str(retrieval_scope or payload.active_scope),
+                        evidence_bundle=retrieval.evidence_bundle,
+                    ),
+                ]
+                if not recovery_candidate:
+                    updates.update(
+                        {
+                            "citation_registry": list(retrieval.citation_registry),
+                            "retrieved_chunks": [
+                                *payload.retrieved_chunks,
+                                *retrieval.chunks,
+                            ],
+                        }
+                    )
+                candidate_scope = str(retrieval_scope or payload.active_scope)
+                if recovery_candidate:
+                    (
+                        candidate_accepted,
+                        current_generation_permitted,
+                        candidate_generation_permitted,
+                        rejection_reason,
+                    ) = self._recovery_candidate_decision(
+                        current_writer_gate=payload.active_writer_gate,
+                        candidate_writer_gate=writer_gate,
+                        candidate_context=retrieval.context,
+                    )
+                    metadata.update(
+                        {
+                            "recovery_candidate_accepted": candidate_accepted,
+                            "recovery_candidate_generation_permitted": (
+                                candidate_generation_permitted
+                            ),
+                            "recovery_candidate_current_generation_permitted": (
+                                current_generation_permitted
+                            ),
+                            "recovery_candidate_scope": candidate_scope,
+                            "recovery_candidate_chunk_count": len(retrieval.chunks),
+                            "recovery_candidate_citation_count": len(retrieval.citations),
+                        }
+                    )
+                    acceptance_key = (
+                        "corrective_recovery_accepted"
+                        if research_mode == "corrective_retrieval"
+                        else "self_rag_recovery_accepted"
+                    )
+                    rejection_key = (
+                        "corrective_recovery_rejected"
+                        if research_mode == "corrective_retrieval"
+                        else "self_rag_recovery_rejected"
+                    )
+                    metadata[acceptance_key] = candidate_accepted
+                    if not candidate_accepted:
+                        metadata[rejection_key] = rejection_reason
+                        metadata["recovery_candidate_rejection_reason"] = rejection_reason
+                        metadata["recovery_candidate_retained_scope"] = payload.active_scope
+                        metadata["recovery_candidate_retained_query"] = payload.active_query
+                        metadata["recovery_candidate_section_state_retained"] = True
+                        # A rejected candidate may remain in Research payload/trace,
+                        # but it must not project its blocked/insufficient lifecycle
+                        # into the accepted Section state.
+                        updates["section_state"] = payload.section_state
+                    if candidate_accepted:
+                        metadata["writer_gate_bound"] = bool(writer_gate is not None)
+                        updates.update(
+                            {
+                                "citation_registry": list(retrieval.citation_registry),
+                                "retrieved_chunks": [
+                                    *payload.retrieved_chunks,
+                                    *retrieval.chunks,
+                                ],
+                                "active_evidence_bundle": retrieval.evidence_bundle,
+                                "active_context": retrieval.context,
+                                "active_chunks": list(retrieval.chunks),
+                                "active_citations": list(retrieval.citations),
+                                "active_writer_gate": writer_gate,
+                                "active_query": query,
+                                "active_scope": candidate_scope,
+                            }
+                        )
+                elif (
                     retrieval.context is not None
                     and retrieval.context.context_text.strip()
                 ):
                     updates.update(
                         {
+                            "active_evidence_bundle": retrieval.evidence_bundle,
                             "active_context": retrieval.context,
                             "active_chunks": list(retrieval.chunks),
                             "active_citations": list(retrieval.citations),
+                            "active_writer_gate": writer_gate,
                             "active_query": query,
-                            "active_scope": str(
-                                retrieval_scope or payload.active_scope
-                            ),
+                            "active_scope": candidate_scope,
                         }
                     )
         return payload.model_copy(update=updates, deep=True)
@@ -588,6 +731,9 @@ class SectionExecutionGraph:
         payload: SectionExecutionGraphPayloadSchema,
         shared_state: GraphStateSchema,
     ) -> SectionExecutionRequestSchema:
+        document_context, document_chunks, document_citations, normalized = (
+            self._document_projection(payload)
+        )
         return SectionExecutionRequestSchema(
             shared_state=shared_state,
             document_id=payload.document_id,
@@ -595,13 +741,11 @@ class SectionExecutionGraph:
             section_plan=payload.section_plan,
             structured_facts=list(payload.structured_facts),
             previous_sections=list(payload.previous_sections),
-            document_rag_context=payload.document_rag_context,
-            document_retrieved_chunks=list(payload.document_retrieved_chunks),
-            document_citations=list(payload.document_citations),
-            document_rag_output=dict(payload.document_rag_output),
-            document_evidence_assessment=dict(
-                payload.document_evidence_assessment
-            ),
+            document_evidence_bundle=payload.document_evidence_bundle,
+            document_rag_context=document_context,
+            document_retrieved_chunks=list(document_chunks),
+            document_citations=list(document_citations),
+            document_rag_output=normalized,
             document_tool_call_ids=list(payload.document_tool_call_ids),
             section_retrieval_enabled=payload.section_retrieval_enabled,
             corrective_retrieval_enabled=payload.corrective_retrieval_enabled,
@@ -633,7 +777,7 @@ class SectionExecutionGraph:
                 section_title=plan.section_title,
             )
         registry = DocumentCitationRegistry.from_citations(
-            payload.citation_registry or payload.document_citations
+            payload.citation_registry
         )
         budget = WorkflowBudget.from_policy_metadata(
             {
@@ -643,8 +787,12 @@ class SectionExecutionGraph:
         )
         task_budget = current_task_draining_budget()
         task_budget_snapshot = task_budget.snapshot() if task_budget else {}
+        document_context, document_chunks, document_citations, document_output = (
+            self._document_projection(payload)
+        )
         document_writer_gate = self.coordinator._writer_gate_binding(
-            dict(payload.document_rag_output),
+            document_output,
+            evidence_bundle=payload.document_evidence_bundle,
             section_id=section_id,
             section_title=plan.section_title,
             section_order=plan.section_order,
@@ -659,14 +807,12 @@ class SectionExecutionGraph:
                 "total_sections": len(required),
                 "citation_required": citation_required,
                 "citation_registry": registry.all(),
-                "active_context": payload.document_rag_context,
-                "active_chunks": list(payload.document_retrieved_chunks),
-                "active_citations": list(payload.document_citations),
+                "active_evidence_bundle": payload.document_evidence_bundle,
+                "active_context": document_context,
+                "active_chunks": list(document_chunks),
+                "active_citations": list(document_citations),
                 "active_query": payload.project_input.user_query,
                 "active_scope": "document",
-                "active_assessment": dict(
-                    payload.document_evidence_assessment
-                ),
                 "active_writer_gate": document_writer_gate,
                 "tool_call_ids": list(payload.document_tool_call_ids),
                 "retrieval_metadata": {
@@ -674,19 +820,7 @@ class SectionExecutionGraph:
                         payload.section_retrieval_enabled
                     ),
                     "citation_required": citation_required,
-                    "evidence_assessment_status": (
-                        payload.document_evidence_assessment.get(
-                            "status", "not_assessed"
-                        )
-                    ),
                     "writer_gate_bound": bool(document_writer_gate is not None),
-                    "writer_gate_binding": (
-                        document_writer_gate.model_dump(
-                            mode="json", exclude_none=True
-                        )
-                        if document_writer_gate is not None
-                        else None
-                    ),
                 },
                 "budget_state": {
                     **budget.snapshot(),
@@ -851,9 +985,10 @@ class SectionExecutionGraph:
                 scope="section",
                 query=query,
             )
-            assessment = self._assessment(normalized)
+            assessment = self._assessment_from_bundle(result)
             writer_gate = self.coordinator._writer_gate_binding(
                 normalized,
+                evidence_bundle=result,
                 section_id=section_id,
                 section_title=title,
                 section_order=int(payload.section_order or 0) or None,
@@ -864,33 +999,31 @@ class SectionExecutionGraph:
                 {
                     "section_retrieval_success": True,
                     "section_citation_count": len(citations),
-                    "evidence_assessment_status": assessment.get(
-                        "status", "not_assessed"
-                    ),
-                    "evidence_assessment": assessment,
                     "writer_gate_bound": bool(writer_gate is not None),
-                    "writer_gate_binding": (
-                        writer_gate.model_dump(mode="json", exclude_none=True)
-                        if writer_gate is not None
-                        else None
-                    ),
                 }
             )
             updates.update(
                 {
                     "citation_registry": registry.all(),
                     "retrieved_chunks": [*payload.retrieved_chunks, *chunks],
-                    "rag_outputs": [*payload.rag_outputs, normalized],
-                    "active_assessment": assessment,
-                    "active_writer_gate": writer_gate,
+                    "rag_outputs": [
+                        *payload.rag_outputs,
+                        SchemeEvidenceService.retrieval_history_projection(
+                            normalized,
+                            scope="section",
+                            evidence_bundle=result,
+                        ),
+                    ],
                 }
             )
             if context.context_text.strip():
                 updates.update(
                     {
+                        "active_evidence_bundle": result,
                         "active_context": context,
                         "active_chunks": list(chunks),
                         "active_citations": list(citations),
+                        "active_writer_gate": writer_gate,
                         "active_query": query,
                         "active_scope": "section",
                     }
@@ -1005,7 +1138,7 @@ class SectionExecutionGraph:
                     project_input=payload.project_input,
                     section_title=title,
                     section_order=int(payload.section_order or 0),
-                    rag_context=payload.active_context or payload.document_rag_context,
+                    rag_context=self._active_context_projection(payload),
                     citations=list(payload.active_citations),
                     writer_gate_binding=writer_gate,
                 )
@@ -1015,10 +1148,12 @@ class SectionExecutionGraph:
                     project_input=payload.project_input,
                     section_title=title,
                     section_order=int(payload.section_order or 0),
-                    rag_context=payload.active_context or payload.document_rag_context,
+                    rag_context=self._active_context_projection(payload),
                     citations=list(payload.active_citations),
                     assessment={
-                        **dict(payload.active_assessment),
+                        **bundle_first_assessment_projection(
+                            payload.active_evidence_bundle,
+                        ),
                         "status": "not_assessed",
                         "reason": "final writer gate binding is missing",
                     },
@@ -1064,10 +1199,14 @@ class SectionExecutionGraph:
                     project_input=payload.project_input,
                     section_title=str(payload.section_title),
                     section_order=int(payload.section_order or 0),
-                    rag_context=payload.active_context or payload.document_rag_context,
+                    rag_context=self._active_context_projection(payload),
                     citations=list(payload.active_citations),
                     structured_facts=list(payload.structured_facts),
                     previous_sections=list(payload.previous_sections),
+                    evidence_bundle=(
+                        payload.active_evidence_bundle
+                        or payload.document_evidence_bundle
+                    ),
                     generation_attempt=payload.generation_attempt,
                     writer_gate_binding=payload.active_writer_gate,
                 )
@@ -1752,6 +1891,7 @@ class SectionExecutionGraph:
                 query=query,
                 call_suffix=call_suffix,
                 citation_registry=list(payload.citation_registry),
+                recovery_candidate=True,
             )
             metadata = dict(updated.retrieval_metadata)
             success = bool(
@@ -1759,7 +1899,15 @@ class SectionExecutionGraph:
             )
             route = "finalize"
             branch_updates: dict[str, Any] = {}
-            assessment = dict(updated.active_assessment)
+            candidate_accepted = bool(
+                metadata.get("recovery_candidate_accepted")
+            )
+            candidate_generation_permitted = bool(
+                metadata.get("recovery_candidate_generation_permitted")
+            )
+            assessment = bundle_first_assessment_projection(
+                updated.active_evidence_bundle,
+            )
             writer_gate = updated.active_writer_gate
             writer_enforcement = (
                 self.coordinator.resolve_writer_gate_enforcement(writer_gate)
@@ -1767,18 +1915,8 @@ class SectionExecutionGraph:
             metadata["writer_gate_enforcement"] = writer_enforcement.as_metadata(
                 gate_id="G06/G11"
             )
-            if (
-                success
-                and updated.active_context is not None
-                and (
-                    updated.active_context.context_text.strip()
-                    or (
-                        writer_gate is not None
-                        and not writer_gate.ordinary_generation_permitted
-                    )
-                )
-            ):
-                if writer_enforcement.should_block:
+            if success and candidate_accepted:
+                if not candidate_generation_permitted:
                     block_reason = (
                         "writer_gate_missing_after_research_tool_retrieval"
                         if writer_gate is None
@@ -1859,6 +1997,38 @@ class SectionExecutionGraph:
                             "citation_count": len(updated.active_citations),
                         }
                     route = "generate"
+            elif success and not candidate_accepted:
+                rejection_reason = str(
+                    metadata.get("recovery_candidate_rejection_reason")
+                    or metadata.get("self_rag_recovery_rejected")
+                    or metadata.get("corrective_recovery_rejected")
+                    or "recovery_not_accepted"
+                )
+                metadata["recovery_candidate_rejected"] = True
+                if pending_self_rag_round is not None:
+                    completed_round = {
+                        **pending_self_rag_round,
+                        "error": rejection_reason,
+                        "recovery_rejected": True,
+                        "retained_scope": updated.active_scope,
+                        "retrieved_chunk_count": int(
+                            metadata.get("recovery_candidate_chunk_count") or 0
+                        ),
+                        "citation_count": int(
+                            metadata.get("recovery_candidate_citation_count") or 0
+                        ),
+                    }
+                    self_rag_rounds.append(completed_round)
+                    metadata["self_rag_retrieval_rounds"] = list(
+                        self_rag_rounds
+                    )
+                    metadata["self_rag_retrieve_more_success"] = False
+                    branch_updates.update(
+                        {
+                            "self_rag_retrieval_rounds": self_rag_rounds,
+                            "pending_self_rag_round": None,
+                        }
+                    )
             elif pending_self_rag_round is not None:
                 completed_round = {
                     **pending_self_rag_round,
@@ -1884,7 +2054,6 @@ class SectionExecutionGraph:
                 metadata["corrective_retrieval_success"] = success
             elif route == "generate":
                 metadata["self_rag_retrieve_more_success"] = True
-            metadata["evidence_assessment"] = assessment
             branch_updates["retrieval_metadata"] = metadata
             updated = updated.model_copy(update=branch_updates, deep=True)
             if updated.research_agent_payloads:
@@ -1956,50 +2125,122 @@ class SectionExecutionGraph:
                 scope=scope,
                 query=query,
             )
-            assessment = self._assessment(normalized)
+            assessment = self._assessment_from_bundle(result)
             writer_gate = self.coordinator._writer_gate_binding(
                 normalized,
+                evidence_bundle=result,
                 section_id=str(payload.section_id),
                 section_title=title,
                 section_order=int(payload.section_order or 0) or None,
                 document_id=payload.document_id,
                 run_id=payload.run_id,
             )
-            updates.update(
+            # A rejected candidate may remain in lightweight retrieval history, but
+            # it must not reserve document citation labels or persist full chunks.
+            updates["rag_outputs"] = [
+                *payload.rag_outputs,
+                SchemeEvidenceService.retrieval_history_projection(
+                    normalized,
+                    scope=scope,
+                    evidence_bundle=result,
+                ),
+            ]
+            (
+                candidate_accepted,
+                current_generation_permitted,
+                candidate_generation_permitted,
+                rejection_reason,
+            ) = self._recovery_candidate_decision(
+                current_writer_gate=payload.active_writer_gate,
+                candidate_writer_gate=writer_gate,
+                candidate_context=context,
+            )
+            metadata.update(
                 {
-                    "citation_registry": registry.all(),
-                    "retrieved_chunks": [*payload.retrieved_chunks, *chunks],
-                    "rag_outputs": [*payload.rag_outputs, normalized],
-                    "active_assessment": assessment,
-                    "active_writer_gate": writer_gate,
+                    "recovery_candidate_accepted": candidate_accepted,
+                    "recovery_candidate_generation_permitted": (
+                        candidate_generation_permitted
+                    ),
+                    "recovery_candidate_current_generation_permitted": (
+                        current_generation_permitted
+                    ),
+                    "recovery_candidate_scope": scope,
+                    "recovery_candidate_chunk_count": len(chunks),
+                    "recovery_candidate_citation_count": len(citations),
+                    "recovery_candidate_writer_gate_bound": bool(
+                        writer_gate is not None
+                    ),
                 }
             )
-            metadata["writer_gate_bound"] = bool(writer_gate is not None)
-            metadata["writer_gate_binding"] = (
-                writer_gate.model_dump(mode="json", exclude_none=True)
-                if writer_gate is not None
-                else None
+            acceptance_key = (
+                "corrective_recovery_accepted"
+                if corrective
+                else "self_rag_recovery_accepted"
             )
-            writer_enforcement = (
-                self.coordinator.resolve_writer_gate_enforcement(writer_gate)
+            rejection_key = (
+                "corrective_recovery_rejected"
+                if corrective
+                else "self_rag_recovery_rejected"
             )
-            metadata["writer_gate_enforcement"] = writer_enforcement.as_metadata(
-                gate_id="G06/G11"
-            )
-            if context.context_text.strip() or (
-                writer_gate is not None
-                and not writer_gate.ordinary_generation_permitted
-            ):
+            metadata[acceptance_key] = candidate_accepted
+            if not candidate_accepted:
+                metadata[rejection_key] = rejection_reason
+                metadata["recovery_candidate_rejection_reason"] = rejection_reason
+                metadata["recovery_candidate_retained_scope"] = payload.active_scope
+                metadata["recovery_candidate_retained_query"] = payload.active_query
+                metadata["writer_gate_bound"] = bool(
+                    payload.active_writer_gate is not None
+                )
+                active_enforcement = self.coordinator.resolve_writer_gate_enforcement(
+                    payload.active_writer_gate
+                )
+                metadata["writer_gate_enforcement"] = (
+                    active_enforcement.as_metadata(gate_id="G06/G11")
+                )
+                if pending_self_rag_round is not None:
+                    completed_round = {
+                        **pending_self_rag_round,
+                        "error": str(rejection_reason or "recovery_not_accepted"),
+                        "recovery_rejected": True,
+                        "retained_scope": payload.active_scope,
+                        "retrieved_chunk_count": len(chunks),
+                        "citation_count": len(citations),
+                    }
+                    self_rag_rounds.append(completed_round)
+                    metadata["self_rag_retrieval_rounds"] = list(
+                        self_rag_rounds
+                    )
+                    metadata["self_rag_retrieve_more_success"] = False
+                    updates.update(
+                        {
+                            "self_rag_retrieval_rounds": self_rag_rounds,
+                            "pending_self_rag_round": None,
+                        }
+                    )
+            else:
+                # Candidate becomes active only after the Application acceptance
+                # decision above. No active Evidence field is written before this.
                 updates.update(
                     {
+                        "citation_registry": registry.all(),
+                        "retrieved_chunks": [*payload.retrieved_chunks, *chunks],
+                        "active_evidence_bundle": result,
                         "active_context": context,
                         "active_chunks": list(chunks),
                         "active_citations": list(citations),
+                        "active_writer_gate": writer_gate,
                         "active_query": query,
                         "active_scope": scope,
                     }
                 )
-                if writer_enforcement.should_block:
+                metadata["writer_gate_bound"] = bool(writer_gate is not None)
+                writer_enforcement = (
+                    self.coordinator.resolve_writer_gate_enforcement(writer_gate)
+                )
+                metadata["writer_gate_enforcement"] = (
+                    writer_enforcement.as_metadata(gate_id="G06/G11")
+                )
+                if not candidate_generation_permitted:
                     block_reason = (
                         "writer_gate_missing_after_retrieval"
                         if writer_gate is None
@@ -2079,30 +2320,10 @@ class SectionExecutionGraph:
                             "citation_count": len(citations),
                         }
                     route = "generate"
-            else:
-                if pending_self_rag_round is not None:
-                    completed_round = {
-                        **pending_self_rag_round,
-                        "error": "empty_recovered_context",
-                        "retrieved_chunk_count": len(chunks),
-                        "citation_count": len(citations),
-                    }
-                    self_rag_rounds.append(completed_round)
-                    metadata["self_rag_retrieval_rounds"] = list(
-                        self_rag_rounds
-                    )
-                    metadata["self_rag_retrieve_more_success"] = False
-                    updates.update(
-                        {
-                            "self_rag_retrieval_rounds": self_rag_rounds,
-                            "pending_self_rag_round": None,
-                        }
-                    )
             if corrective:
                 metadata["corrective_retrieval_success"] = True
             elif route == "generate":
                 metadata["self_rag_retrieve_more_success"] = True
-            metadata["evidence_assessment"] = assessment
             print(
                 f"[{label}] END   section={title} success=True "
                 f"chunks={len(chunks)} citations={len(citations)}",
@@ -2211,7 +2432,7 @@ class SectionExecutionGraph:
                 project_input=payload.project_input,
                 section_title=str(payload.section_title),
                 section_order=int(payload.section_order or 0),
-                rag_context=payload.active_context or payload.document_rag_context,
+                rag_context=self._active_context_projection(payload),
                 citations=list(payload.active_citations),
                 assessment={"status": "not_assessed", "reason": content},
             )
@@ -2225,15 +2446,12 @@ class SectionExecutionGraph:
                     int(payload.budget_exhaustion_limit or 0),
                 ),
             )
-        active_context = payload.active_context or payload.document_rag_context
-        contract_sha = str(
-            (active_context.extra or {}).get("evidence_contract_sha256") or ""
-        ) or None
+        active_context = self._active_context_projection(payload)
+        active_bundle = payload.active_evidence_bundle or payload.document_evidence_bundle
+        contract_sha = self._evidence_contract_sha(payload)
         metadata = dict(payload.retrieval_metadata)
-        metadata["evidence_assessment_status"] = payload.active_assessment.get(
-            "status", "not_assessed"
-        )
-        metadata["evidence_assessment"] = dict(payload.active_assessment)
+        # Canonical assessment remains owned by active_bundle. Section metadata only
+        # retains workflow/retrieval diagnostics, never a second Evidence authority.
         if payload.self_rag_retrieval_rounds:
             metadata["self_rag_retrieval_rounds"] = list(
                 payload.self_rag_retrieval_rounds
@@ -2250,12 +2468,8 @@ class SectionExecutionGraph:
         evidence = SectionEvidenceBundleSchema(
             section_id=str(payload.section_id),
             section_title=str(payload.section_title),
-            retrieval_scope=payload.active_scope,
-            query=payload.active_query,
+            evidence_bundle=active_bundle,
             tool_call_ids=list(dict.fromkeys(payload.tool_call_ids)),
-            rag_context=active_context,
-            retrieved_chunks=list(payload.active_chunks),
-            citations=list(payload.active_citations),
             recovery_count=payload.recovery_count,
             evidence_contract_sha256=contract_sha,
             writer_gate_binding=(
@@ -2264,11 +2478,6 @@ class SectionExecutionGraph:
                 )
                 if payload.active_writer_gate is not None
                 else None
-            ),
-            generation_allowed=(
-                payload.active_writer_gate.ordinary_generation_permitted
-                if payload.active_writer_gate is not None
-                else False
             ),
             metadata=metadata,
         )
@@ -2498,13 +2707,7 @@ class SectionExecutionGraph:
             structured_facts=list(request.structured_facts),
             previous_sections=list(request.previous_sections),
             shared_state_payload=self.codec.dump_graph_state(shared_state),
-            document_rag_context=request.document_rag_context,
-            document_retrieved_chunks=list(request.document_retrieved_chunks),
-            document_citations=list(request.document_citations),
-            document_rag_output=dict(request.document_rag_output),
-            document_evidence_assessment=dict(
-                request.document_evidence_assessment
-            ),
+            document_evidence_bundle=request.document_evidence_bundle,
             document_tool_call_ids=list(request.document_tool_call_ids),
             section_retrieval_enabled=request.section_retrieval_enabled,
             corrective_retrieval_enabled=request.corrective_retrieval_enabled,
@@ -2587,8 +2790,7 @@ class SectionExecutionGraph:
             persisted = self.codec.restore_payload(
                 {
                     "section_graph_state_version": values.get(
-                        "section_graph_state_version",
-                        1,
+                        "section_graph_state_version"
                     ),
                     "section_payload": raw,
                 }
@@ -2678,8 +2880,7 @@ class SectionExecutionGraph:
             persisted = self.codec.restore_payload(
                 {
                     "section_graph_state_version": values.get(
-                        "section_graph_state_version",
-                        1,
+                        "section_graph_state_version"
                     ),
                     "section_payload": values["section_payload"],
                 }
@@ -2772,8 +2973,7 @@ class SectionExecutionGraph:
             payload = self.codec.restore_payload(
                 {
                     "section_graph_state_version": values.get(
-                        "section_graph_state_version",
-                        1,
+                        "section_graph_state_version"
                     ),
                     "section_payload": values["section_payload"],
                 }

@@ -15,7 +15,7 @@ from apps.enterprise_document.schemas.project_input_schema import ProjectInputSc
 from apps.enterprise_document.schemas.scheme_writer_schema import SchemeSectionSchema
 from schemas.citation import CitationSchema
 from schemas.prompt import PromptRenderResultSchema
-from schemas.rag import RAGContextSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema
 from context_manager import LLMContextManager, SectionGenerationContextPolicy
 from model_gateway.model_contract import ModelRole
 from prompt_manager.prompt_manager import PromptManager
@@ -134,6 +134,7 @@ class SectionPromptService:
         rag_context: RAGContextSchema,
         citations: List[CitationSchema],
         previous_sections: List[SchemeSectionSchema],
+        evidence_bundle: EvidenceBundleSchema | None = None,
     ) -> PromptRenderResultSchema:
         """构造上下文包并渲染一次章节生成 Prompt。
 
@@ -154,6 +155,7 @@ class SectionPromptService:
             rag_context=rag_context,
             citations=citations,
             previous_sections=previous_sections,
+            evidence_bundle=evidence_bundle,
         )
         capability_plan: dict[str, Any] = {}
         resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)

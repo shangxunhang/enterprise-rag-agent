@@ -11,6 +11,7 @@ import unicodedata
 from typing import Any, Iterable
 
 from observability.trace_summary import canonical_sha256
+from rag.evidence.contract import evidence_bundle_sha256
 
 from apps.enterprise_document.schemas.gate_decision import DeliveryMode
 from apps.enterprise_document.schemas.writer_governance import (
@@ -407,6 +408,7 @@ class DeterministicClaimClassifier:
 def extract_writer_gate_binding(
     normalized_output: dict[str, Any],
     *,
+    evidence_bundle: EvidenceBundleSchema | None = None,
     section_id: str,
     section_title: str,
     section_order: int | None = None,
@@ -416,20 +418,15 @@ def extract_writer_gate_binding(
 ) -> WriterGateBindingSchema | None:
     """Bind an Application-owned Gate decision to one writer invocation."""
 
-    contract = normalized_output.get("evidence")
-    contract = contract if isinstance(contract, dict) else {}
-    contract_extra = contract.get("extra")
-    contract_extra = contract_extra if isinstance(contract_extra, dict) else {}
     normalized_extra = normalized_output.get("extra")
     normalized_extra = normalized_extra if isinstance(normalized_extra, dict) else {}
 
-    try:
-        evidence_bundle = EvidenceBundleSchema.model_validate(contract)
-        gate_decision = EvidenceGatePolicy().evaluate(
-            evidence_bundle.assessment
-        )
-    except (TypeError, ValueError):
+    # Phase 4C: Application Gate consumes the explicit canonical Bundle only.
+    # A normalized projection is never allowed to reconstruct Evidence authority.
+    if evidence_bundle is None:
         return None
+    contract_extra = dict(evidence_bundle.extra or {})
+    gate_decision = EvidenceGatePolicy().evaluate(evidence_bundle.assessment)
     generation_allowed = gate_decision.delivery_mode in {
         DeliveryMode.GROUNDED,
         DeliveryMode.QUALIFIED,
@@ -445,8 +442,8 @@ def extract_writer_gate_binding(
         canonical_sha256(prompt_contract) if prompt_contract else None
     )
     contract_sha = evidence_contract_sha256
-    if not contract_sha and contract:
-        contract_sha = canonical_sha256(contract)
+    if not contract_sha:
+        contract_sha = evidence_bundle_sha256(evidence_bundle)
 
     return WriterGateBindingSchema(
         section_id=section_id,

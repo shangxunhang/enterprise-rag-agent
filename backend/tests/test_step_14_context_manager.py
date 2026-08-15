@@ -176,10 +176,6 @@ def test_section_policy_preserves_evidence_citations_history_and_lineage() -> No
         ),
         assessment=RAGEvidenceAssessmentSchema(),
     )
-    rag_context.extra = {
-        "evidence_contract": contract.model_dump(),
-        "evidence_contract_sha256": "a" * 64,
-    }
     project_input = ProjectInputSchema.model_validate(
         {
             "task_id": "task_1",
@@ -218,6 +214,7 @@ def test_section_policy_preserves_evidence_citations_history_and_lineage() -> No
         rag_context=rag_context,
         citations=[citation],
         previous_sections=[previous],
+        evidence_bundle=contract,
     )
     package = LLMContextManager().build(request)
 

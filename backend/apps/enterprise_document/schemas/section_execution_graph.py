@@ -36,13 +36,14 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     WritingProjectionStatus,
 )
 from apps.enterprise_document.schemas.table_agent_schema import StructuredFactSchema
+from rag.evidence.contract import evidence_bundle_sha256
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
-from schemas.rag import RAGContextSchema, RetrievedChunkSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema, RetrievedChunkSchema
 from schemas.status import ExecutionStatus
 
 
-SECTION_EXECUTION_GRAPH_STATE_VERSION = 1
+SECTION_EXECUTION_GRAPH_STATE_VERSION = 2
 
 
 class SectionGraphExecutionRequestSchema(SchemaBase):
@@ -56,11 +57,7 @@ class SectionGraphExecutionRequestSchema(SchemaBase):
     section_plan: SectionPlanSchema
     structured_facts: list[StructuredFactSchema] = Field(default_factory=list)
     previous_sections: list[SchemeSectionSchema] = Field(default_factory=list)
-    document_rag_context: RAGContextSchema
-    document_retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
-    document_citations: list[CitationSchema] = Field(default_factory=list)
-    document_rag_output: dict[str, Any] = Field(default_factory=dict)
-    document_evidence_assessment: dict[str, Any] = Field(default_factory=dict)
+    document_evidence_bundle: EvidenceBundleSchema | None = None
     document_tool_call_ids: list[str] = Field(default_factory=list)
     section_retrieval_enabled: bool = True
     corrective_retrieval_enabled: bool = True
@@ -88,11 +85,7 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
     previous_sections: list[SchemeSectionSchema] = Field(default_factory=list)
 
     shared_state_payload: dict[str, Any]
-    document_rag_context: RAGContextSchema
-    document_retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
-    document_citations: list[CitationSchema] = Field(default_factory=list)
-    document_rag_output: dict[str, Any] = Field(default_factory=dict)
-    document_evidence_assessment: dict[str, Any] = Field(default_factory=dict)
+    document_evidence_bundle: EvidenceBundleSchema | None = None
     document_tool_call_ids: list[str] = Field(default_factory=list)
     section_retrieval_enabled: bool = True
     corrective_retrieval_enabled: bool = True
@@ -107,12 +100,13 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
     section_state: SectionStateSchema | None = None
 
     citation_registry: list[CitationSchema] = Field(default_factory=list)
+    # Canonical authority for the currently accepted section Evidence invocation.
+    active_evidence_bundle: EvidenceBundleSchema | None = None
     active_context: RAGContextSchema | None = None
     active_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
     active_citations: list[CitationSchema] = Field(default_factory=list)
     active_query: str = ""
     active_scope: str = "document"
-    active_assessment: dict[str, Any] = Field(default_factory=dict)
     active_writer_gate: WriterGateBindingSchema | None = None
     tool_call_ids: list[str] = Field(default_factory=list)
     retrieved_chunks: list[RetrievedChunkSchema] = Field(default_factory=list)
@@ -298,9 +292,12 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
         )
 
         research_status = state.research.status
-        assessment_status = str(
-            self.active_assessment.get("status") or ""
-        ).strip().lower()
+        assessment_projection = (
+            self.active_evidence_bundle.assessment.model_dump(mode="json")
+            if self.active_evidence_bundle is not None
+            else {}
+        )
+        assessment_status = str(assessment_projection.get("status") or "").strip().lower()
         if self.evidence_blocked or assessment_status == "insufficient":
             research_status = ResearchProjectionStatus.INSUFFICIENT
         elif self.current_node in {
@@ -309,16 +306,17 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
             "corrective_retrieval",
         } and not self.completed:
             research_status = ResearchProjectionStatus.RUNNING
-        elif assessment_status == "sufficient" or self.active_chunks:
+        elif assessment_status == "sufficient" or (
+            bool(self.active_evidence_bundle.selected_evidence_ids)
+            if self.active_evidence_bundle is not None
+            else bool(self.active_chunks)
+        ):
             research_status = ResearchProjectionStatus.COMPLETED
-        contract_sha = None
-        if self.active_context is not None:
-            contract_sha = str(
-                (self.active_context.extra or {}).get(
-                    "evidence_contract_sha256"
-                )
-                or ""
-            ) or None
+        contract_sha = (
+            evidence_bundle_sha256(self.active_evidence_bundle)
+            if self.active_evidence_bundle is not None
+            else None
+        )
         research = state.research.model_copy(
             update={
                 "status": research_status,
@@ -339,7 +337,6 @@ class SectionExecutionGraphPayloadSchema(SchemaBase):
                     if research_status == ResearchProjectionStatus.COMPLETED
                     else state.research.recommended_action
                 ),
-                "assessment": dict(self.active_assessment),
             },
             deep=True,
         )

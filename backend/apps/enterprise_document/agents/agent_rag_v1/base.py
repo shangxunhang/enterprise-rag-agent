@@ -299,8 +299,12 @@ class StatelessBusinessAgent(ABC):
             elif (
                 isinstance(item, str)
                 and item
+                and key not in {"citation_ref", "citation_refs"}
                 and (key.endswith("_ref") or key.endswith("_refs"))
             ):
+                # ``citation_ref`` is a canonical Evidence source identity, not an
+                # Agent artifact capability reference. Artifact authorization keeps
+                # its existing *_ref convention for all other fields.
                 refs.add(item)
 
         visit(value.model_dump(mode="python"))

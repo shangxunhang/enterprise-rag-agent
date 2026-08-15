@@ -81,35 +81,6 @@ class BusinessContextSchema(SchemaBase):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class EvidenceContextSchema(SchemaBase):
-    """保存本次检索形成的规范证据事实和当前生成兼容投影。
-
-    ``contract`` 是结构化证据真相；``context_text``、片段和引用字段是当前文本生成服务
-    使用的投影视图。投影可以重建或压缩，但不能反向覆盖证据契约。
-    """
-
-    # 产生当前证据集合的规范查询。
-    query: Optional[str] = None
-    # 证据选择、投影、引用和充分性约束的结构化契约。
-    contract: Dict[str, Any] = Field(default_factory=dict)
-    # 按契约渲染给当前生成链的证据文本。
-    context_text: str = ""
-    # 召回、重排并进入证据上下文的结构化片段。
-    retrieved_chunks: List[Dict[str, Any]] = Field(default_factory=list)
-    # 与片段和来源绑定的引用集合。
-    citations: List[Dict[str, Any]] = Field(default_factory=list)
-    # 实际进入上下文的文档标识。
-    used_doc_ids: List[str] = Field(default_factory=list)
-    # 当前是否至少存在可使用证据。
-    evidence_available: bool = False
-    # 证据质量判断阶段，例如 not_assessed、assessed 或 failed。
-    assessment_status: str = "not_assessed"
-    # 证据是否足以支持当前生成任务；未评估时为 ``None``。
-    evidence_sufficient: Optional[bool] = None
-    # 检索策略、投影模式和质量判断元数据。
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
 class GenerationContextSchema(SchemaBase):
     """保存当前文档生成的身份、章节进度和预算信息。"""
 
@@ -187,8 +158,6 @@ class ContextBundleSchema(SchemaBase):
     )
     # 规范业务输入和完整性状态。
     business: BusinessContextSchema = Field(default_factory=BusinessContextSchema)
-    # 结构化证据和生成投影。
-    evidence: EvidenceContextSchema = Field(default_factory=EvidenceContextSchema)
     # 文档和章节生成进度。
     generation: GenerationContextSchema = Field(default_factory=GenerationContextSchema)
     # 工作流运行状态和错误。

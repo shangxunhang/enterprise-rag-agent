@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from observability.trace_summary import canonical_sha256
-
 from agent.runtime.shared_state_schema import SharedStateSchema
-from rag.evidence.contract import RAGEvidenceContractBuilder, RAGEvidenceContractReader
+from rag.evidence.contract import (
+    RAGEvidenceContractBuilder,
+    RAGEvidenceContractReader,
+    evidence_bundle_sha256,
+)
 from schemas.citation import CitationSchema
 from schemas.rag import (
+    EvidenceBundleSchema,
     RAGContextSchema,
     RAGEvidenceContractSchema,
     RAGTraceSchema,
@@ -26,43 +29,22 @@ class LegacyEvidenceAdapter:
     """集中承担历史协议升级，避免兼容分支散落在生成服务中。"""
 
     @staticmethod
-    def extract(
+    def upgrade(
         shared_state: SharedStateSchema,
         result: Optional[ToolResultSchema],
-    ) -> Tuple[
-        RAGContextSchema,
-        List[RetrievedChunkSchema],
-        List[CitationSchema],
-        Dict[str, Any],
-    ]:
-        """返回上下文、Chunk、引用和标准化 payload 四个兼容投影。
+    ) -> EvidenceBundleSchema:
+        """Upgrade one legacy ToolResult into the canonical typed Evidence Bundle.
 
-        已有契约以结构化对象为事实源；旧 payload 缺少引用时可从检索 Chunk 重建来源引用，
-        但不会据此宣称语义充分。所有升级结果都附带契约哈希和血缘，便于审计迁移路径。
+        This is the sole compatibility ingress.  After this method returns, normal
+        production code must consume the typed Bundle directly and may only create
+        one-way projections from it.
         """
         payload = result.result if result and result.success else {}
         payload = payload or {}
         raw_contract = payload.get("evidence")
 
         if isinstance(raw_contract, dict):
-            contract = RAGEvidenceContractSchema.model_validate(raw_contract)
-            context, chunks, citations = RAGEvidenceContractReader.projections(contract)
-            context.extra = {
-                **dict(context.extra or {}),
-                "evidence_contract": contract.model_dump(),
-                "evidence_contract_sha256": canonical_sha256(contract.model_dump()),
-                "lineage": contract.lineage.model_dump(),
-            }
-            normalized = dict(payload)
-            normalized["evidence"] = contract.model_dump()
-            normalized["context"] = context.model_dump()
-            normalized["retrieved_chunks"] = [item.model_dump() for item in chunks]
-            normalized["citations"] = [item.model_dump() for item in citations]
-            normalized.setdefault("schema_version", "rag_tool_output_v1")
-            normalized.setdefault("task_id", shared_state.task_id)
-            normalized.setdefault("run_id", shared_state.run_id)
-            normalized.setdefault("status", "success")
-            return context, chunks, citations, normalized
+            return RAGEvidenceContractSchema.model_validate(raw_contract)
 
         chunks = [
             RetrievedChunkSchema.model_validate(item)
@@ -116,7 +98,7 @@ class LegacyEvidenceAdapter:
             if isinstance(raw_trace, dict)
             else None
         )
-        contract = RAGEvidenceContractBuilder.build(
+        return RAGEvidenceContractBuilder.build(
             query=str(payload.get("query") or ""),
             rewritten_queries=payload.get("rewritten_queries") or [],
             selected_chunks=chunks,
@@ -129,26 +111,46 @@ class LegacyEvidenceAdapter:
                 "upgraded_by": "LegacyEvidenceAdapter",
             },
         )
-        context, projected_chunks, citations = RAGEvidenceContractReader.projections(
-            contract
-        )
-        context.extra = {
-            **dict(context.extra or {}),
-            "evidence_contract": contract.model_dump(),
-            "evidence_contract_sha256": canonical_sha256(contract.model_dump()),
-            "lineage": contract.lineage.model_dump(),
+
+    @staticmethod
+    def extract(
+        shared_state: SharedStateSchema,
+        result: Optional[ToolResultSchema],
+    ) -> Tuple[
+        RAGContextSchema,
+        List[RetrievedChunkSchema],
+        List[CitationSchema],
+        Dict[str, Any],
+    ]:
+        """Return compatibility projections without exporting a full Bundle copy."""
+        contract = LegacyEvidenceAdapter.upgrade(shared_state, result)
+        context, chunks, citations = RAGEvidenceContractReader.projections(contract)
+        payload = result.result if result and result.success else {}
+        payload = payload or {}
+        normalized = {
+            key: value
+            for key, value in dict(payload).items()
+            if key not in {"evidence", "evidence_contract"}
         }
-        normalized = dict(payload)
-        normalized.setdefault("schema_version", "rag_tool_output_v1")
-        normalized.setdefault("task_id", shared_state.task_id)
-        normalized.setdefault("run_id", shared_state.run_id)
-        normalized.setdefault(
-            "status", "success" if result and result.success else "failed"
+        normalized.update(
+            {
+                "schema_version": normalized.get("schema_version") or "rag_tool_output_v1",
+                "task_id": contract.task_id or shared_state.task_id,
+                "run_id": contract.run_id or shared_state.run_id,
+                "status": (
+                    contract.status.value
+                    if hasattr(contract.status, "value")
+                    else str(contract.status)
+                ),
+                "query": contract.query,
+                "retrieval_scope": contract.retrieval_scope,
+                "retrieval_trace_id": contract.retrieval_trace_id,
+                "evidence_contract_sha256": evidence_bundle_sha256(contract),
+                "lineage": contract.lineage.model_dump(),
+                "context": context.model_dump(),
+                "retrieved_chunks": [item.model_dump() for item in chunks],
+                "citations": [item.model_dump() for item in citations],
+                "trace": contract.trace.model_dump() if contract.trace else None,
+            }
         )
-        normalized["evidence"] = contract.model_dump()
-        normalized["context"] = context.model_dump()
-        normalized["retrieved_chunks"] = [
-            item.model_dump() for item in projected_chunks
-        ]
-        normalized["citations"] = [item.model_dump() for item in citations]
-        return context, projected_chunks, citations, normalized
+        return context, chunks, citations, normalized

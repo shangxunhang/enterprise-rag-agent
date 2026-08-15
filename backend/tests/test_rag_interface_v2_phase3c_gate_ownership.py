@@ -58,6 +58,7 @@ def test_production_writer_gate_is_generated_from_bundle_assessment(monkeypatch)
     monkeypatch.setattr(EvidenceGatePolicy, "evaluate", record_evaluate)
     binding = extract_writer_gate_binding(
         _normalized(bundle),
+        evidence_bundle=bundle,
         section_id="section-run-001",
         section_title="访问控制",
         section_order=1,
@@ -86,6 +87,7 @@ def test_old_bundle_gate_fields_cannot_override_application_authority() -> None:
 
     binding = extract_writer_gate_binding(
         _normalized(bundle),
+        evidence_bundle=bundle,
         section_id="section-run-001",
         section_title="访问控制",
     )

@@ -894,9 +894,6 @@ class MainlineSectionAgentAdapter:
             ResearchStatus.CONFLICTED: ResearchProjectionStatus.FAILED,
         }[summary.research_status]
         rejected_ids = [item.evidence_id for item in summary.rejected_evidence]
-        effective_assessment = (
-            dict(retrieval.assessment) if retrieval is not None else dict(assessment)
-        )
         research_state = section_state.research.model_copy(
             update={
                 "status": status,
@@ -911,7 +908,6 @@ class MainlineSectionAgentAdapter:
                 ),
                 "tool_call_ids": list(payload.tool_call_ids),
                 "recommended_action": summary.recommended_action.value,
-                "assessment": effective_assessment,
                 "metadata": {
                     **dict(section_state.research.metadata),
                     **dict(payload.agent_metadata),

@@ -33,6 +33,14 @@ def _bundle_by_title(summary: dict) -> dict[str, dict]:
 
 
 # 阅读注释（函数）：处理 Trace events 相关逻辑。
+def _section_by_title(summary: dict) -> dict[str, dict]:
+    draft = summary.get("generated_draft") or {}
+    return {
+        str(item.get("section_title") or ""): item
+        for item in (draft.get("sections") or [])
+    }
+
+
 def _trace_events(summary: dict) -> list[dict]:
     """处理 Trace events 相关逻辑。
 
@@ -77,10 +85,12 @@ def test_corrective_retrieval_branch_runs_and_recovers(tmp_path) -> None:
 
     assert summary["status"] == "success"
     safety = _bundle_by_title(summary)["安全设计"]
+    safety_section = _section_by_title(summary)["安全设计"]
+    safety_extra = safety_section.get("extra") or {}
     assert safety["recovery_count"] == 1
-    assert safety["retrieval_scope"] == "recovery"
+    assert safety_extra["evidence_scope"] == "recovery"
     assert len(safety["tool_call_ids"]) == 3
-    assert "可绑定引用" in safety["query"]
+    assert "可绑定引用" in safety_extra["evidence_query"]
 
     events = _trace_events(summary)
     rag_started = [item for item in events if item.get("event_type") == "rag_started"]
@@ -117,9 +127,9 @@ def test_document_citation_registry_resolves_local_id_collisions(tmp_path) -> No
     assert len(ids) == len(set(ids))
     assert len({item["source_document_id"] for item in citations}) == 4
 
-    bundles = _bundle_by_title(summary)
+    sections = _section_by_title(summary)
     required_ids = {
-        title: [item["citation_id"] for item in bundles[title]["citations"]]
+        title: list(sections[title].get("citation_ids") or [])
         for title in ("建设内容", "技术方案", "安全设计")
     }
     assert required_ids == {
@@ -143,18 +153,25 @@ def test_self_rag_need_retrieve_more_runs_bounded_retrieval_and_recheck(
 
     assert summary["status"] in {"success", "partial_success"}
     safety = _bundle_by_title(summary)["安全设计"]
-    rounds = safety["metadata"]["self_rag_retrieval_rounds"]
-    assert len(rounds) == 1
-    assert rounds[0]["success"] is True
-    assert rounds[0]["check_before"]["need_retrieve_more"] is True
-    assert rounds[0]["check_after"]["need_retrieve_more"] is False
-    assert safety["retrieval_scope"] == "self_rag_recovery"
+    safety_section = _section_by_title(summary)["安全设计"]
+    safety_extra = safety_section.get("extra") or {}
+    generation_check = safety_extra.get("generation_check") or {}
+    assert safety["recovery_count"] == 1
+    assert safety_extra["evidence_scope"] == "self_rag_recovery"
+    assert safety_extra["workflow_budget"]["retrieval_rounds"] == 1
+    assert generation_check["need_retrieve_more"] is False
+    assert len(safety["tool_call_ids"]) >= 3
 
-    sections = (summary.get("generated_draft") or {}).get("sections", [])
-    safety_section = next(
-        item for item in sections if item.get("section_title") == "安全设计"
-    )
-    assert safety_section["extra"]["workflow_budget"]["retrieval_rounds"] == 1
+    events = _trace_events(summary)
+    section_order = int(safety_section["section_order"])
+    self_rag_call_marker = f"section_{section_order:03d}_self_rag"
+    self_rag_tool_calls = [
+        item
+        for item in events
+        if item.get("event_type") == "tool_started"
+        and self_rag_call_marker in str(item.get("call_id") or "")
+    ]
+    assert len(self_rag_tool_calls) == 1
 
 
 

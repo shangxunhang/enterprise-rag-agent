@@ -77,9 +77,11 @@ from apps.enterprise_document.services.agent_rag_v1.version_policy import (
 from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.recovery import current_durable_recovery
 from core.runtime.timing import MonotonicTimer, elapsed_ms
+from rag.evidence.contract import RAGEvidenceContractReader, evidence_bundle_sha256
 from schemas.agent import AgentResultSchema
 from schemas.common import ErrorSchema, ErrorSourceSchema, WarningSchema
 from schemas.failure import FailureCategory
+from schemas.rag import EvidenceBundleSchema
 from schemas.status import ExecutionStatus
 
 from .agent_integration import MainlinePlannerAdapter, MainlinePlannerFailure
@@ -202,11 +204,8 @@ class SchemeGenerationStageService:
         return FailureCategory.BUSINESS_QUALITY, True
 
     @staticmethod
-    def _evidence_assessment(normalized_output: dict) -> dict:
-        contract = normalized_output.get("evidence")
-        contract = contract if isinstance(contract, dict) else {}
-        assessment = contract.get("assessment")
-        assessment = dict(assessment) if isinstance(assessment, dict) else {}
+    def _evidence_assessment_from_bundle(bundle: EvidenceBundleSchema) -> dict:
+        assessment = bundle.assessment.model_dump(mode="json", exclude_none=True)
         raw_status = assessment.get("status") or "not_assessed"
         if hasattr(raw_status, "value"):
             raw_status = raw_status.value
@@ -214,6 +213,36 @@ class SchemeGenerationStageService:
         details = assessment.get("details")
         assessment["details"] = dict(details) if isinstance(details, dict) else {}
         return assessment
+
+    @staticmethod
+    def _assembly_chunks_from_canonical_bundles(
+        payload: SchemeGenerationGraphPayloadSchema,
+    ) -> list:
+        """Project and deduplicate chunks from document + final section Bundles on demand."""
+
+        bundles = []
+        if payload.document_evidence_bundle is not None:
+            bundles.append(payload.document_evidence_bundle)
+        bundles.extend(
+            item.evidence_bundle
+            for item in payload.section_evidence
+            if item.evidence_bundle is not None
+        )
+        chunks = []
+        seen: set[tuple[str, str, str]] = set()
+        for bundle in bundles:
+            _, projected_chunks, _ = RAGEvidenceContractReader.projections(bundle)
+            for chunk in projected_chunks:
+                key = (
+                    chunk.doc_id,
+                    chunk.matched_chunk_id,
+                    chunk.context_chunk_id,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                chunks.append(chunk)
+        return chunks
 
     def _require(
         self,
@@ -419,34 +448,6 @@ class SchemeGenerationStageService:
             f"citation_ids={[item.citation_id for item in citations]}",
             flush=True,
         )
-        evidence_contract = rag_output.get("evidence") or {}
-        evidence_assessment = self._evidence_assessment(rag_output)
-        assessment_status = evidence_assessment["status"]
-        raw_evidence_available = evidence_assessment.get("evidence_available")
-        evidence_available = bool(
-            raw_evidence_available
-            if raw_evidence_available is not None
-            else (rag_context.context_item_count and citations)
-        )
-        semantic_sufficiency = (
-            True
-            if assessment_status == "sufficient"
-            else False
-            if assessment_status == "insufficient"
-            else None
-        )
-        self.state_writer.set_evidence_context(
-            shared_state,
-            query=project_input.user_query,
-            evidence_contract=evidence_contract,
-            context_text=rag_context.context_text,
-            retrieved_chunks=[item.model_dump() for item in chunks],
-            citations=[item.model_dump() for item in citations],
-            used_doc_ids=rag_context.used_doc_ids,
-            evidence_available=evidence_available,
-            assessment_status=assessment_status,
-            evidence_sufficient=semantic_sufficiency,
-        )
         if rag_result is None or not rag_result.success:
             node_name = "retrieve_document_evidence"
             underlying = rag_result.error if rag_result else None
@@ -497,19 +498,22 @@ class SchemeGenerationStageService:
         )
         return payload.model_copy(
             update={
-                "document_rag_context": rag_context,
-                "document_retrieved_chunks": list(chunks),
-                "document_citations": list(citations),
-                "document_rag_output": dict(rag_output),
-                "document_evidence_assessment": dict(evidence_assessment),
-                "document_evidence_available": evidence_available,
-                "document_assessment_status": assessment_status,
+                "document_evidence_bundle": rag_result,
                 "document_tool_call_ids": [rag_result.retrieval_trace_id],
                 "section_retrieval_enabled": section_retrieval_enabled,
                 "corrective_retrieval_enabled": corrective_retrieval_enabled,
-                "all_retrieved_chunks": list(chunks),
                 "all_citations": list(citations),
-                "all_rag_outputs": [dict(rag_output)],
+                "all_rag_outputs": [
+                    SchemeEvidenceService.retrieval_history_projection(
+                        rag_output,
+                        scope="document",
+                        evidence_bundle=(
+                            rag_result
+                            if isinstance(rag_result, EvidenceBundleSchema)
+                            else None
+                        ),
+                    )
+                ],
             },
             deep=True,
         )
@@ -601,34 +605,49 @@ class SchemeGenerationStageService:
     ) -> SectionExecutionResultSchema:
         """Merge an isolated section result in deterministic document order."""
 
-        local_citations = list(
-            result.citation_registry or result.evidence.citations
+        canonical_bundle = result.evidence.evidence_bundle
+        if canonical_bundle is None:
+            raise ValueError("parallel section result requires canonical evidence_bundle")
+        projection_context, projection_chunks, projection_citations = (
+            RAGEvidenceContractReader.projections(canonical_bundle)
         )
-        canonical_citations, id_map = citation_registry.register(
+        projection_scope = canonical_bundle.retrieval_scope
+        projection_query = canonical_bundle.query
+
+        # A parallel branch may carry diagnostic/rejected candidate citations in
+        # its local registry. Commit only identities present in the final accepted
+        # canonical Bundle, so rejected candidates cannot reserve document labels.
+        accepted_refs = {
+            citation_registry._identity(item) for item in projection_citations
+        }
+        local_citations = [
+            item
+            for item in result.citation_registry
+            if citation_registry._identity(item) in accepted_refs
+        ]
+        committed_citations, id_map = citation_registry.register(
             local_citations,
             scope=f"section:{result.section.section_id}",
-            query=result.evidence.query,
+            query=projection_query,
         )
-        # ``register`` preserves input order, so this also maps citations that
-        # are diagnostic-only and not present in the active evidence bundle.
         id_map.update(
             {
                 source.citation_id: target.citation_id
-                for source, target in zip(
-                    local_citations,
-                    canonical_citations,
-                )
+                for source, target in zip(local_citations, committed_citations)
             }
         )
-        context, chunks, evidence_citations, _normalized = (
+        _context, _chunks, _evidence_citations, projection_output = (
             citation_registry.remap_bundle(
-                context=result.evidence.rag_context,
-                chunks=list(result.evidence.retrieved_chunks),
-                citations=list(result.evidence.citations),
+                context=projection_context,
+                chunks=projection_chunks,
+                citations=projection_citations,
                 normalized={},
-                scope=result.evidence.retrieval_scope,
-                query=result.evidence.query,
+                scope=projection_scope,
+                query=projection_query,
             )
+        )
+        id_map.update(
+            dict((projection_output.get("extra") or {}).get("citation_id_map") or {})
         )
         content = citation_registry.replace_markers(
             result.section.content,
@@ -687,17 +706,14 @@ class SchemeGenerationStageService:
         )
         evidence = result.evidence.model_copy(
             update={
-                "rag_context": context,
-                "retrieved_chunks": chunks,
-                "citations": evidence_citations,
                 "evidence_contract_sha256": (
-                    context.extra.get("evidence_contract_sha256")
-                    or result.evidence.evidence_contract_sha256
+                    evidence_bundle_sha256(result.evidence.evidence_bundle)
+                    if result.evidence.evidence_bundle is not None
+                    else result.evidence.evidence_contract_sha256
                 ),
                 "metadata": {
                     **dict(result.evidence.metadata),
                     "parallel_execution": True,
-                    "citation_id_map": id_map,
                 },
             },
             deep=True,
@@ -929,20 +945,29 @@ class SchemeGenerationStageService:
             field_name="document_id",
             node_name="execute_sections",
         )
-        rag_context = self._require(
-            payload.document_rag_context,
-            field_name="document_rag_context",
+        document_bundle = self._require(
+            payload.document_evidence_bundle,
+            field_name="document_evidence_bundle",
             node_name="execute_sections",
         )
-        citation_registry = DocumentCitationRegistry()
-        citation_registry.register(
-            payload.document_citations,
-            scope="document",
-            query=project_input.user_query,
+        rag_context, document_chunks, canonical_document_citations = (
+            RAGEvidenceContractReader.projections(document_bundle)
+        )
+        citation_registry = DocumentCitationRegistry.from_citations(
+            payload.all_citations
+        )
+        rag_context, document_chunks, document_citations, _ = (
+            citation_registry.remap_bundle(
+                context=rag_context,
+                chunks=document_chunks,
+                citations=canonical_document_citations,
+                normalized={},
+                scope="document",
+                query=document_bundle.query,
+            )
         )
         sections = []
         section_evidence_bundles = []
-        all_chunks = list(payload.document_retrieved_chunks)
         all_rag_outputs = list(payload.all_rag_outputs)
         print(
             f"[SchemeWriter] 开始逐章节生成，共 {len(document_plan.sections)} 章",
@@ -1045,15 +1070,7 @@ class SchemeGenerationStageService:
                 "section_plan": section_plan,
                 "structured_facts": list(payload.structured_facts),
                 "previous_sections": list(previous_sections),
-                "document_rag_context": rag_context,
-                "document_retrieved_chunks": list(
-                    payload.document_retrieved_chunks
-                ),
-                "document_citations": list(payload.document_citations),
-                "document_rag_output": dict(payload.document_rag_output),
-                "document_evidence_assessment": dict(
-                    payload.document_evidence_assessment
-                ),
+                "document_evidence_bundle": payload.document_evidence_bundle,
                 "document_tool_call_ids": list(payload.document_tool_call_ids),
                 "section_retrieval_enabled": payload.section_retrieval_enabled,
                 "corrective_retrieval_enabled": (
@@ -1091,6 +1108,10 @@ class SchemeGenerationStageService:
                     SectionExecutionRequestSchema(
                         shared_state=state,
                         **request_data,
+                        document_rag_context=rag_context,
+                        document_retrieved_chunks=list(document_chunks),
+                        document_citations=list(document_citations),
+                        document_rag_output={"extra": dict(document_bundle.extra or {})},
                     ),
                     citation_registry=registry,
                 )
@@ -1296,7 +1317,6 @@ class SchemeGenerationStageService:
             section_result = results_by_id[section_plan.section_id]
             sections.append(section_result.section)
             section_evidence_bundles.append(section_result.evidence)
-            all_chunks.extend(section_result.retrieved_chunks)
             all_rag_outputs.extend(section_result.rag_outputs)
         shared_state.context_bundle.generation.metadata[
             "parallel_section_budget"
@@ -1310,7 +1330,6 @@ class SchemeGenerationStageService:
                 "sections": sections,
                 "section_states": section_states,
                 "section_evidence": section_evidence_bundles,
-                "all_retrieved_chunks": all_chunks,
                 "all_citations": citation_registry.all(),
                 "all_rag_outputs": all_rag_outputs,
             },
@@ -1443,6 +1462,11 @@ class SchemeGenerationStageService:
             field_name="started_at",
             node_name="assemble_document",
         )
+        document_bundle = self._require(
+            payload.document_evidence_bundle,
+            field_name="document_evidence_bundle",
+            node_name="assemble_document",
+        )
         assembly = self.document_assembler.assemble(
             DocumentAssemblyRequestSchema(
                 task_id=shared_state.task_id,
@@ -1454,14 +1478,10 @@ class SchemeGenerationStageService:
                 ),
                 required_sections=list(payload.required_sections),
                 sections=list(payload.sections),
-                retrieved_chunks=list(payload.all_retrieved_chunks),
+                retrieved_chunks=self._assembly_chunks_from_canonical_bundles(payload),
                 citations=list(payload.all_citations),
                 section_evidence=list(payload.section_evidence),
-                document_evidence_available=payload.document_evidence_available,
-                document_assessment_status=payload.document_assessment_status,
-                document_evidence_assessment=dict(
-                    payload.document_evidence_assessment
-                ),
+                document_evidence_bundle=document_bundle,
                 citation_required_sections=list(
                     payload.required_evidence_sections
                 ),
@@ -1473,7 +1493,6 @@ class SchemeGenerationStageService:
             update={
                 "assembly": assembly,
                 "generated_draft": assembly.draft,
-                "all_retrieved_chunks": list(assembly.retrieved_chunks),
                 "all_citations": list(assembly.citations),
             },
             deep=True,
@@ -1803,14 +1822,10 @@ class SchemeGenerationStageService:
             node_name="build_generation_report",
         )
         source_versions: dict[str, str] = {}
-        if payload.document_rag_context is not None:
-            contract = dict(
-                (payload.document_rag_context.extra or {}).get(
-                    "evidence_contract"
-                )
-                or {}
+        if payload.document_evidence_bundle is not None:
+            lineage = payload.document_evidence_bundle.lineage.model_dump(
+                mode="json", exclude_none=True
             )
-            lineage = dict(contract.get("lineage") or {})
             for key in (
                 "index_version",
                 "dataset_version",
@@ -1879,6 +1894,43 @@ class SchemeGenerationStageService:
             field_name="output_status",
             node_name="persist_artifact",
         )
+        document_bundle = self._require(
+            payload.document_evidence_bundle,
+            field_name="document_evidence_bundle",
+            node_name="persist_artifact",
+        )
+        output_rag_context, _, _ = RAGEvidenceContractReader.projections(document_bundle)
+        document_rag_summary = next(
+            (
+                dict(item)
+                for item in payload.all_rag_outputs
+                if str(item.get("scope") or item.get("retrieval_scope") or "")
+                == "document"
+            ),
+            {},
+        )
+        section_evidence_summaries = []
+        for item in payload.section_evidence:
+            bundle = item.evidence_bundle
+            raw_status = bundle.assessment.status if bundle is not None else None
+            section_evidence_summaries.append(
+                {
+                    "section_id": item.section_id,
+                    "section_title": item.section_title,
+                    "evidence_contract_sha256": item.evidence_contract_sha256,
+                    "status": (
+                        raw_status.value
+                        if raw_status is not None and hasattr(raw_status, "value")
+                        else str(raw_status or "not_assessed")
+                    ),
+                    "citation_count": len(bundle.citations) if bundle is not None else 0,
+                    "selected_evidence_count": (
+                        len(bundle.selected_evidence_ids) if bundle is not None else 0
+                    ),
+                    "tool_call_ids": list(item.tool_call_ids),
+                    "recovery_count": item.recovery_count,
+                }
+            )
         output = SchemeWriterOutputSchema(
             task_id=shared_state.task_id,
             run_id=shared_state.run_id,
@@ -1887,10 +1939,10 @@ class SchemeGenerationStageService:
             generated_draft=assembly.draft,
             rejected_artifact=rejected_artifact,
             deliverable_final_result=deliverable_final_result,
-            rag_context=payload.document_rag_context,
+            rag_context=output_rag_context,
             retrieved_chunks=list(assembly.retrieved_chunks),
             citations=list(assembly.citations),
-            section_evidence=list(payload.section_evidence),
+            section_evidence=section_evidence_summaries,
             hard_gate=hard_gate,
             warnings=list(payload.output_warnings),
             error=payload.output_error,
@@ -1931,11 +1983,9 @@ class SchemeGenerationStageService:
                 ),
                 "scheme_writer_input": scheme_input.model_dump(),
                 "document_plan": document_plan.model_dump(),
-                "rag_tool_output": dict(payload.document_rag_output),
+                "rag_tool_output": document_rag_summary,
                 "rag_tool_outputs": list(payload.all_rag_outputs),
-                "section_evidence": [
-                    item.model_dump() for item in payload.section_evidence
-                ],
+                "section_evidence": section_evidence_summaries,
                 "section_aware_retrieval_enabled": (
                     payload.section_retrieval_enabled
                 ),
@@ -2006,10 +2056,8 @@ class SchemeGenerationStageService:
             },
         )
         enriched_rag_output = {
-            **dict(payload.document_rag_output),
-            "section_evidence": [
-                item.model_dump() for item in payload.section_evidence
-            ],
+            "document": document_rag_summary,
+            "section_evidence": section_evidence_summaries,
             "rag_tool_outputs": list(payload.all_rag_outputs),
         }
         self.state_writer.set_scheme_outputs(

@@ -44,7 +44,6 @@ def build_scheme_generation_workflow(created_at: str) -> WorkflowDefinitionSchem
                     "deliverable_final_result",
                 ],
                 write_paths=[
-                    "context_bundle.evidence",
                     "context_bundle.generation",
                     "contexts.scheme_writer_input",
                     "contexts.scheme_writer_output",
@@ -59,7 +58,6 @@ def build_scheme_generation_workflow(created_at: str) -> WorkflowDefinitionSchem
                 on_failure="fail_task",
                 commit_policy="allow_partial_on_failure",
                 failure_write_paths=[
-                    "context_bundle.evidence",
                     "context_bundle.generation",
                     "contexts.scheme_writer_input",
                     "contexts.scheme_writer_output",

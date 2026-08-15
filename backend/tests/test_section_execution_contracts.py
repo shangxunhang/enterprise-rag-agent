@@ -9,6 +9,7 @@ from apps.enterprise_document.schemas.scheme_writer import (
     SectionExecutionResultSchema,
     SectionPlanSchema,
 )
+from rag.evidence.contract import RAGEvidenceContractBuilder
 from schemas.citation import CitationSchema
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
 from schemas.rag import RAGContextSchema, RetrievedChunkSchema
@@ -71,15 +72,27 @@ def _context(text: str = "document context") -> RAGContextSchema:
     )
 
 
-def _citation(citation_id: str = "C1") -> CitationSchema:
+def _citation(citation_id: str = "C1", *, chunk_id: str = "c1") -> CitationSchema:
     return CitationSchema(
         citation_id=citation_id,
         source_type="document",
         doc_id="doc_1",
-        child_chunk_id="c1",
-        parent_chunk_id="parent_c1",
+        child_chunk_id=chunk_id,
+        parent_chunk_id=f"parent_{chunk_id}",
         quote_text="evidence quote",
     )
+
+
+def _bundle(*, chunk: RetrievedChunkSchema, citation: CitationSchema, scope: str, query: str):
+    return RAGEvidenceContractBuilder.build(
+        query=query,
+        rewritten_queries=[],
+        selected_chunks=[chunk],
+        dropped_chunks=[],
+        citations=[citation],
+        trace=None,
+        max_context_chars=6000,
+    ).model_copy(update={"retrieval_scope": scope}, deep=True)
 
 
 def test_section_execution_request_carries_current_section_inputs() -> None:
@@ -93,6 +106,12 @@ def test_section_execution_request_carries_current_section_inputs() -> None:
         status=ExecutionStatus.SUCCESS,
     )
 
+    document_bundle = _bundle(
+        chunk=first,
+        citation=_citation(),
+        scope="document",
+        query="生成建设方案",
+    )
     request = SectionExecutionRequestSchema(
         shared_state=_shared_state(),
         document_id="document_run_contract",
@@ -104,10 +123,10 @@ def test_section_execution_request_carries_current_section_inputs() -> None:
             citation_required=True,
         ),
         previous_sections=[previous],
+        document_evidence_bundle=document_bundle,
         document_rag_context=_context(),
         document_retrieved_chunks=[first, second],
         document_citations=[_citation()],
-        document_evidence_assessment={"status": "sufficient"},
         document_tool_call_ids=["rag_document"],
         section_retrieval_enabled=True,
         corrective_retrieval_enabled=True,
@@ -120,30 +139,24 @@ def test_section_execution_request_carries_current_section_inputs() -> None:
         "c1",
         "c2",
     ]
-    assert request.document_evidence_assessment["status"] == "sufficient"
+    assert request.document_evidence_bundle is document_bundle
     assert request.document_tool_call_ids == ["rag_document"]
 
 
 def test_section_execution_result_separates_active_evidence_from_all_retrieval_artifacts() -> None:
     initial_chunk = _chunk("c1", 1)
     recovery_chunk = _chunk("c2", 1)
-    final_context = RAGContextSchema(
-        context_text="recovery context",
-        used_context_chunk_ids=["parent_c2"],
-        matched_chunk_ids=["c2"],
-        used_doc_ids=["doc_1"],
-        used_context_chars=16,
-        context_item_count=1,
+    recovery_bundle = _bundle(
+        chunk=recovery_chunk,
+        citation=_citation("C2", chunk_id="c2"),
+        scope="self_rag_recovery",
+        query="技术方案恢复检索",
     )
     evidence = SectionEvidenceBundleSchema(
         section_id="section_002",
         section_title="技术方案",
-        retrieval_scope="self_rag_recovery",
-        query="技术方案恢复检索",
+        evidence_bundle=recovery_bundle,
         tool_call_ids=["rag_section", "rag_self_rag"],
-        rag_context=final_context,
-        retrieved_chunks=[recovery_chunk],
-        citations=[_citation("C2")],
         recovery_count=1,
     )
     section = SchemeSectionSchema(

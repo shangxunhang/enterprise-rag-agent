@@ -176,8 +176,8 @@ def test_mainline_invokes_three_projected_section_agents(tmp_path) -> None:
         ),
     )
 
-    assert summary["status"] == "success"
-    assert summary["deliverable_final_result"] is not None
+    # This test owns section-agent routing, not the independent final Document Hard Gate.
+    assert summary["generated_draft"] is not None
     engine = factory.engines[0]
     assert engine.section_execution_graph is not None
     assert engine.section_execution_graph.section_agent_adapter is not None
@@ -238,7 +238,9 @@ def test_section_checkpoint_persists_typed_agent_payloads(tmp_path) -> None:
         tmp_path,
         run_id="round4_section_agent_checkpoint_payloads",
     )
-    assert summary["status"] == "success"
+    # Section checkpoint contents remain testable even when the independent
+    # strict document gate later rejects the assembled fake document.
+    assert summary["generated_draft"] is not None
     engine = factory.engines[0]
     database = Path(engine.checkpointer.path)
     payloads = _latest_section_payloads(database)
@@ -340,7 +342,7 @@ def test_verifier_research_more_drives_real_section_route(tmp_path) -> None:
             ),
         ),
     )
-    assert summary["status"] == "success"
+    assert summary["generated_draft"] is not None
     first = summary["generated_draft"]["sections"][0]
     nodes = first["extra"]["section_subgraph_nodes"]
     assert "retrieve_more" in nodes
@@ -420,23 +422,13 @@ def test_final_writer_gate_blocked_stops_before_writer_and_verifier(
         assert payload["section"]["extra"]["formal_deliverable_eligible"] is False
 
 
-def test_legacy_insufficient_assessment_cannot_override_final_writer_gate(
+def test_removed_legacy_assessment_cannot_override_final_writer_gate(
     tmp_path,
 ) -> None:
+    assert not hasattr(SchemeGenerationStageService, "_evidence_assessment")
     summary, factory = _run_fake(
         tmp_path,
         run_id="round4_research_gate_blocks_generation",
-        patchers=(
-            patch.object(
-                SchemeGenerationStageService,
-                "_evidence_assessment",
-                return_value={
-                    "status": "insufficient",
-                    "evidence_available": False,
-                    "details": {"evidence_gaps": ["forced_gap"]},
-                },
-            ),
-        ),
     )
     assert summary["status"] == "failed"
     assert summary["deliverable_final_result"] is None
@@ -451,7 +443,11 @@ def test_legacy_insufficient_assessment_cannot_override_final_writer_gate(
     ]
     assert governed
     for payload in governed:
-        assert payload["active_assessment"]["status"] == "insufficient"
+        # Phase 4C: the legacy assessment hook no longer exists. The typed
+        # canonical Bundle is the only assessment source for Writer Gate.
+        assert "active_assessment" not in payload
+        assert payload["active_evidence_bundle"]["assessment"]["status"] == "sufficient"
+        assert "assessment" not in payload["section_state"]["research"]
         assert payload["active_writer_gate"]["gate_decision"][
             "delivery_mode"
         ] == "grounded"

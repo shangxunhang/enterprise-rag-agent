@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from pydantic import Field
@@ -19,7 +21,9 @@ class CitationSchema(SchemaBase):
 
     # 当前引用来源契约版本。
     schema_version: str = "citation_v2"
-    # 引用对象唯一标识，供绑定关系和生成标记引用。
+    # 跨 RAG invocation 稳定的规范来源身份；RAG producer 负责生成，Application 只读。
+    citation_ref: Optional[str] = None
+    # 当前 EvidenceBundle 内部的局部渲染标识，例如 C1/C2；不是稳定业务身份。
     citation_id: str
 
     # 来源类别，例如文档片段、表格、政策条款或用户提供材料。
@@ -61,6 +65,39 @@ class CitationSchema(SchemaBase):
 
     # 索引版本、检索分数或其他尚未进入稳定引用契约的信息。
     extra: Dict[str, Any] = Field(default_factory=dict)
+
+
+def citation_source_identity(citation: CitationSchema) -> str:
+    """计算 Citation 的稳定来源身份。
+
+    该 payload 与历史 ``DocumentCitationRegistry._identity`` 完全一致，Phase 4B 将其
+    抽取为共享算法，使 RAG producer 与 Application document projection 复用同一身份。
+    ``citation_id`` 只在来源定位事实全部缺失时作为兼容兜底，不参与正常来源身份。
+    """
+
+    payload: Dict[str, Any] = {
+        "source_document_id": citation.source_document_id or citation.doc_id,
+        "file_id": citation.file_id,
+        "parent_chunk_id": citation.parent_chunk_id,
+        "child_chunk_id": citation.child_chunk_id,
+        "chunk_id": citation.chunk_id,
+        "table_id": citation.table_id,
+        "row_ids": list(citation.row_ids),
+        "page_start": citation.page_start,
+        "page_end": citation.page_end,
+        "quote_text": " ".join((citation.quote_text or "").split()),
+        "title": citation.title,
+        "section": citation.section,
+    }
+    if not any(value for value in payload.values()):
+        payload["original_citation_id"] = citation.citation_id
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class CitationBindingSchema(SchemaBase):

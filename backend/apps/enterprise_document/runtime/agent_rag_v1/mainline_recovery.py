@@ -31,6 +31,11 @@ from apps.enterprise_document.schemas.section_execution_graph import (
 from apps.enterprise_document.services.agent_rag_v1.running_invocation_recovery import (
     RunningInvocationRecoveryService,
 )
+from rag.evidence.contract import (
+    RAGEvidenceContractReader,
+    bundle_first_assessment_projection,
+    evidence_bundle_sha256,
+)
 
 
 class StaleMainlineResultError(ValueError):
@@ -223,21 +228,29 @@ class MainlineReplanAttempt:
             if task_budget
             else {}
         )
+        document_bundle = payload.document_evidence_bundle
+        if document_bundle is None:
+            raise ValueError("section replan requires canonical document_evidence_bundle")
+        active_context, active_chunks, active_citations = (
+            RAGEvidenceContractReader.projections(document_bundle)
+        )
+        active_query = document_bundle.query
+        active_scope = document_bundle.retrieval_scope
+        evidence_contract_sha256 = evidence_bundle_sha256(document_bundle)
+
         return payload.model_copy(
             update={
                 "section_plan": revised_plan,
                 "section_title": revised_plan.section_title,
                 "section_order": revised_plan.section_order,
                 "section_state": section_state,
-                "citation_registry": list(payload.document_citations),
-                "active_context": payload.document_rag_context,
-                "active_chunks": list(payload.document_retrieved_chunks),
-                "active_citations": list(payload.document_citations),
-                "active_query": "",
-                "active_scope": "document",
-                "active_assessment": dict(
-                    payload.document_evidence_assessment
-                ),
+                "citation_registry": list(payload.citation_registry),
+                "active_evidence_bundle": document_bundle,
+                "active_context": active_context,
+                "active_chunks": active_chunks,
+                "active_citations": active_citations,
+                "active_query": active_query,
+                "active_scope": active_scope,
                 "tool_call_ids": list(payload.document_tool_call_ids),
                 "retrieved_chunks": [],
                 "rag_outputs": [],
@@ -245,6 +258,8 @@ class MainlineReplanAttempt:
                     "replanned_from_attempt": previous.attempt_id,
                     "replan_attempt": next_attempt,
                     "recovery_integration_round": "round8",
+                    "evidence_contract_sha256": evidence_contract_sha256,
+                    "evidence_projection_source": "canonical_bundle",
                 },
                 "budget_state": budget_state,
                 "research_agent_payloads": [],

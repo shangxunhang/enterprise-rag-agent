@@ -63,8 +63,7 @@ _DEFAULT_WRITE_ALIASES: Dict[str, List[str]] = {
     "generated_draft": ["generated_draft"],
     "rejected_artifact": ["rejected_artifact"],
     "deliverable_final_result": ["deliverable_final_result"],
-    # 规范证据与生成上下文。
-    "evidence_context": ["context_bundle.evidence"],
+    # 规范生成上下文。
     "generation_context": ["context_bundle.generation"],
     # 通用节点输出、工具结果和兼容最终结果。
     "generated_outputs": ["generated_outputs"],
@@ -309,8 +308,6 @@ class GraphStateProjector:
             "normalized_project_input": state.context_bundle.business.project_input,
             "source_materials": state.context_bundle.business.source_materials,
             "structured_facts": state.structured_facts,
-            "evidence_contract": state.context_bundle.evidence.contract,
-            "rag_context": state.context_bundle.evidence.context_text,
             "scheme_writer_output": state.contexts.get("scheme_writer_output"),
             "generated_draft": state.generated_draft,
             "rejected_artifact": state.rejected_artifact,

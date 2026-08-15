@@ -818,6 +818,10 @@ class EvidenceBundleSchema(SchemaBase):
     status: ExecutionStatus = ExecutionStatus.SUCCESS
     # 与详细检索轨迹关联的标识。
     retrieval_trace_id: Optional[str] = None
+    # 产生本 Bundle 的 RAG invocation 范围，例如 document / section / recovery。
+    retrieval_scope: str = "document"
+    # 本次 invocation 实际使用的 Evidence Requirements immutable provenance snapshot。
+    evidence_requirements: Optional[EvidenceRequirementsSchema] = None
 
     # 全部规范证据项，包括选中和丢弃项。
     items: List[RAGEvidenceItemSchema] = Field(default_factory=list)

@@ -15,7 +15,7 @@ from apps.enterprise_document.schemas.scheme_writer_schema import SchemeSectionS
 from schemas.citation import CitationSchema
 from schemas.context import ContextBuildRequestSchema, ContextItemSchema
 from rag.evidence.citation_sources import prompt_visible_citation_text
-from schemas.rag import RAGContextSchema, RAGEvidenceContractSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema
 
 
 class SectionGenerationContextPolicy:
@@ -43,6 +43,7 @@ class SectionGenerationContextPolicy:
         rag_context: RAGContextSchema,
         citations: List[CitationSchema],
         previous_sections: List[SchemeSectionSchema],
+        evidence_bundle: EvidenceBundleSchema | None = None,
     ) -> ContextBuildRequestSchema:
         """构造一次章节生成的完整上下文选择请求。
 
@@ -51,12 +52,10 @@ class SectionGenerationContextPolicy:
         补充信息作为可裁剪候选块加入。最后把项目级字符预算、模型输入 Token 容量、输出
         预留量和安全余量一起交给上下文管理器。
         """
-        contract = self._evidence_contract(rag_context)
-        lineage = (
-            contract.lineage.model_dump()
-            if contract is not None
-            else dict((rag_context.extra or {}).get("lineage") or {})
-        )
+        # Phase 4C: canonical Evidence is an explicit typed input. RAGContext is
+        # only a context projection and may never be used to recover a Bundle.
+        contract = evidence_bundle
+        lineage = contract.lineage.model_dump() if contract is not None else {}
         if contract is not None:
             lineage["evidence_contract_schema"] = contract.schema_version
             lineage["evidence_contract_query"] = contract.query
@@ -326,21 +325,10 @@ class SectionGenerationContextPolicy:
                 rows.append(f"- {item.section_title}: {summary}")
         return "\n".join(rows)
 
-    @staticmethod
-    def _evidence_contract(rag_context: RAGContextSchema) -> RAGEvidenceContractSchema | None:
-        """从兼容字段恢复并严格校验结构化证据契约；无效数据不冒充可信证据。"""
-        raw = (rag_context.extra or {}).get("evidence_contract")
-        if not isinstance(raw, dict):
-            return None
-        try:
-            return RAGEvidenceContractSchema.model_validate(raw)
-        except Exception:
-            return None
-
     @classmethod
     def _evidence_items(
         cls,
-        contract: RAGEvidenceContractSchema | None,
+        contract: EvidenceBundleSchema | None,
         rag_context: RAGContextSchema,
     ) -> list[ContextItemSchema]:
         """把已选证据逐条转换为上下文块，并保留引用和检索血缘。

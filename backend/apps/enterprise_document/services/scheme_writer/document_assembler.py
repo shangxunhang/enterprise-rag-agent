@@ -82,8 +82,15 @@ class DocumentAssembler:
             )
 
         evidence_available = bool(
-            request.document_evidence_available
-            or any(bundle.citations for bundle in request.section_evidence)
+            (
+                request.document_evidence_bundle is not None
+                and request.document_evidence_bundle.assessment.evidence_available
+            )
+            or any(
+                bundle.evidence_bundle is not None
+                and bundle.evidence_bundle.assessment.evidence_available
+                for bundle in request.section_evidence
+            )
         )
         citation_required_titles = list(
             dict.fromkeys(request.citation_required_sections)
@@ -92,13 +99,16 @@ class DocumentAssembler:
         for bundle in request.section_evidence:
             if bundle.section_title not in citation_required_titles:
                 continue
-            status = str(
-                (bundle.metadata or {}).get(
-                    "evidence_assessment_status",
-                    "not_assessed",
+            if bundle.evidence_bundle is None:
+                status = "not_assessed"
+            else:
+                raw_status = bundle.evidence_bundle.assessment.status
+                status = (
+                    raw_status.value
+                    if raw_status is not None and hasattr(raw_status, "value")
+                    else str(raw_status or "not_assessed")
                 )
-                or "not_assessed"
-            ).strip().lower() or "not_assessed"
+            status = status.strip().lower() or "not_assessed"
             final_section_statuses[bundle.section_title] = status
 
         section_by_title = {
@@ -168,7 +178,11 @@ class DocumentAssembler:
 
         degraded_sections: list[str] = []
         evidence_by_section = {
-            bundle.section_id: dict((bundle.metadata or {}).get("evidence_assessment") or {})
+            bundle.section_id: (
+                bundle.evidence_bundle.assessment.model_dump(mode="json")
+                if bundle.evidence_bundle is not None
+                else {}
+            )
             for bundle in request.section_evidence
         }
         for section in sections:
@@ -179,8 +193,10 @@ class DocumentAssembler:
                 evidence_details.get("quality_mode_degraded")
             ):
                 degraded_sections.append(section.section_id)
-        document_assessment_details = dict(
-            (request.document_evidence_assessment or {}).get("details") or {}
+        document_assessment_details = (
+            dict(request.document_evidence_bundle.assessment.details or {})
+            if request.document_evidence_bundle is not None
+            else {}
         )
         quality_mode_degraded = bool(
             degraded_sections

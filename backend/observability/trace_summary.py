@@ -325,7 +325,8 @@ def tool_result_summary(result: Any) -> Dict[str, Any]:
         "error_code": getattr(error, "error_code", None) if error else None,
         "error_type": getattr(error, "error_type", None) if error else None,
     }
-    # 第三步：结果明确携带证据或 RAG 输出 Schema 时，追加专用证据摘要。
+    # 第三步：仅兼容 legacy ToolResult/RAGToolOutput 边界；正常 production
+    # canonical path 直接消费 typed EvidenceBundle，不依赖 payload["evidence"]。
     if payload.get("evidence") is not None or payload.get("schema_version") == "rag_tool_output_v1":
         summary["rag_evidence"] = _rag_contract_summary(payload)
 
@@ -341,7 +342,8 @@ def extract_tool_lineage(result: Any) -> Dict[str, Any]:
     Returns:
         对非 RAG 工具通常大部分为空的稳定血缘字典。
     """
-    # 第一步：规范 evidence.lineage 优先，旧 trace 字段作为迁移期回退。
+    # 第一步：legacy ToolResult compatibility only；正常 production typed Bundle
+    # lineage 由调用方直接投影为 hash/ref/version summary。
     payload = dict(getattr(result, "result", {}) or {})
     evidence = payload.get("evidence") or {}
     lineage = evidence.get("lineage") or {}

@@ -211,19 +211,11 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
         "retrieve_document_evidence": BusinessNodeContract(
             node_name="retrieve_document_evidence",
             read_keys=("project_input", "document_plan"),
-            graph_write_paths=("context_bundle.evidence",),
             payload_write_paths=(
-                "document_rag_context",
-                "document_retrieved_chunks",
-                "document_citations",
-                "document_rag_output",
-                "document_evidence_assessment",
-                "document_evidence_available",
-                "document_assessment_status",
+                "document_evidence_bundle",
                 "document_tool_call_ids",
                 "section_retrieval_enabled",
                 "corrective_retrieval_enabled",
-                "all_retrieved_chunks",
                 "all_citations",
                 "all_rag_outputs",
             ),
@@ -239,7 +231,7 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
             timeout_seconds=1800.0,
             read_keys=(
                 "document_plan",
-                "document_rag_context",
+                "document_evidence_bundle",
                 "structured_facts",
             ),
             graph_write_paths=(
@@ -254,7 +246,6 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
                 "sections",
                 "section_states",
                 "section_evidence",
-                "all_retrieved_chunks",
                 "all_citations",
                 "all_rag_outputs",
                 "document_validation",
@@ -296,7 +287,6 @@ def _default_node_contracts() -> dict[str, BusinessNodeContract]:
             payload_write_paths=(
                 "assembly",
                 "generated_draft",
-                "all_retrieved_chunks",
                 "all_citations",
             ),
         ),
@@ -1944,8 +1934,7 @@ class EnterpriseDocumentWorkflowEngine:
         return self.business_state_codec.restore_payload(
             {
                 "scheme_generation_state_version": values.get(
-                    "scheme_generation_state_version",
-                    1,
+                    "scheme_generation_state_version"
                 ),
                 "scheme_generation_payload": raw,
                 "task_id": values.get("task_id") or raw.get("task_id"),

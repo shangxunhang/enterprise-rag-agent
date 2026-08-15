@@ -176,7 +176,6 @@ class ResearchStateSchema(SchemaBase):
     research_rounds: int = Field(default=0, ge=0)
     tool_call_ids: list[str] = Field(default_factory=list)
     recommended_action: str | None = None
-    assessment: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator(

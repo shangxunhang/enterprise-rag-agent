@@ -548,6 +548,12 @@ class RAGResultMapper:
                 "run_id": request.run_id,
                 "status": ExecutionStatus.SUCCESS,
                 "retrieval_trace_id": trace_id,
+                "retrieval_scope": request.retrieval_scope,
+                "evidence_requirements": (
+                    request.evidence_requirements.model_copy(deep=True)
+                    if request.evidence_requirements is not None
+                    else None
+                ),
                 "correction_trace": correction_rounds,
                 "assessment": assessment,
                 "budget_usage": {

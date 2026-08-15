@@ -222,13 +222,18 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
 
     output = summary["scheme_writer_output"]
     bundles = output["section_evidence"]
+    sections = (summary.get("generated_draft") or {}).get("sections") or []
     required = set(project_input["generation_requirements"]["citation_required_sections"])
     by_title = {item["section_title"]: item for item in bundles}
+    section_by_title = {item["section_title"]: item for item in sections}
 
     assert output["extra"]["section_aware_retrieval_enabled"] is True
     assert len(bundles) == len(project_input["generation_requirements"]["required_sections"])
     assert required
-    assert all(by_title[title]["retrieval_scope"] == "section" for title in required)
+    assert all(
+        (section_by_title[title].get("extra") or {}).get("evidence_scope") == "section"
+        for title in required
+    )
     assert all(len(by_title[title]["tool_call_ids"]) == 2 for title in required)
     assert [item["citation_id"] for item in output["citations"]] == ["C1"]
 

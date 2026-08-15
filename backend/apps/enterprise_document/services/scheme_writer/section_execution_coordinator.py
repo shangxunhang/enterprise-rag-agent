@@ -29,7 +29,9 @@ from apps.enterprise_document.services.gate_enforcement import (
 )
 from apps.enterprise_document.services.output_validation import detect_truncation
 from agent.runtime.state_access import SharedStateWriter
+from rag.evidence.contract import bundle_first_assessment_projection, evidence_bundle_sha256
 from schemas.common import ErrorSourceSchema, WarningSchema
+from schemas.rag import EvidenceBundleSchema
 from schemas.status import ExecutionStatus
 
 from .document_citation_registry import DocumentCitationRegistry
@@ -95,46 +97,29 @@ class SectionExecutionCoordinator:
         self.section_agent_adapter = adapter
 
     @staticmethod
-    def _evidence_assessment(normalized_output: dict) -> dict:
-        """Read one canonical evidence assessment from a normalized RAG output."""
-
-        contract = normalized_output.get("evidence")
-        contract = contract if isinstance(contract, dict) else {}
-        assessment = contract.get("assessment")
-        assessment = dict(assessment) if isinstance(assessment, dict) else {}
-        raw_status = assessment.get("status") or "not_assessed"
-        if hasattr(raw_status, "value"):
-            raw_status = raw_status.value
-        assessment["status"] = str(raw_status).strip().lower() or "not_assessed"
-        details = assessment.get("details")
-        assessment["details"] = dict(details) if isinstance(details, dict) else {}
-        return assessment
+    def _evidence_assessment_from_bundle(bundle: EvidenceBundleSchema) -> dict:
+        return bundle_first_assessment_projection(bundle)
 
     @staticmethod
     def _writer_gate_binding(
         normalized_output: dict,
         *,
+        evidence_bundle: EvidenceBundleSchema | None = None,
         section_id: str,
         section_title: str,
         section_order: int | None = None,
         document_id: str | None = None,
         run_id: str | None = None,
     ) -> WriterGateBindingSchema | None:
-        contract = normalized_output.get("evidence")
-        contract = contract if isinstance(contract, dict) else {}
-        contract_extra = contract.get("extra")
-        contract_extra = contract_extra if isinstance(contract_extra, dict) else {}
         return extract_writer_gate_binding(
             normalized_output,
+            evidence_bundle=evidence_bundle,
             section_id=section_id,
             section_title=section_title,
             section_order=section_order,
             document_id=document_id,
             run_id=run_id,
-            evidence_contract_sha256=str(
-                contract_extra.get("evidence_contract_sha256") or ""
-            )
-            or None,
+            evidence_contract_sha256=None,
         )
 
     def _budget_fallback_section(
@@ -318,14 +303,15 @@ class SectionExecutionCoordinator:
             }
         )
 
+        active_evidence_bundle = request.document_evidence_bundle
         active_context = request.document_rag_context
         active_chunks = list(request.document_retrieved_chunks)
         active_citations = list(request.document_citations)
         active_query = project_input.user_query
         active_scope = "document"
-        active_assessment = dict(request.document_evidence_assessment)
         active_writer_gate = self._writer_gate_binding(
             dict(request.document_rag_output),
+            evidence_bundle=active_evidence_bundle,
             section_id=section_id,
             section_title=title,
             section_order=order,
@@ -337,15 +323,7 @@ class SectionExecutionCoordinator:
         retrieval_metadata: dict = {
             "section_retrieval_enabled": request.section_retrieval_enabled,
             "citation_required": citation_required,
-            "evidence_assessment_status": active_assessment.get(
-                "status", "not_assessed"
-            ),
             "writer_gate_bound": bool(active_writer_gate is not None),
-            "writer_gate_binding": (
-                active_writer_gate.model_dump(mode="json", exclude_none=True)
-                if active_writer_gate is not None
-                else None
-            ),
         }
         retrieved_chunks = []
         rag_outputs: list[dict] = []
@@ -398,36 +376,40 @@ class SectionExecutionCoordinator:
                         query=section_query,
                     )
                     retrieved_chunks.extend(section_chunks)
-                    rag_outputs.append(section_output)
-                    section_assessment = self._evidence_assessment(section_output)
+                    rag_outputs.append(
+                        SchemeEvidenceService.retrieval_history_projection(
+                            section_output,
+                            scope="section",
+                            evidence_bundle=(
+                                section_result
+                                if isinstance(section_result, EvidenceBundleSchema)
+                                else None
+                            ),
+                        )
+                    )
+                    section_assessment = self._evidence_assessment_from_bundle(
+                        section_result
+                    )
                     section_writer_gate = self._writer_gate_binding(
                         section_output,
+                        evidence_bundle=section_result,
                         section_id=section_id,
                         section_title=title,
                         section_order=order,
                         document_id=request.document_id,
                         run_id=shared_state.run_id,
                     )
-                    active_assessment = section_assessment
-                    active_writer_gate = section_writer_gate
                     retrieval_metadata["writer_gate_bound"] = bool(
                         section_writer_gate is not None
                     )
-                    retrieval_metadata["writer_gate_binding"] = (
-                        section_writer_gate.model_dump(mode="json", exclude_none=True)
-                        if section_writer_gate is not None
-                        else None
-                    )
-                    retrieval_metadata["evidence_assessment_status"] = (
-                        section_assessment.get("status", "not_assessed")
-                    )
-                    retrieval_metadata["evidence_assessment"] = section_assessment
                     if section_context.context_text.strip():
+                        active_evidence_bundle = section_result
                         active_context = section_context
                         active_chunks = section_chunks
                         active_citations = section_citations
                         active_query = section_query
                         active_scope = "section"
+                        active_writer_gate = section_writer_gate
                     retrieval_metadata["section_retrieval_success"] = True
                     retrieval_metadata["section_citation_count"] = len(
                         section_citations
@@ -497,7 +479,9 @@ class SectionExecutionCoordinator:
                         rag_context=active_context,
                         citations=active_citations,
                         assessment={
-                            **dict(active_assessment),
+                            **bundle_first_assessment_projection(
+                                active_evidence_bundle,
+                            ),
                             "status": "not_assessed",
                             "reason": "final writer gate binding is missing",
                         },
@@ -520,6 +504,7 @@ class SectionExecutionCoordinator:
                         citations=active_citations,
                         structured_facts=structured_facts,
                         previous_sections=previous_sections,
+                        evidence_bundle=active_evidence_bundle,
                         generation_attempt=1,
                         writer_gate_binding=active_writer_gate,
                     )
@@ -591,12 +576,15 @@ class SectionExecutionCoordinator:
                     shared_state,
                     self_rag_result,
                 )
+                candidate_registry = DocumentCitationRegistry.from_citations(
+                    citation_registry.all()
+                )
                 (
                     recovered_context,
                     recovered_chunks,
                     recovered_citations,
                     recovered_output,
-                ) = citation_registry.remap_bundle(
+                ) = candidate_registry.remap_bundle(
                     context=recovered_context,
                     chunks=recovered_chunks,
                     citations=recovered_citations,
@@ -604,11 +592,19 @@ class SectionExecutionCoordinator:
                     scope="self_rag_recovery",
                     query=self_rag_query,
                 )
-                retrieved_chunks.extend(recovered_chunks)
-                rag_outputs.append(recovered_output)
-                recovered_assessment = self._evidence_assessment(recovered_output)
+                rag_outputs.append(
+                    SchemeEvidenceService.retrieval_history_projection(
+                        recovered_output,
+                        scope="self_rag_recovery",
+                        evidence_bundle=self_rag_result,
+                    )
+                )
+                recovered_assessment = self._evidence_assessment_from_bundle(
+                    self_rag_result
+                )
                 recovered_writer_gate = self._writer_gate_binding(
                     recovered_output,
+                    evidence_bundle=self_rag_result,
                     section_id=section_id,
                     section_title=title,
                     section_order=order,
@@ -663,20 +659,19 @@ class SectionExecutionCoordinator:
                     self_rag_rounds.append(round_trace)
                     break
 
+                # Application accepted the recovery candidate. Only now may its
+                # document citation labels and full chunk projection be committed.
+                citation_registry.restore(candidate_registry.all())
+                retrieved_chunks.extend(recovered_chunks)
+                active_evidence_bundle = self_rag_result
                 active_context = recovered_context
                 active_chunks = recovered_chunks
                 active_citations = recovered_citations
                 active_query = self_rag_query
                 active_scope = "self_rag_recovery"
-                active_assessment = recovered_assessment
                 active_writer_gate = recovered_writer_gate
                 retrieval_metadata["writer_gate_bound"] = bool(
                     active_writer_gate is not None
-                )
-                retrieval_metadata["writer_gate_binding"] = (
-                    active_writer_gate.model_dump(mode="json", exclude_none=True)
-                    if active_writer_gate is not None
-                    else None
                 )
                 if self.writer_gate_blocks(active_writer_gate):
                     evidence_blocked = True
@@ -714,7 +709,9 @@ class SectionExecutionCoordinator:
                             rag_context=active_context,
                             citations=active_citations,
                             assessment={
-                                **dict(active_assessment),
+                                **bundle_first_assessment_projection(
+                                    active_evidence_bundle,
+                                ),
                                 "status": "not_assessed",
                                 "reason": "final writer gate binding is missing",
                             },
@@ -752,6 +749,7 @@ class SectionExecutionCoordinator:
                         citations=active_citations,
                         structured_facts=structured_facts,
                         previous_sections=previous_sections,
+                        evidence_bundle=active_evidence_bundle,
                         generation_attempt=round_number + 1,
                         writer_gate_binding=active_writer_gate,
                     )
@@ -867,12 +865,15 @@ class SectionExecutionCoordinator:
                         shared_state,
                         recovery_result,
                     )
+                    candidate_registry = DocumentCitationRegistry.from_citations(
+                        citation_registry.all()
+                    )
                     (
                         recovery_context,
                         recovery_chunks,
                         recovery_citations,
                         recovery_output,
-                    ) = citation_registry.remap_bundle(
+                    ) = candidate_registry.remap_bundle(
                         context=recovery_context,
                         chunks=recovery_chunks,
                         citations=recovery_citations,
@@ -880,24 +881,24 @@ class SectionExecutionCoordinator:
                         scope="recovery",
                         query=recovery_query,
                     )
-                    retrieved_chunks.extend(recovery_chunks)
-                    rag_outputs.append(recovery_output)
-                    recovery_assessment = self._evidence_assessment(recovery_output)
+                    rag_outputs.append(
+                        SchemeEvidenceService.retrieval_history_projection(
+                            recovery_output,
+                            scope="recovery",
+                            evidence_bundle=recovery_result,
+                        )
+                    )
+                    recovery_assessment = self._evidence_assessment_from_bundle(
+                        recovery_result
+                    )
                     recovery_writer_gate = self._writer_gate_binding(
                         recovery_output,
+                        evidence_bundle=recovery_result,
                         section_id=section_id,
                         section_title=title,
                         section_order=order,
                         document_id=request.document_id,
                         run_id=shared_state.run_id,
-                    )
-                    retrieval_metadata["corrective_evidence_assessment"] = (
-                        recovery_assessment
-                    )
-                    retrieval_metadata["corrective_writer_gate_binding"] = (
-                        recovery_writer_gate.model_dump(mode="json", exclude_none=True)
-                        if recovery_writer_gate is not None
-                        else None
                     )
                     current_generation_permitted = bool(
                         active_writer_gate is not None
@@ -912,12 +913,18 @@ class SectionExecutionCoordinator:
                         and not self.writer_gate_blocks(recovery_writer_gate)
                     )
                     if recovery_generation_permitted:
+                        citation_registry.restore(candidate_registry.all())
+                        retrieved_chunks.extend(recovery_chunks)
+                        active_evidence_bundle = (
+                            recovery_result
+                            if isinstance(recovery_result, EvidenceBundleSchema)
+                            else None
+                        )
                         active_context = recovery_context
                         active_chunks = recovery_chunks
                         active_citations = recovery_citations
                         active_query = recovery_query
                         active_scope = "recovery"
-                        active_assessment = recovery_assessment
                         active_writer_gate = recovery_writer_gate
                         retrieval_metadata["corrective_recovery_accepted"] = True
                         try:
@@ -931,6 +938,7 @@ class SectionExecutionCoordinator:
                                 citations=active_citations,
                                 structured_facts=structured_facts,
                                 previous_sections=previous_sections,
+                                evidence_bundle=active_evidence_bundle,
                                 generation_attempt=recovery_count + 1,
                                 writer_gate_binding=active_writer_gate,
                             )
@@ -962,12 +970,21 @@ class SectionExecutionCoordinator:
                             flush=True,
                         )
                     elif recovery_context_available or recovery_writer_gate is not None:
+                        # Preserve the existing Phase 4B acceptance semantics when
+                        # both current and candidate are blocked, but commit only
+                        # after that Application acceptance decision.
+                        citation_registry.restore(candidate_registry.all())
+                        retrieved_chunks.extend(recovery_chunks)
+                        active_evidence_bundle = (
+                            recovery_result
+                            if isinstance(recovery_result, EvidenceBundleSchema)
+                            else None
+                        )
                         active_context = recovery_context
                         active_chunks = recovery_chunks
                         active_citations = recovery_citations
                         active_query = recovery_query
                         active_scope = "recovery"
-                        active_assessment = recovery_assessment
                         active_writer_gate = recovery_writer_gate
                         evidence_blocked = True
                         block_reason = (
@@ -1051,33 +1068,22 @@ class SectionExecutionCoordinator:
                     ),
                 }
 
-        retrieval_metadata["evidence_assessment_status"] = active_assessment.get(
-            "status", "not_assessed"
+        contract_sha = (
+            evidence_bundle_sha256(active_evidence_bundle)
+            if active_evidence_bundle is not None
+            else None
         )
-        retrieval_metadata["evidence_assessment"] = active_assessment
-        contract_sha = str(
-            (active_context.extra or {}).get("evidence_contract_sha256") or ""
-        ) or None
         evidence = SectionEvidenceBundleSchema(
             section_id=section_id,
             section_title=title,
-            retrieval_scope=active_scope,
-            query=active_query,
+            evidence_bundle=active_evidence_bundle,
             tool_call_ids=list(dict.fromkeys(tool_call_ids)),
-            rag_context=active_context,
-            retrieved_chunks=active_chunks,
-            citations=active_citations,
             recovery_count=recovery_count,
             evidence_contract_sha256=contract_sha,
             writer_gate_binding=(
                 active_writer_gate.model_dump(mode="json", exclude_none=True)
                 if active_writer_gate is not None
                 else None
-            ),
-            generation_allowed=(
-                active_writer_gate.ordinary_generation_permitted
-                if active_writer_gate is not None
-                else False
             ),
             metadata=retrieval_metadata,
         )

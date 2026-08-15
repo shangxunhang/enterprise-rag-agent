@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-from schemas.citation import CitationSchema
+from observability.trace_summary import canonical_sha256
+from schemas.citation import CitationSchema, citation_source_identity
 from schemas.rag import (
     EvidenceDisposition,
     RAGContextSchema,
@@ -20,6 +21,39 @@ from schemas.rag import (
     RAGTraceSchema,
     RetrievedChunkSchema,
 )
+
+
+def evidence_bundle_sha256(contract: RAGEvidenceContractSchema) -> str:
+    """Hash the canonical JSON representation of one EvidenceBundle."""
+
+    return canonical_sha256(contract.model_dump(mode="json", round_trip=True))
+
+
+def bundle_first_assessment_projection(
+    contract: RAGEvidenceContractSchema | None,
+    legacy_assessment: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Return the active Evidence assessment with canonical Bundle precedence.
+
+    ``legacy_assessment`` exists only for checkpoints created before the typed
+    canonical carrier. Whenever a Bundle is present its assessment is the sole
+    Evidence fact source and the legacy projection is ignored completely.
+    """
+
+    if contract is not None:
+        assessment: Dict[str, Any] = contract.assessment.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+    else:
+        assessment = dict(legacy_assessment or {})
+    raw_status = assessment.get("status") or "not_assessed"
+    if hasattr(raw_status, "value"):
+        raw_status = raw_status.value
+    assessment["status"] = str(raw_status).strip().lower() or "not_assessed"
+    details = assessment.get("details")
+    assessment["details"] = dict(details) if isinstance(details, dict) else {}
+    return assessment
 
 
 class RAGEvidenceContractBuilder:
@@ -48,6 +82,7 @@ class RAGEvidenceContractBuilder:
                 continue
             seen_sources.add(source_key)
             data = citation.model_dump()
+            data["citation_ref"] = citation.citation_ref or citation_source_identity(citation)
             original_id = str(citation.citation_id or "").strip()
             extra = dict(data.get("extra") or {})
             if original_id:
@@ -354,4 +389,8 @@ class RAGEvidenceContractReader:
                     extra={**dict(item.extra), "evidence_id": item.evidence_id},
                 )
             )
-        return contract.context, chunks, list(contract.citations)
+        return (
+            contract.context.model_copy(deep=True),
+            chunks,
+            [citation.model_copy(deep=True) for citation in contract.citations],
+        )

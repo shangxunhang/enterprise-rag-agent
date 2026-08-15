@@ -495,49 +495,18 @@ def test_scheme_layer_trusts_contract_not_poisoned_legacy_fields() -> None:
     assert "JWT认证" in context.context_text
     assert len(chunks) == 1
     assert [item.citation_id for item in citations] == ["C1"]
-    assert normalized["evidence"]["schema_version"] == "rag_evidence_contract_v1"
+    assert "evidence" not in normalized
+    assert "evidence_contract" not in context.extra
+    assert normalized["evidence_contract_sha256"]
 
 
 
-# 阅读注释（函数）：处理 测试 shared 状态 stores contract without claiming sufficiency 相关逻辑。
-def test_shared_state_stores_contract_without_claiming_sufficiency() -> None:
-    """处理 测试 shared 状态 stores contract without claiming sufficiency 相关逻辑。
-
-    返回:
-        None
-
-    阅读提示:
-        主要直接调用：_chunk, RAGEvidenceContractBuilder.build, _citation, _trace, _shared_state, set_evidence_context, SharedStateWriter, contract.model_dump。
-    """
-    selected = _chunk(rank=1, child="child_1", parent="parent_1")
-    contract = RAGEvidenceContractBuilder.build(
-        query="安全设计",
-        rewritten_queries=[],
-        selected_chunks=[selected],
-        dropped_chunks=[],
-        citations=[_citation(selected)],
-        trace=_trace(),
-        max_context_chars=6000,
-    )
+# Phase 4C: SharedState is no longer an Evidence carrier.
+def test_shared_state_evidence_carrier_is_retired() -> None:
     state = _shared_state()
-    SharedStateWriter().set_evidence_context(
-        state,
-        query=contract.query,
-        evidence_contract=contract.model_dump(),
-        context_text=contract.context.context_text,
-        retrieved_chunks=[],
-        citations=[item.model_dump() for item in contract.citations],
-        used_doc_ids=contract.context.used_doc_ids,
-        evidence_available=True,
-        assessment_status="not_assessed",
-        evidence_sufficient=None,
-    )
-
-    assert state.context_bundle.evidence.contract["schema_version"] == "rag_evidence_contract_v1"
-    assert state.context_bundle.evidence.evidence_available is True
-    assert state.context_bundle.evidence.assessment_status == "not_assessed"
-    assert state.context_bundle.evidence.evidence_sufficient is None
-    assert state.context_bundle.evidence.metadata["context_is_projection"] is True
+    writer = SharedStateWriter()
+    assert "evidence" not in state.context_bundle.__class__.model_fields
+    assert not hasattr(writer, "set_evidence_context")
 
 # 阅读注释（函数）：处理 测试 fake RAG 工具 also uses step 12 contract 相关逻辑。
 def test_fake_rag_tool_also_uses_step_12_contract() -> None:
