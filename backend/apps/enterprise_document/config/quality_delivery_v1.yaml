@@ -1,0 +1,16 @@
+schema_version: semantic_quality_delivery_config_v1
+config_id: quality-delivery-semantic-default
+config_version: v1
+
+consistency_procedure:
+  document_global_applicability: APPLICABLE
+  document_global_selectors:
+    - schema_version: validation_target_selector_v1
+      selector_kind: consistency_all_included_assertions
+      target_ref: consistency-obligation://document-global/all-included-assertions/v1
+      selector_contract_version: consistency-logical-selector-v1
+  applicability_reason: PRODUCTION_DOCUMENT_GLOBAL_CONSISTENCY_REQUIRED
+  force_include_obligation_refs: []
+  force_include_selectors: []
+
+config_hash: b1356d818bae559cf348b05171d15d79aa834d3cbe6407a2f6bd05ffd017261c

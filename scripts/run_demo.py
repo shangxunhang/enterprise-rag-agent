@@ -17,7 +17,7 @@ user input -> ProjectInput -> Supervisor -> WorkflowEngine -> Agent nodes
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import json
 import os
 import sys
@@ -26,10 +26,39 @@ from typing import Any, Dict, Optional
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_ROOT.parent
-BACKEND_ROOT = PROJECT_ROOT / "backend"
-for import_root in (SCRIPT_ROOT, BACKEND_ROOT):
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
+BACKEND_ROOT = PROJECT_ROOT / 'backend'
+
+import importlib.util as _source_util
+import sys as _source_sys
+from pathlib import Path as _SourcePath
+
+_source_file = PROJECT_ROOT / 'source_bootstrap.py'
+_source_name = 'source_bootstrap'
+if _source_name in _source_sys.modules:
+    _source_module = _source_sys.modules[_source_name]
+    try:
+        _source_values = vars(_source_module)
+        _source_spec = _source_values.get('__spec__')
+        if (
+            _source_spec is None
+            or _source_values.get('__path__') is not None
+            or _source_spec.submodule_search_locations is not None
+            or _SourcePath(_source_values['__file__']).resolve() != _source_file
+            or _SourcePath(_source_spec.origin).resolve() != _source_file
+            or not callable(_source_values.get('bootstrap_source_root'))
+        ):
+            raise ImportError('SOURCE_ROOT_REJECTED: cached trusted helper')
+    except (KeyError, TypeError, ValueError, AttributeError, OSError) as _source_error:
+        raise ImportError('SOURCE_ROOT_REJECTED: malformed cached trusted helper') from _source_error
+else:
+    _source_spec = _source_util.spec_from_file_location(_source_name, _source_file)
+    if _source_spec is None or _source_spec.loader is None:
+        raise ImportError('SOURCE_ROOT_REJECTED: unavailable trusted helper')
+    _source_module = _source_util.module_from_spec(_source_spec)
+    _source_sys.modules[_source_name] = _source_module
+    # Preserve the cached module if execution/initialization fails; never evict.
+    _source_spec.loader.exec_module(_source_module)
+_source_contract = _source_module.bootstrap_source_root(PROJECT_ROOT)
 
 from bootstrap.model_factory import build_default_model_routing
 from core.config import AppSettings, get_settings
@@ -43,6 +72,10 @@ from mainline_runtime import (
     resolve_project_path,
 )
 from rag.offline.resolver import ActiveIndexResolver
+from schemas.rag import RetrievalAccessScopeSchema
+
+_source_module.assert_loaded_project_origins()
+
 
 RUN_DEMO_VERSION = f"{MAINLINE_RUNTIME_VERSION}+e2e-console-v5"
 DEFAULT_USER_INPUT = "根据资料生成企业级 RAG-Agent 系统建设方案"
@@ -210,6 +243,75 @@ def _is_business_gate_failure(summary: Dict[str, Any]) -> bool:
         or str(error.get("error_code") or "") == "DOCUMENT_HARD_GATE_FAILED"
     )
 
+def _read_target_release(summary: Dict[str, Any]):
+    """Verify a Target publication without opening mutable business stores.
+
+    A status/compatibility flag is not publication authority. Reuse the exact
+    immutable manifest/proof/payload reader and the caller's terminal receipt.
+    This is a diagnostic export, not a new Release or human approval.
+    """
+    raw = summary.get("target_release_publication")
+    outcome = summary.get("terminal_outcome") or {}
+    extra = (summary.get("scheme_writer_output") or {}).get("extra") or {}
+    target_marked = (
+        outcome.get("publication_exists") is True
+        or outcome.get("publication_ref") is not None
+        or extra.get("source_mode") == "verified_target"
+    )
+    if raw is None:
+        if target_marked and (
+            outcome.get("publication_exists") is True
+            or summary.get("deliverable_final_result") is not None
+        ):
+            raise ValueError("Target publication evidence is missing")
+        return None
+
+    from application.reading_export.source import load_published_markdown
+    from apps.enterprise_document.schemas.post_write.release import (
+        PostWritePublishedReleaseSchema,
+    )
+
+    publication = PostWritePublishedReleaseSchema.model_validate(raw)
+    manifest = publication.manifest
+    if (manifest.task_id, manifest.run_id) != (
+        summary.get("task_id"), summary.get("run_id")
+    ) or publication.verified_after_write is not True:
+        raise ValueError("Target publication identity/verification differs")
+    trace_path = (summary.get("paths") or {}).get("trace")
+    if not trace_path:
+        raise ValueError("Target publication requires the Run trace path")
+    package = load_published_markdown(
+        target_release_root=Path(trace_path).parent / "target_release",
+        release_id=manifest.release_id,
+        terminal_outcome=summary.get("terminal_outcome"),
+    )
+    if (package.manifest != manifest
+            or package.release_manifest_artifact != publication.manifest_artifact):
+        raise ValueError("Target publication differs from persisted release")
+    if _normalize_status_value(summary.get("status")) != package.status_view["execution_status"]:
+        raise ValueError("Target execution status differs from terminal receipt")
+    gate = (summary.get("scheme_writer_output") or {}).get("hard_gate") or {}
+    if gate.get("passed") is not (manifest.enforcement_action_passthrough.value == "OUTPUT"):
+        raise ValueError("Target compatibility Gate differs from native Control")
+    if summary.get("rejected_artifact") is not None:
+        raise ValueError("Published Target cannot also expose a rejected artifact")
+    return package
+
+
+def _target_release_report(package) -> Dict[str, Any]:
+    """Expose independent owner facts; BEST_EFFORT never becomes quality PASS."""
+    return {
+        "release_id": package.manifest.release_id,
+        "release_mode": package.manifest.release_mode.value,
+        "quality_state": package.manifest.quality_state_passthrough.value,
+        "control_action": package.manifest.enforcement_action_passthrough.value,
+        "run_completion_result": package.manifest.run_completion_assessment_ref.aggregate_result.value,
+        "payload_sha256": package.manifest.release_payload_sha256,
+        "terminal_outcome_source": package.terminal_outcome_source,
+        "status_view": dict(package.status_view),
+    }
+
+
 # 阅读注释（函数）：解析并确定 console question。   处理用户输入
 def _resolve_console_question(cli_value: Optional[str]) -> str:
     """Resolve one non-empty question from CLI or an interactive console."""
@@ -260,6 +362,40 @@ def _model_routing_snapshot(settings: AppSettings) -> Dict[str, Any]:
     }
 
 
+def _resolve_validation_model_name(
+    runtime_preflight: Dict[str, Any],
+    *,
+    fallback_model_name: str,
+) -> str:
+    """Resolve the trace model expected by the E2E validator from active routing.
+
+    An experiment may override every model role through ModelGateway routing while
+    leaving the application's default model configuration unchanged.  When all
+    routing policies share one primary profile, that routed profile is the
+    authoritative expected trace model.  Mixed routing falls back to the
+    application default because a single expected model is not authoritative.
+    """
+
+    profiles = {
+        str(item.get("profile_id") or ""): item
+        for item in (runtime_preflight.get("model_profiles") or [])
+        if isinstance(item, dict) and str(item.get("profile_id") or "").strip()
+    }
+    primary_profile_ids = {
+        str(candidates[0])
+        for item in (runtime_preflight.get("model_routing_policies") or [])
+        if isinstance(item, dict)
+        for candidates in [item.get("candidates") or []]
+        if candidates
+    }
+    if len(primary_profile_ids) == 1:
+        profile = profiles.get(next(iter(primary_profile_ids))) or {}
+        routed_model_name = str(profile.get("model_name") or "").strip()
+        if routed_model_name:
+            return routed_model_name
+    return str(fallback_model_name or "").strip()
+
+
 # 阅读注释（函数）：处理 preflight real 运行时 相关逻辑。
 def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
     """Fail before model loading when the real runtime is not deployable."""
@@ -275,7 +411,10 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
             f"本地LLM目录不存在：{settings.local_qwen_model_path}"
         )
 
-    pointer_path = settings.project_root / "data/processed/indexes/active_index.json"
+    rag_runtime_root = Path(
+        os.getenv("RAG_PROJECT_ROOT", str(settings.project_root))
+    ).expanduser().resolve()
+    pointer_path = rag_runtime_root / "data/processed/indexes/active_index.json"
     index_info = ActiveIndexResolver(
         verify_manifest_hash=True,
         verify_artifacts=True,
@@ -299,6 +438,7 @@ def _preflight_real_runtime(settings: AppSettings) -> Dict[str, Any]:
         "model_path": str(settings.local_qwen_model_path),
         "model_device": settings.local_qwen_device,
         **_model_routing_snapshot(settings),
+        "rag_project_root": str(rag_runtime_root),
         "active_index_version": index_info["index_version"],
         "active_index_backend": index_info["backend"],
         "active_index_collection": index_info["collection_name"],
@@ -357,8 +497,17 @@ def _validate_end_to_end(
     """Validate that the public entry actually traversed the whole mainline."""
 
     status = _normalize_status_value(summary.get("status"))
-    business_gate_passed = status in SUCCESS_LIKE_STATUSES
-    business_gate_failure = _is_business_gate_failure(summary)
+    target_release = _read_target_release(summary)
+    business_gate_failure = (
+        target_release.manifest.enforcement_action_passthrough.value != "OUTPUT"
+        if target_release is not None else _is_business_gate_failure(summary)
+    )
+    # Workflow completion and business Gate outcome are independent axes.
+    # In shadow mode the workflow may finish successfully while the final
+    # business Gate explicitly fails and enforcement continues for observation.
+    business_gate_passed = (
+        status in SUCCESS_LIKE_STATUSES and not business_gate_failure
+    )
     if not business_gate_passed:
         if not allow_business_failure or not business_gate_failure:
             error = _effective_runtime_error(summary)
@@ -376,7 +525,11 @@ def _validate_end_to_end(
     generated_draft = summary.get("generated_draft") or {}
     rejected_artifact = summary.get("rejected_artifact")
     deliverable = summary.get("deliverable_final_result")
-    if business_gate_passed:
+    if target_release is not None:
+        # Publication is verified independently of legacy deliverable aliases.
+        # The persisted, content-bound payload is the only Target export source.
+        artifact_draft = {"content": target_release.payload_bytes.decode("utf-8")}
+    elif business_gate_passed:
         if not isinstance(deliverable, dict):
             raise RuntimeError("Hard Gate passed but deliverable_final_result is absent")
         if rejected_artifact is not None:
@@ -495,7 +648,12 @@ def _validate_end_to_end(
         "task_status": status,
         "execution_integrity": "passed",
         "business_quality": (
-            "passed" if business_gate_passed else "failed"
+            target_release.status_view["business_quality_status"]
+            if target_release is not None
+            else "passed" if business_gate_passed else "failed"
+        ),
+        "target_release": (
+            _target_release_report(target_release) if target_release is not None else None
         ),
         "business_gate_passed": business_gate_passed,
         "business_gate_failure": business_gate_failure,
@@ -517,7 +675,7 @@ def _validate_end_to_end(
 # 阅读注释（函数）：写入具有明确生命周期名称的 Markdown 产物。
 def _write_markdown_artifact(
     summary: Dict[str, Any],
-    content: str,
+    content: str | bytes,
     *,
     artifact_suffix: str,
 ) -> Path:
@@ -527,7 +685,29 @@ def _write_markdown_artifact(
         f"{summary['run_id']}_{artifact_suffix}.md"
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_text(content, encoding="utf-8")
+    if isinstance(content, bytes):
+        artifact_path.write_bytes(content)  # Preserve exact published payload bytes.
+    else:
+        artifact_path.write_text(content, encoding="utf-8")
+    return artifact_path
+
+
+def _write_json_artifact(
+    summary: Dict[str, Any],
+    payload: Dict[str, Any],
+    *,
+    artifact_suffix: str,
+) -> Path:
+    """Write an explicitly named, user-readable diagnostic artifact."""
+    trace_path = Path(summary["paths"]["trace"])
+    artifact_path = trace_path.with_name(
+        f"{summary['run_id']}_{artifact_suffix}.json"
+    )
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8", newline="\n",
+    )
     return artifact_path
 
 
@@ -634,6 +814,7 @@ def _build_e2e_report(
         "execution_integrity": execution_integrity,
         "business_quality": business_quality,
         "business_gate_failure": _is_business_gate_failure(summary),
+        "target_release": (validation or {}).get("target_release"),
         "artifact_lifecycle": {
             "generated_draft": bool(summary.get("generated_draft")),
             "rejected_artifact": summary.get("rejected_artifact") is not None,
@@ -720,6 +901,320 @@ def _write_e2e_report(
     return report_path
 
 
+
+def _review_artifact_path(workspace, suffix: str) -> Path:
+    """Derive a review path only from the caller's pinned Run workspace."""
+    from core.persistence.safe_paths import SafePathResolver
+
+    return SafePathResolver(workspace.output_root).path_for_identifier(
+        workspace.run_id, field_name="run_id", directory=("runs",), suffix=suffix,
+    )
+
+
+def _project_pwa004_explanations(review, rows, sections, workspace):
+    """Validate Stage's bounded explanation against its native Section receipt.
+
+    The trust boundary remains the controlled Mainline result and workspace used
+    by D12. Content hashes detect changed projections; they grant no Source read
+    permission. This function neither opens a store nor evaluates a Claim.
+    """
+    import hashlib
+    import re
+    from core.hashing import canonical_sha256
+    from apps.enterprise_document.schemas.agent_rag_v1.verification import ClaimBindingFactSchema
+
+    if "rejection_explanations" not in review:
+        if any("pwa004_rejection_explanations" in (section.get("extra") or {})
+               for section in sections.values()):
+            raise ValueError("Review lost its Stage explanation summary")
+        # Old summaries/checkpoints retain their body and exact native refusals.
+        return {"rejection_explanations": [],
+                "rejection_explanations_status": "UNAVAILABLE_LEGACY"}
+    explanations = review["rejection_explanations"]
+    if not isinstance(explanations, list) or len(explanations) != len(rows):
+        raise ValueError("Review explanation membership differs")
+    extra_keys = {
+        "task_id", "run_id", "input_ref", "input_content_hash", "claim_text",
+        "paragraph_text", "text_span_hash", "start_offset", "end_offset",
+        "binding_facts", "shared_support", "evidence", "candidate_verdict",
+        "verification_result_committed", "explanation", "limitations", "explanation_sha256",
+    }
+    evidence_keys = {"exact_source_ref", "evidence_id", "doc_id", "title",
+                     "context_text", "context_text_sha256"}
+    limitations = [
+        "未产生该候选的正式 VerificationResult。",
+        "证据可见或被引用不等于已证明陈述成立。",
+        "本说明不授予正式发布或人工签发权限。",
+    ]
+
+    def exact_object(value, keys):
+        if not isinstance(value, dict) or set(value) != set(keys):
+            raise ValueError("Review explanation fields differ")
+
+    def digest(value, *, prefixed=False):
+        pattern = r"sha256:[0-9a-f]{64}" if prefixed else r"[0-9a-f]{64}"
+        if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+            raise ValueError("Review explanation digest is invalid")
+
+    def visible_text(value):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Review explanation text is invalid")
+        # Do not expose an injected configuration credential or local path in a
+        # field intended for Writer-visible prose. Unknown objects are rejected
+        # separately, including raw prompts/settings/debug envelopes.
+        if (re.search(r"(?i)(?:api[_ -]?key|access[_ -]?token|authorization)\s*[:=]", value)
+                or re.search(r"(?i)\bbearer\s+\S+", value)
+                or re.search(r"(?:^|\s)[A-Za-z]:[\\/]", value)
+                or value.startswith(("\\\\", "file://"))):
+            raise ValueError("Review explanation contains an unsafe field")
+        return value
+
+    projected = []
+    for row, value in zip(rows, explanations):
+        exact_object(value, set(row) | extra_keys)
+        if any(value[key] != item for key, item in row.items()):
+            raise ValueError("Review explanation differs from native refusal")
+        if (value["task_id"], value["run_id"]) != (workspace.task_id, workspace.run_id):
+            raise ValueError("Review explanation belongs to another Run")
+        if value["input_ref"] != row["candidate_ref"].removesuffix("/candidate") + "/input":
+            raise ValueError("Review explanation input differs")
+        digest(value["input_content_hash"], prefixed=True)
+        digest(value["explanation_sha256"])
+        if canonical_sha256({key: item for key, item in value.items()
+                             if key != "explanation_sha256"}) != value["explanation_sha256"]:
+            raise ValueError("Review explanation content changed")
+        occurrence = row["claim_occurrence_ref"]
+        paragraph = visible_text(value["paragraph_text"])
+        quote = visible_text(value["claim_text"])
+        start, end = value["start_offset"], value["end_offset"]
+        if (type(start) is not int or type(end) is not int
+                or (start, end) != (occurrence["start_offset"], occurrence["end_offset"])
+                or not 0 <= start < end <= len(paragraph)
+                or paragraph[start:end] != quote
+                or value["text_span_hash"] != occurrence["text_span_hash"]
+                or hashlib.sha256(quote.encode("utf-8")).hexdigest() != value["text_span_hash"]
+                or paragraph not in sections[row["section_id"]].get("content", "")):
+            raise ValueError("Review explanation Claim location differs")
+        if (value["candidate_verdict"] != "VERIFIED"
+                or value["verification_result_committed"] is not False
+                or value["limitations"] != limitations
+                or value["explanation"] != (
+                    "原生 Candidate 提出了 VERIFIED；SharedSupport 为 " + row["support_relation"]
+                    + "，M6 规则 VERIFIER_VERIFIED_FORBIDDEN_BY_SHARED_SUPPORT 拒绝该候选。"
+                    "该拒绝不证明陈述为假，也不构成正式质量 FAIL。")):
+            raise ValueError("Review explanation changes native semantics")
+        support = value["shared_support"]
+        exact_object(support, {"relation", "supporting_refs", "contradicting_refs"})
+        members = set(row["support_ref"]["evidence_target_set_ref"]["evidence_member_refs"])
+        if support["relation"] != row["support_relation"]:
+            raise ValueError("Review explanation Support relation differs")
+        for key in ("supporting_refs", "contradicting_refs"):
+            refs = support[key]
+            if (not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs)
+                    or len(refs) != len(set(refs)) or not set(refs) <= members):
+                raise ValueError("Review explanation Support scope differs")
+        if not isinstance(value["binding_facts"], list):
+            raise ValueError("Review explanation Binding facts are invalid")
+        facts = []
+        for fact in value["binding_facts"]:
+            typed = ClaimBindingFactSchema.model_validate(fact).model_dump(mode="json")
+            if (typed != fact or typed["source_kind"] not in {
+                    "EVIDENCE", "EVIDENCE_PACKAGE", "FACT_SNAPSHOT", "FACT"}
+                    or typed["source_scope_ref"] != "section:" + row["section_id"]
+                    or re.fullmatch(r"[a-z][a-z0-9-]*://sha256/[0-9a-f]{64}",
+                                    typed["exact_source_ref"]) is None
+                    or re.fullmatch(r"claim-source-current://sha256/[0-9a-f]{64}",
+                                    typed["source_currentness_proof_ref"]) is None):
+                raise ValueError("Review explanation Binding scope differs")
+            facts.append(typed)
+        evidence_refs = {fact["exact_source_ref"] for fact in facts if fact["source_kind"] == "EVIDENCE"}
+        if not isinstance(value["evidence"], list):
+            raise ValueError("Review explanation Evidence is invalid")
+        seen = set()
+        evidence = []
+        for item in value["evidence"]:
+            exact_object(item, evidence_keys)
+            ref = item["exact_source_ref"]
+            if ref not in members or ref not in evidence_refs or ref in seen:
+                raise ValueError("Review explanation Evidence scope differs")
+            seen.add(ref)
+            for key in ("evidence_id", "doc_id", "title", "context_text"):
+                visible_text(item[key])
+            digest(item["context_text_sha256"])
+            if canonical_sha256(item["context_text"]) != item["context_text_sha256"]:
+                raise ValueError("Review explanation Evidence content changed")
+            evidence.append(dict(item))
+        # The Stage writes this independent receipt into the already validated
+        # native Section. A nonempty external explanation is never sufficient.
+        section_receipts = (sections[row["section_id"]].get("extra") or {}).get(
+            "pwa004_rejection_explanations")
+        if not isinstance(section_receipts, list) or value not in section_receipts:
+            raise ValueError("Review explanation lacks its native Section receipt")
+        projected.append(dict(value, binding_facts=facts, evidence=evidence,
+                              shared_support=dict(support)))
+    for sid in {row["section_id"] for row in rows}:
+        expected = [value for value in projected if value["section_id"] == sid]
+        if sections[sid]["extra"]["pwa004_rejection_explanations"] != expected:
+            raise ValueError("Review explanation Section membership differs")
+    return {"rejection_explanations": projected, "rejection_explanations_status": "AVAILABLE"}
+
+
+def _project_pwa004_review(summary: Dict[str, Any], workspace) -> Dict[str, Any]:
+    """Project native review receipts; this does not authorize a Release.
+
+    The current Mainline caller supplies the workspace. Typed refs retain their
+    existing contracts, including historical Evidence members; no store is
+    reopened and no source/ACL decision is replaced here.
+    """
+    from application.run_workspace import RunWorkspace
+    from core.persistence.safe_paths import SafeExternalIdentifier
+    from apps.enterprise_document.schemas.agent_rag_v1.artifacts import ArtifactVersionRefSchema
+    from apps.enterprise_document.schemas.agent_rag_v1.claims import ClaimRefSchema, ClaimOccurrenceRefSchema
+    from apps.enterprise_document.schemas.agent_rag_v1.claim_support import ClaimEvidenceSupportRefSchema
+    from apps.enterprise_document.schemas.agent_rag_v1.verification import ClaimBindingFactsRefSchema
+    from core.hashing import canonical_sha256
+
+    if not isinstance(workspace, RunWorkspace):
+        raise ValueError("Review requires a trusted Run workspace")
+    identity = (workspace.task_id, workspace.run_id)
+    draft = summary["generated_draft"]
+    if ((summary.get("task_id"), summary.get("run_id")) != identity
+            or (draft.get("task_id"), draft.get("run_id")) != identity):
+        raise ValueError("Review identity differs")
+    if Path(summary["paths"]["trace"]).resolve() != workspace.trace_path:
+        raise ValueError("Review trace differs from trusted workspace")
+    outcome = summary.get("terminal_outcome") or {}
+    if ((outcome.get("task_id"), outcome.get("run_id")) != identity
+            or outcome.get("phase") != "evaluate_document_gate"
+            or not any(d.get("code") == "VERIFIER_ADMISSION_INCOMPLETE"
+                       for d in outcome.get("diagnostics", []) if isinstance(d, dict))):
+        raise ValueError("Review lacks native refusal outcome")
+    review = draft["extra"]["pwa004_review_draft"]
+    if (review.get("formal_post_write_assessed") is not False
+            or review.get("formal_release_authorized") is not False):
+        raise ValueError("Review authority flags differ")
+
+    def strings(value):
+        if not isinstance(value, list) or any(not isinstance(x, str) or not x for x in value):
+            raise ValueError("Review requires a string list")
+        return list(value)
+
+    sections = {s["section_id"]: s for s in draft["sections"]}
+    if len(sections) != len(draft["sections"]):
+        raise ValueError("Review has duplicate Sections")
+    for sid, section in sections.items():
+        SafeExternalIdentifier.validate(sid, field_name="section_id")
+        if not isinstance(section.get("section_title"), str) or not section["section_title"]:
+            raise ValueError("Review Section title is invalid")
+    ref_schemas = {
+        "claim_ref": ClaimRefSchema, "claim_occurrence_ref": ClaimOccurrenceRefSchema,
+        "paragraph_version_ref": ArtifactVersionRefSchema,
+        "binding_facts_ref": ClaimBindingFactsRefSchema,
+        "support_ref": ClaimEvidenceSupportRefSchema,
+    }
+    scalar_fields = (
+        "rule_code", "support_relation", "candidate_ref", "candidate_sha256",
+        "verifier_semantic_input_sha256", "attempt_id", "input_snapshot_version",
+    )
+
+    def native_row(row, sid):
+        result = {key: row[key] for key in scalar_fields}
+        if any(not isinstance(v, str) or not v for v in result.values()):
+            raise ValueError("Review requires native scalar fields")
+        if (result["rule_code"] != "VERIFIER_VERIFIED_FORBIDDEN_BY_SHARED_SUPPORT"
+                or result["support_relation"] not in {"INDETERMINATE", "CONTRADICTED"}):
+            raise ValueError("Review refusal rule differs")
+        for key in ("candidate_sha256", "verifier_semantic_input_sha256"):
+            value = result[key]
+            if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+                raise ValueError("Review fingerprint is invalid")
+        SafeExternalIdentifier.validate(result["attempt_id"], field_name="attempt_id")
+        refs = {key: schema.model_validate(row[key]) for key, schema in ref_schemas.items()}
+        claim, occurrence = refs["claim_ref"], refs["claim_occurrence_ref"]
+        paragraph, support = refs["paragraph_version_ref"], refs["support_ref"]
+        if (claim.claim_occurrence_ref != occurrence
+                or occurrence.run_id != workspace.run_id or occurrence.section_id != sid
+                or occurrence.paragraph_version_ref != paragraph
+                or refs["binding_facts_ref"].claim_ref != claim
+                or paragraph.producer_attempt_id != result["attempt_id"]
+                or paragraph.producer_attempt_scope_ref != f"section:{sid}"):
+            raise ValueError("Review refs differ from current Run/Attempt")
+        subject = support.claim_support_subject_ref
+        if (subject.authority_kind.value != "SIF07_CLAIM"
+                or subject.subject_ref != claim.claim_id
+                or support.evidence_target_set_ref.claim_support_subject_ref != subject):
+            raise ValueError("Review Support subject differs")
+        # Evidence members are authorized source refs, not necessarily this Run.
+        for key, ref in refs.items():
+            result[key] = ref.model_dump(mode="json")
+            if result[key] != row[key]:
+                raise ValueError("Review ref cannot be normalized")
+        physical = canonical_sha256({
+            "contract": "verifier-physical-occurrence-v2",
+            "verifier_semantic_input_sha256": result["verifier_semantic_input_sha256"],
+        })
+        if result["candidate_ref"] != f"artifact://canonical-verifier-v2/{physical}/candidate":
+            raise ValueError("Review Candidate ref differs")
+        return result
+
+    rows = review.get("rejections")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Review lacks native rejections")
+    projected = []
+    for row in rows:
+        sid = row["section_id"]
+        section = sections[sid]
+        extra = section.get("extra") or {}
+        subject = extra.get("writer_subject_ref") or {}
+        if (row["section_title"] != section["section_title"]
+                or extra.get("canonical_claim_verification_incomplete") is not True
+                or extra.get("pwa004_review_only_not_accepted") is not True
+                or subject != {"document_id": draft["document_id"],
+                               "run_id": workspace.run_id, "section_id": sid}
+                or extra.get("write_instance_id") != row["attempt_id"]):
+            raise ValueError("Review does not match native Section")
+        receipt = native_row(row, sid)
+        native = [native_row(r, sid) for r in extra.get("pwa004_verifier_rejections", [])]
+        if receipt not in native:
+            raise ValueError("Review differs from native Section refusal")
+        projected.append(dict(receipt, section_id=sid, section_title=section["section_title"]))
+
+    ids = {key: strings(review[key]) for key in (
+        "review_only_section_ids", "generated_non_review_only_section_ids", "accepted_section_ids",
+    )}
+    refused = {r["section_id"] for r in projected}
+    if (set(ids["review_only_section_ids"]) != refused
+            or set(ids["generated_non_review_only_section_ids"]) != set(sections) - refused
+            or not set(ids["accepted_section_ids"]) <= set(sections) - refused):
+        raise ValueError("Review Section membership differs")
+    # Do not drop or duplicate a native rejection when projecting the Stage list.
+    for sid in refused:
+        actual = [native_row(r, sid) for r in sections[sid]["extra"]["pwa004_verifier_rejections"]]
+        exported = [{k: v for k, v in r.items() if k not in {"section_id", "section_title"}}
+                    for r in projected if r["section_id"] == sid]
+        if actual != exported:
+            raise ValueError("Review refusal membership differs")
+    missing = strings(draft["missing_sections"])  # Titles, never Section IDs.
+    blocked = []
+    for row in review["hard_dependency_blocked"]:
+        sid = SafeExternalIdentifier.validate(row["section_id"], field_name="section_id")
+        title, reason = row["section_title"], row["reason_code"]
+        dependencies = strings(row["blocked_by"])
+        if (not isinstance(title, str) or title not in missing or sid in sections
+                or reason != "PWA004_HARD_DEPENDENCY_UNVERIFIED"):
+            raise ValueError("Review blocked Section differs")
+        for dependency in dependencies:
+            SafeExternalIdentifier.validate(dependency, field_name="blocked_by")
+        blocked.append(dict(section_id=sid, section_title=title,
+                            reason_code=reason, blocked_by=dependencies))
+    return dict(task_id=workspace.task_id, run_id=workspace.run_id,
+                missing_sections=missing, **ids, hard_dependency_blocked=blocked,
+                rejections=projected,
+                **_project_pwa004_explanations(review, projected, sections, workspace),
+                formal_post_write_assessed=False,
+                formal_release_authorized=False)
+
+
 # 阅读注释（函数）：处理 persist end to end artifacts 相关逻辑。
 def persist_end_to_end_artifacts(
     summary: Dict[str, Any],
@@ -729,19 +1224,49 @@ def persist_end_to_end_artifacts(
     expected_real_rag: bool,
     report_path: Optional[str | Path] = None,
     raise_on_validation_error: bool = True,
+    trusted_workspace=None,
 ) -> Dict[str, Any]:
-    """Persist a deliverable or rejected draft, then the diagnostic report.
+    """Export verified Target output or legacy artifacts, then a diagnostic report.
 
-    Only a hard-gate-approved result receives a deliverable filename. A rejected
-    draft is preserved under an explicitly non-deliverable artifact name.
+    Target BEST_EFFORT is written under an explicit best_effort filename; its
+    quality remains unchanged. No new publication or approval is performed.
     """
 
     generated_draft = summary.get("generated_draft") or {}
+    generated_extra = generated_draft.get("extra") or {}
+    pwa004_review = generated_extra.get("pwa004_review_draft")
     deliverable = summary.get("deliverable_final_result")
     rejected_artifact = summary.get("rejected_artifact")
     deliverable_path: Path | None = None
     rejected_draft_path: Path | None = None
-    if isinstance(deliverable, dict):
+    best_effort_path: Path | None = None
+    review_draft_path: Path | None = None
+    review_findings_path: Path | None = None
+    review_body_available = False
+    review_export_attempted = False
+    validation: Optional[Dict[str, Any]] = None
+    validation_error: Optional[Exception] = None
+    target_release = None
+    try:
+        target_release = _read_target_release(summary)
+    except Exception as exc:
+        # Never export an unverified Target under a legacy deliverable alias.
+        # Still preserve the original error in the diagnostic report below.
+        validation_error = exc
+    if target_release is not None:
+        best_effort = target_release.manifest.release_mode.value == "BEST_EFFORT"
+        path = _write_markdown_artifact(
+            summary, target_release.payload_bytes,
+            artifact_suffix="best_effort" if best_effort else "deliverable",
+        )
+        summary.setdefault("paths", {})[
+            "best_effort_markdown" if best_effort else "deliverable_markdown"
+        ] = str(path)
+        if best_effort:
+            best_effort_path = path
+        else:
+            deliverable_path = path
+    elif validation_error is None and isinstance(deliverable, dict):
         deliverable_draft = deliverable.get("draft") or {}
         content = str(
             deliverable_draft.get("full_text")
@@ -756,7 +1281,7 @@ def persist_end_to_end_artifacts(
         summary.setdefault("paths", {})["deliverable_markdown"] = str(
             deliverable_path
         )
-    elif isinstance(rejected_artifact, dict):
+    elif validation_error is None and isinstance(rejected_artifact, dict):
         content = str(
             generated_draft.get("full_text")
             or generated_draft.get("content")
@@ -770,66 +1295,121 @@ def persist_end_to_end_artifacts(
         summary.setdefault("paths", {})["rejected_draft_markdown"] = str(
             rejected_draft_path
         )
+    elif (
+        validation_error is None
+        and isinstance(pwa004_review, dict)
+        and pwa004_review
+    ):
+        try:
+            findings = _project_pwa004_review(summary, trusted_workspace)
+        except Exception:
+            # Invalid source/path: do not let the diagnostic writer use its paths.
+            if raise_on_validation_error:
+                raise ValueError("PWA004 review delivery rejected") from None
+            return {
+                "validation": {}, "validation_error": {
+                    "type": "ReviewExportRejected", "message": "PWA004 review delivery rejected",
+                }, "report": {}, "deliverable_path": None, "rejected_draft_path": None,
+                "best_effort_path": None, "review_draft_path": None,
+                "review_findings_path": None, "review_body_available": False, "report_path": None,
+            }
+        review_export_attempted = True
+        content = generated_draft.get("full_text") or generated_draft.get("content") or ""
+        review_body_available = isinstance(content, str) and bool(content.strip())
+        # Keep the existing writers; feed only workspace-derived review paths.
+        artifact_summary = dict(summary, paths={"trace": str(trusted_workspace.trace_path)})
+        for suffix, payload in (("_review_draft.md", content), ("_review_findings.json", findings)):
+            if suffix.endswith(".md") and not review_body_available:
+                continue
+            try:
+                expected_path = _review_artifact_path(trusted_workspace, suffix)
+                if suffix.endswith(".md"):
+                    expected_bytes = payload.encode("utf-8")
+                    path = _write_markdown_artifact(
+                        artifact_summary, expected_bytes, artifact_suffix="review_draft")
+                else:
+                    expected_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+                    path = _write_json_artifact(
+                        artifact_summary, payload, artifact_suffix="review_findings")
+                if path.resolve() != expected_path or path.read_bytes() != expected_bytes:
+                    raise ValueError("Review artifact readback differs")
+                if suffix.endswith(".md"):
+                    review_draft_path = path
+                    summary.setdefault("paths", {})["review_draft_markdown"] = str(path)
+                else:
+                    review_findings_path = path
+                    summary.setdefault("paths", {})["review_findings_json"] = str(path)
+            except Exception:
+                # Preserve any independently completed file; never expose IO details.
+                validation_error = ValueError("PWA004 review artifact delivery failed")
 
-    validation: Optional[Dict[str, Any]] = None
-    validation_error: Optional[Exception] = None
+    if validation_error is None:
+        try:
+            validation = _validate_end_to_end(
+                summary,
+                expected_model_name=expected_model_name,
+                expected_real_rag=expected_real_rag,
+                allow_business_failure=True,
+            )
+        except Exception as exc:  # report first, then preserve technical failure
+            validation_error = exc
+    report = {}
+    persisted_report_path = None
     try:
-        validation = _validate_end_to_end(
+        # 建立端到端结果报告
+        report = _build_e2e_report(
             summary,
-            expected_model_name=expected_model_name,
-            expected_real_rag=expected_real_rag,
-            allow_business_failure=True,
+            runtime_preflight=runtime_preflight,
+            validation=validation,
+            validation_error=validation_error,
         )
-    except Exception as exc:  # report first, then preserve technical failure
-        validation_error = exc
-    # 建立端到端结果报告
-    report = _build_e2e_report(
-        summary,
-        runtime_preflight=runtime_preflight,
-        validation=validation,
-        validation_error=validation_error,
-    )
-    # 写入端到端结果
-    persisted_report_path = _write_e2e_report(
-        summary,
-        report,
-        explicit_path=report_path,
-    )
-    summary["paths"]["e2e_report"] = str(persisted_report_path)
-    manifest_path = persisted_report_path.with_name(
-        f"{summary['run_id']}_experiment_manifest.json"
-    )
-    # Register the planned manifest path before the final report write so the
-    # report becomes immutable before its hash is captured by the manifest.
-    summary["paths"]["experiment_manifest"] = str(manifest_path)
-    report["paths"] = dict(summary["paths"])
+        # 写入端到端结果
+        persisted_report_path = _write_e2e_report(
+            summary,
+            report,
+            explicit_path=report_path,
+        )
+        summary["paths"]["e2e_report"] = str(persisted_report_path)
+        manifest_path = persisted_report_path.with_name(
+            f"{summary['run_id']}_experiment_manifest.json"
+        )
+        # Register the planned manifest path before the final report write so the
+        # report becomes immutable before its hash is captured by the manifest.
+        summary["paths"]["experiment_manifest"] = str(manifest_path)
+        report["paths"] = dict(summary["paths"])
 
-    _write_e2e_report(
-        summary,
-        report,
-        explicit_path=persisted_report_path,
-    )
+        _write_e2e_report(
+            summary,
+            report,
+            explicit_path=persisted_report_path,
+        )
 
-    manifest_writer = ExperimentRunManifestWriter(PROJECT_ROOT)
-    experiment_seed = summary.get("experiment_seed")
-    if experiment_seed is None:
-        experiment_seed = _configured_experiment_seed()
-    seed_application = dict(summary.get("experiment_seed_application") or {})
-    manifest_runtime_preflight = {
-        **dict(runtime_preflight),
-        "experiment_seed": experiment_seed,
-        "experiment_seed_application": seed_application,
-        "experiment_seed_applied": bool(
-            experiment_seed is not None and any(seed_application.values())
-        ),
-    }
-    manifest = manifest_writer.build(
-        summary=summary,
-        runtime_preflight=manifest_runtime_preflight,
-        report=report,
-        seed=experiment_seed,
-    )
-    manifest_writer.write(manifest, manifest_path)
+        manifest_writer = ExperimentRunManifestWriter(PROJECT_ROOT)
+        experiment_seed = summary.get("experiment_seed")
+        if experiment_seed is None:
+            experiment_seed = _configured_experiment_seed()
+        seed_application = dict(summary.get("experiment_seed_application") or {})
+        manifest_runtime_preflight = {
+            **dict(runtime_preflight),
+            "experiment_seed": experiment_seed,
+            "experiment_seed_application": seed_application,
+            "experiment_seed_applied": bool(
+                experiment_seed is not None and any(seed_application.values())
+            ),
+        }
+        manifest = manifest_writer.build(
+            summary=summary,
+            runtime_preflight=manifest_runtime_preflight,
+            report=report,
+            seed=experiment_seed,
+        )
+        manifest_writer.write(manifest, manifest_path)
+
+    except Exception:
+        if not review_export_attempted:
+            raise
+        # Review files already delivered remain visible even if diagnostics fail.
+        validation_error = ValueError("PWA004 review diagnostics delivery failed")
 
     if validation_error is not None and raise_on_validation_error:
         raise validation_error
@@ -852,13 +1432,17 @@ def persist_end_to_end_artifacts(
             if rejected_draft_path is not None
             else None
         ),
-        "report_path": str(persisted_report_path),
+        "best_effort_path": str(best_effort_path) if best_effort_path is not None else None,
+        "review_draft_path": str(review_draft_path) if review_draft_path is not None else None,
+        "review_findings_path": str(review_findings_path) if review_findings_path is not None else None,
+        "review_body_available": review_body_available,
+        "report_path": str(persisted_report_path) if persisted_report_path is not None else None,
     }
 
 
 # 阅读注释（函数）：执行 run 演示 的主流程。
 def run_demo(
-    user_input: str = DEFAULT_USER_INPUT,
+    user_input: str = DEFAULT_USER_INPUT,      #
     run_id: Optional[str] = None,
     task_id: Optional[str] = None,
     output_root: Optional[str | Path] = None,
@@ -867,6 +1451,7 @@ def run_demo(
     enable_agent_self_rag: Optional[bool] = None,
     project_input: Optional[Dict[str, Any]] = None,
     allow_demo_defaults: bool = True,
+    retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
 ) -> Dict[str, Any]:
     """Run the demo adapter while delegating execution to the shared mainline."""
 
@@ -882,6 +1467,7 @@ def run_demo(
         enable_agent_self_rag=enable_agent_self_rag,
         project_input=project_input,
         allow_demo_defaults=allow_demo_defaults,
+        retrieval_access_scope=retrieval_access_scope,
     )
     summary["experiment_seed"] = experiment_seed
     summary["experiment_seed_application"] = seed_application
@@ -945,6 +1531,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--rag-project-root",
+        type=str,
+        default=None,
+        help=(
+            "Optional online RAG runtime root containing "
+            "data/processed/indexes/active_index.json. Code and policy files "
+            "remain resolved from the repository."
+        ),
+    )
+    parser.add_argument(
         "--project-input-file",
         type=str,
         default=None,
@@ -952,6 +1548,15 @@ def main() -> None:
             "Optional JSON file containing a complete ProjectInput. "
             "When omitted, the CLI builds a minimal validated ProjectInput "
             "from the console question."
+        ),
+    )
+    parser.add_argument(
+        "--authorized-kb-id",
+        action="append",
+        default=[],
+        help=(
+            "Trusted KB identifier authorized for this run. Repeat the option "
+            "for multiple KBs. Required by formal real-RAG runs."
         ),
     )
     parser.add_argument(
@@ -976,42 +1581,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    user_input = _resolve_console_question(args.user_input)
-    _configure_runtime(fake_runtime=args.fake_runtime)
-
-    # 接下用户自己上传的rag配置
-    if args.rag_static_spec:
-        os.environ["RAG_STATIC_RETRIEVAL_SPEC_FILE"] = str(
-            resolve_project_path(args.rag_static_spec)
-        )
-
-    settings = get_settings(reload=True)
-
-    print("run_demo_file:", Path(__file__).resolve())
-    print("run_demo_version:", RUN_DEMO_VERSION)
-    print("project_root:", settings.project_root)
-    print("data_root:", settings.data_root)
-    print("prompt_root:", settings.prompt_root)
-    print("user_input:", user_input)
-
-    runtime_preflight: Dict[str, Any]
-    # 调用fake 不使用真实rag
-    if args.fake_runtime:
-        runtime_preflight = {
-            "mode": "fake",
-            "model_name": settings.default_model_name,
-            "rag_tool": "FakeRAGTool",
-            **_model_routing_snapshot(settings),
-        }
-    else:
-        runtime_preflight = _preflight_real_runtime(settings)
-
-    print("\nRuntime preflight:")
-    print(json.dumps(runtime_preflight, ensure_ascii=False, indent=2))
 
     project_input = None
-
-    # 读取结构化项目输入
     if args.project_input_file:
         project_input_path = Path(args.project_input_file).expanduser().resolve()
         if not project_input_path.is_file():
@@ -1025,17 +1596,63 @@ def main() -> None:
                 "ProjectInput file must contain one JSON object at the top level."
             )
 
-    # 调用run_demo函数并返回结果
-    summary = run_demo(
-        user_input=user_input,
-        run_id=args.run_id,
-        output_root=args.output_root,
-        clean_existing=args.clean_existing,
-        settings=settings,
-        enable_agent_self_rag=not args.disable_agent_self_rag,
-        project_input=project_input,
-        allow_demo_defaults=project_input is None,
+    canonical_file_query = str(
+        (project_input or {}).get("user_query") or ""
+    ).strip()
+    # Explicit ProjectInput is the canonical source of the formal run query.
+    # This avoids terminal encoding/transcription drift at the CLI boundary.
+    user_input = _resolve_console_question(
+        args.user_input if args.user_input is not None else canonical_file_query
     )
+    # 创建运行时配置
+    _configure_runtime(fake_runtime=args.fake_runtime)
+    if args.rag_project_root:
+        os.environ["RAG_PROJECT_ROOT"] = str(
+            Path(args.rag_project_root).expanduser().resolve()
+        )
+
+    # 接下用户自己上传的rag配置
+    if args.rag_static_spec:
+        os.environ["RAG_STATIC_RETRIEVAL_SPEC_FILE"] = str(
+            resolve_project_path(args.rag_static_spec)
+        )
+
+    settings = get_settings(reload=True)
+
+    runtime_preflight: Dict[str, Any]
+    # 调用fake 不使用真实rag
+    if args.fake_runtime:
+        runtime_preflight = {
+            "mode": "fake",
+            "model_name": settings.default_model_name,
+            "rag_tool": "FakeRAGTool",
+            **_model_routing_snapshot(settings),
+        }
+    else:
+        runtime_preflight = _preflight_real_runtime(settings)
+
+    retrieval_access_scope = None
+    if args.authorized_kb_id:
+        tenant_id = str((project_input or {}).get("tenant_id") or "default")
+        retrieval_access_scope = RetrievalAccessScopeSchema(
+            tenant_id=tenant_id,
+            authorized_kb_ids=list(dict.fromkeys(args.authorized_kb_id)),
+        )
+
+    # 调用run_demo函数并返回结果
+    # Internal operator details remain in persisted task/trace/report artifacts.
+    with open(os.devnull, "w") as private_console, redirect_stdout(private_console), redirect_stderr(private_console):
+        summary = run_demo(
+            user_input=user_input,
+            run_id=args.run_id,
+            output_root=args.output_root,
+            clean_existing=args.clean_existing,
+            settings=settings,
+            enable_agent_self_rag=not args.disable_agent_self_rag,
+            project_input=project_input,
+            allow_demo_defaults=project_input is None,
+            retrieval_access_scope=retrieval_access_scope,
+        )
     # 生成主链的草稿
     generated_draft = summary.get("generated_draft") or {}
     deliverable = summary.get("deliverable_final_result") or {}
@@ -1050,18 +1667,71 @@ def main() -> None:
     first_section = sections[0] if sections else {}
     first_section_extra = first_section.get("extra") or {}
     #主链已经执行完后，保存产物并验证这次运行是否真的走完了端到端链路
-    persisted = persist_end_to_end_artifacts(
-        summary,
-        runtime_preflight=runtime_preflight,
-        expected_model_name=settings.default_model_name,
-        expected_real_rag=not args.fake_runtime,
-        report_path=args.e2e_report_path,
-        raise_on_validation_error=args.strict,
+    expected_validation_model_name = _resolve_validation_model_name(
+        runtime_preflight,
+        fallback_model_name=settings.default_model_name,
     )
+    runtime_preflight["validation_expected_model_name"] = (
+        expected_validation_model_name
+    )
+    # Pin the root from this controlled invocation, never from summary.paths.
+    from application.run_workspace import RunWorkspace
+    try:
+        trusted_workspace = RunWorkspace(
+            output_root=Path(args.output_root) if args.output_root is not None else settings.data_root,
+            task_id=summary["task_id"], run_id=summary["run_id"],
+        )
+        if args.run_id is not None and args.run_id != trusted_workspace.run_id:
+            trusted_workspace = None
+    except (TypeError, ValueError):
+        trusted_workspace = None
+    # Internal operator details remain in persisted task/trace/report artifacts.
+    with open(os.devnull, "w") as private_console, redirect_stdout(private_console), redirect_stderr(private_console):
+        persisted = persist_end_to_end_artifacts(
+            summary,
+            runtime_preflight=runtime_preflight,
+            expected_model_name=expected_validation_model_name,
+            expected_real_rag=not args.fake_runtime,
+            report_path=args.e2e_report_path,
+            raise_on_validation_error=args.strict and summary.get("terminal_outcome") is None,
+            trusted_workspace=trusted_workspace,
+        )
     # 证明的是这次请求是否真实走过了完整主链，而不是只返回了一个伪造结果
     validation = persisted["validation"]
     # 端到端验证过程中是否发现了技术性错误。
     validation_error = persisted.get("validation_error")
+
+    if summary.get("terminal_outcome") is not None:
+        from application.terminal_outcome_projector import public_terminal_result
+        public = public_terminal_result(summary)
+        # Only this call's receipts can advertise review delivery.
+        review_artifacts = {}
+        for key, receipt_key, suffix in (
+            ("review_draft_markdown", "review_draft_path", "_review_draft.md"),
+            ("review_findings_json", "review_findings_path", "_review_findings.json"),
+        ):
+            path_value = persisted.get(receipt_key)
+            if path_value and trusted_workspace is not None:
+                try:
+                    path = Path(path_value)
+                    if (path.resolve() == _review_artifact_path(trusted_workspace, suffix)
+                            and path.is_file() and path.read_bytes()):
+                        review_artifacts[key] = str(path)
+                except (OSError, ValueError):
+                    pass
+        if review_artifacts:
+            public["review_artifacts"] = review_artifacts
+        if (generated_draft.get("extra") or {}).get("pwa004_review_draft") is not None:
+            public["review_delivery"] = {
+                "body_available": bool(persisted.get("review_body_available")),
+                "body_delivered": "review_draft_markdown" in review_artifacts,
+                "findings_delivered": "review_findings_json" in review_artifacts,
+                "e2e_validation_failed": validation_error is not None,
+            }
+        print(json.dumps(public, ensure_ascii=False, indent=2))
+        if args.strict and (validation_error is not None or not public["terminal_outcome"]["publication_exists"]):
+            raise SystemExit(1)
+        return
 
     print("\n" + "=" * 80)
     print("Agent-RAG端到端运行完成")

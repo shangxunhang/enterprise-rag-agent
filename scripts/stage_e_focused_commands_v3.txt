@@ -1,0 +1,4 @@
+$env:PYTHONPATH = "backend"
+$env:TEMP = "E:\rag-agent-tmp"
+$env:TMP = "E:\rag-agent-tmp"
+D:\mysoftware\anaconda\envs\enterprise-rag-agent\python.exe -m pytest -q --basetemp=E:\rag-agent-tmp\pytest-stage-e2-focused-v3b --junitxml=E:\rag-agent-runtime\stage_e_focused_junit_v3.xml backend/tests/test_stage_e_writer_governance.py backend/tests/test_stage_e_document_hard_gate.py backend/tests/test_stage_e_claim_audit_integrity.py backend/tests/test_stage_e_claim_classifier_fail_closed.py backend/tests/test_stage_e_cross_section_reuse.py backend/tests/test_stage_e_mandatory_identity_lineage.py backend/tests/test_stage_e_cross_document_run_reuse.py backend/tests/test_stage_e_document_gate_recomputation.py backend/tests/test_stage_e_acceptance_evidence.py backend/tests/test_scheme_writer_decomposition.py

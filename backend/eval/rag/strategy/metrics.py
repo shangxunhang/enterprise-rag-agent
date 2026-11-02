@@ -1,8 +1,10 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：MetricContext、MetricDefinition、_results、_top_results、_matches_any、_primary_gold、_result_id、hit_at_k、recall_at_k、reciprocal_rank等。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Metric registry for online RAG strategy experiments."""
+"""定义在线 RAG 策略实验的指标注册表和计算函数。
+
+本模块只依赖标准化实验输出，不读取文件、不调用检索器，也不持久化结果。指标函数
+通过 ``MetricContext`` 获得黄金样本、运行输出、延迟和 top_k；注册表负责校验指标
+名称、优化方向以及黄金标签是否齐全。
+"""
+
 from __future__ import annotations
 
 import math
@@ -12,20 +14,35 @@ from typing import Any, Callable
 from .schemas import RAGEvalSample
 
 
-# 阅读注释（类）：封装 指标 上下文，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class MetricContext:
-    """封装 指标 上下文，集中封装相关状态、依赖和行为。"""
+    """封装一次样本指标计算所需的只读上下文。
+
+    Attributes:
+        sample: 当前黄金样本。
+        output: 生产检索运行时返回的标准化输出。
+        latency_ms: 当前样本端到端运行耗时。
+        top_k: 本实验用于指标截断的结果数量。
+    """
+
     sample: RAGEvalSample
     output: dict[str, Any]
     latency_ms: float
     top_k: int
 
 
-# 阅读注释（类）：封装 指标 definition，集中封装相关状态、依赖和行为。
 @dataclass(frozen=True)
 class MetricDefinition:
-    """封装 指标 definition，集中封装相关状态、依赖和行为。"""
+    """描述一个可注册指标的元数据和计算函数。
+
+    Attributes:
+        name: 稳定指标名称。
+        direction: ``maximize``、``minimize`` 或 ``neutral``。
+        requires_answer: 指标是否只适用于 ``rag_answer`` 模式。
+        compute: 接收 ``MetricContext`` 并返回分数的纯函数。
+        required_gold: 计算前必须在黄金样本中存在的标签类型。
+    """
+
     name: str
     direction: str
     requires_answer: bool
@@ -33,56 +50,35 @@ class MetricDefinition:
     required_gold: str | None = None
 
 
-# 阅读注释（函数）：处理 结果集合 相关逻辑。
 def _results(context: MetricContext) -> list[dict[str, Any]]:
-    """处理 结果集合 相关逻辑。
+    """从运行输出中提取字典形式的完整召回结果列表。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        list[dict[str, Any]]
-
-    阅读提示:
-        主要直接调用：context.output.get, isinstance。
-    """
+    # 非字典项不符合指标协议，直接过滤，避免后续字段访问异常。
     raw = context.output.get("retrieval_results") or []
     return [item for item in raw if isinstance(item, dict)]
 
 
-# 阅读注释（函数）：处理 top 结果集合 相关逻辑。
 def _top_results(context: MetricContext) -> list[dict[str, Any]]:
-    """处理 top 结果集合 相关逻辑。
+    """按实验 top_k 截断召回结果。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        list[dict[str, Any]]
-
-    阅读提示:
-        主要直接调用：_results。
-    """
     return _results(context)[: context.top_k]
 
 
-# 阅读注释（函数）：处理 matches any 相关逻辑。
 def _matches_any(sample: RAGEvalSample, item: dict[str, Any]) -> bool:
-    """处理 matches any 相关逻辑。
+    """判断一个召回项是否命中任一粒度的黄金标识。
 
-    参数:
-        sample: sample，具体约束请结合类型标注和调用方确认。
-        item: 数据项，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        bool
-
-    阅读提示:
-        主要直接调用：str, item.get, bool, set。
+    文档、父块和子块黄金标签采用 OR 关系：只要召回项在样本提供的任一粒度命中，
+    即视为相关。样本未提供的粒度不会参与判断。
     """
+
+    # 第一步：归一化召回项的多粒度标识。
     doc_id = str(item.get("doc_id") or "")
     parent_id = str(item.get("parent_chunk_id") or "")
-    child_id = str(item.get("child_chunk_id") or item.get("chunk_id") or "")
+    child_id = str(
+        item.get("child_chunk_id") or item.get("chunk_id") or ""
+    )
+
+    # 第二步：分别检查样本实际提供的黄金集合。
     return bool(
         (sample.expected_doc_ids and doc_id in set(sample.expected_doc_ids))
         or (
@@ -96,19 +92,13 @@ def _matches_any(sample: RAGEvalSample, item: dict[str, Any]) -> bool:
     )
 
 
-# 阅读注释（函数）：处理 primary gold 相关逻辑。
 def _primary_gold(sample: RAGEvalSample) -> tuple[str, set[str]]:
-    """处理 primary gold 相关逻辑。
+    """选择用于 recall/NDCG 去重计算的最高精度黄金粒度。
 
-    参数:
-        sample: sample，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        tuple[str, set[str]]
-
-    阅读提示:
-        主要直接调用：set。
+    优先级为子块 > 父块 > 文档。这样当样本同时提供多粒度标签时，不会把同一证据
+    在不同粒度重复计入召回分母。
     """
+
     if sample.expected_child_chunk_ids:
         return "child", set(sample.expected_child_chunk_ids)
     if sample.expected_parent_chunk_ids:
@@ -116,128 +106,100 @@ def _primary_gold(sample: RAGEvalSample) -> tuple[str, set[str]]:
     return "doc", set(sample.expected_doc_ids)
 
 
-# 阅读注释（函数）：处理 结果 标识 相关逻辑。
 def _result_id(item: dict[str, Any], level: str) -> str:
-    """处理 结果 标识 相关逻辑。
+    """按指定黄金粒度提取召回项标识。"""
 
-    参数:
-        item: 数据项，具体约束请结合类型标注和调用方确认。
-        level: level，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：str, item.get。
-    """
     if level == "child":
-        return str(item.get("child_chunk_id") or item.get("chunk_id") or "")
+        return str(
+            item.get("child_chunk_id") or item.get("chunk_id") or ""
+        )
     if level == "parent":
         return str(item.get("parent_chunk_id") or "")
     return str(item.get("doc_id") or "")
 
 
-# 阅读注释（函数）：处理 hit at k 相关逻辑。
 def hit_at_k(context: MetricContext) -> float:
-    """处理 hit at k 相关逻辑。
+    """计算 top-k 中是否至少命中一个黄金结果。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：any, _matches_any, _top_results。
-    """
-    return 1.0 if any(_matches_any(context.sample, item) for item in _top_results(context)) else 0.0
+    # 二值指标：任一相关项出现即为 1，否则为 0。
+    return 1.0 if any(
+        _matches_any(context.sample, item)
+        for item in _top_results(context)
+    ) else 0.0
 
 
-# 阅读注释（函数）：处理 recall at k 相关逻辑。
 def recall_at_k(context: MetricContext) -> float:
-    """处理 recall at k 相关逻辑。
+    """计算主黄金粒度在 top-k 中的去重召回率。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：_primary_gold, _result_id, _top_results, retrieved.discard, len。
-    """
+    # 第一步：选择最细可用黄金粒度；无黄金集合时返回零。
     level, gold = _primary_gold(context.sample)
     if not gold:
         return 0.0
-    retrieved = {_result_id(item, level) for item in _top_results(context)}
+
+    # 第二步：提取 top-k 的同粒度标识并移除空值。
+    retrieved = {
+        _result_id(item, level)
+        for item in _top_results(context)
+    }
     retrieved.discard("")
+
+    # 第三步：使用黄金集合大小作为分母，重复召回不会重复计数。
     return len(retrieved & gold) / len(gold)
 
 
-# 阅读注释（函数）：处理 reciprocal rank 相关逻辑。
 def reciprocal_rank(context: MetricContext) -> float:
-    """处理 reciprocal rank 相关逻辑。
+    """计算第一个相关结果排名的倒数。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：enumerate, _top_results, _matches_any。
-    """
+    # 从排名 1 开始扫描，首次命中后立即返回；完全未命中返回零。
     for rank, item in enumerate(_top_results(context), start=1):
         if _matches_any(context.sample, item):
             return 1.0 / rank
     return 0.0
 
 
-# 阅读注释（函数）：处理 ndcg at k 相关逻辑。
 def ndcg_at_k(context: MetricContext) -> float:
-    """处理 ndcg at k 相关逻辑。
+    """计算二值相关性的 NDCG@k。
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：_primary_gold, set, enumerate, _top_results, _result_id, seen.add, math.log2, min。
+    同一黄金标识只在首次出现时产生 gain，避免重复块通过多次召回抬高 DCG。
     """
+
+    # 第一步：选择主黄金粒度并拒绝空黄金集合。
     level, gold = _primary_gold(context.sample)
     if not gold:
         return 0.0
+
+    # 第二步：按排名累计去重相关项的折损收益。
     seen: set[str] = set()
     dcg = 0.0
     for rank, item in enumerate(_top_results(context), start=1):
         candidate_id = _result_id(item, level)
-        gain = 1.0 if candidate_id in gold and candidate_id not in seen else 0.0
+        gain = (
+            1.0
+            if candidate_id in gold and candidate_id not in seen
+            else 0.0
+        )
         if gain:
             seen.add(candidate_id)
             dcg += gain / math.log2(rank + 1)
+
+    # 第三步：理想排序最多容纳 min(|gold|, k) 个相关项。
     ideal_hits = min(len(gold), context.top_k)
-    idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
+    idcg = sum(
+        1.0 / math.log2(rank + 1)
+        for rank in range(1, ideal_hits + 1)
+    )
+
     return dcg / idcg if idcg else 0.0
 
 
-# 阅读注释（函数）：处理 上下文 keyword hit 相关逻辑。
 def context_keyword_hit(context: MetricContext) -> float:
-    """处理 上下文 keyword hit 相关逻辑。
+    """计算黄金关键词在 top-k 召回文本中的字面命中比例。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：_top_results, item.get, parts.append, str, casefold, join, sum, keyword.casefold。
-    """
     keywords = context.sample.expected_keywords
     if not keywords:
         return 0.0
+
+    # 第一步：每个召回项只选择首个可用文本字段，避免同一内容重复拼接。
     parts: list[str] = []
     for item in _top_results(context):
         for field in ("text", "parent_text", "child_text"):
@@ -245,158 +207,111 @@ def context_keyword_hit(context: MetricContext) -> float:
             if value:
                 parts.append(str(value))
                 break
+
+    # 第二步：使用 casefold 做大小写无关字面匹配。
     joined = "\n".join(parts).casefold()
-    return sum(1 for keyword in keywords if keyword.casefold() in joined) / len(keywords)
+    return sum(
+        1
+        for keyword in keywords
+        if keyword.casefold() in joined
+    ) / len(keywords)
 
 
-# 阅读注释（函数）：处理 answer keyword hit 相关逻辑。
 def answer_keyword_hit(context: MetricContext) -> float | None:
-    """处理 answer keyword hit 相关逻辑。
+    """计算回答对黄金回答关键词的字面覆盖比例。
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float | None
-
-    阅读提示:
-        主要直接调用：casefold, str, context.output.get, sum, keyword.casefold, len。
+    没有 answer_keywords 时返回 ``None``，表示该指标不适用，而不是零分。
     """
+
     keywords = context.sample.answer_keywords
     if not keywords:
         return None
+
     answer = str(context.output.get("answer") or "").casefold()
-    return sum(1 for keyword in keywords if keyword.casefold() in answer) / len(keywords)
+    return sum(
+        1
+        for keyword in keywords
+        if keyword.casefold() in answer
+    ) / len(keywords)
 
 
-# 阅读注释（函数）：处理 引用 count 相关逻辑。
 def citation_count(context: MetricContext) -> float:
-    """处理 引用 count 相关逻辑。
+    """返回输出中的结构化引用数量。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float, len, context.output.get。
-    """
     return float(len(context.output.get("citations") or []))
 
 
-# 阅读注释（函数）：处理 结果 count 相关逻辑。
 def result_count(context: MetricContext) -> float:
-    """处理 结果 count 相关逻辑。
+    """返回未截断的有效召回结果数量。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float, len, _results。
-    """
     return float(len(_results(context)))
 
 
-# 阅读注释（函数）：处理 latency ms 相关逻辑。
 def latency_ms(context: MetricContext) -> float:
-    """处理 latency ms 相关逻辑。
+    """返回当前样本端到端延迟毫秒数。"""
 
-    参数:
-        context: 当前执行上下文。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float。
-    """
     return float(context.latency_ms)
 
 
-# 阅读注释（类）：封装 指标 注册表，集中封装相关状态、依赖和行为。
 class MetricRegistry:
-    """封装 指标 注册表，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 MetricRegistry，保存运行所需的依赖、配置或状态。
-    def __init__(self) -> None:
-        """初始化 MetricRegistry，保存运行所需的依赖、配置或状态。
+    """注册指标定义并校验实验请求与黄金样本兼容性。"""
 
-        返回:
-            None
-        """
+    def __init__(self) -> None:
+        """创建空指标映射。"""
+
         self._items: dict[str, MetricDefinition] = {}
 
-    # 阅读注释（函数）：注册 MetricRegistry。
     def register(self, definition: MetricDefinition) -> None:
-        """注册 MetricRegistry。
+        """注册一个名称唯一且方向合法的指标。"""
 
-        参数:
-            definition: definition，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：ValueError。
-        """
+        # 第一步：名称重复会使配置解析结果不确定，直接拒绝。
         if definition.name in self._items:
             raise ValueError(f"duplicate metric: {definition.name}")
-        if definition.direction not in {"maximize", "minimize", "neutral"}:
-            raise ValueError(f"invalid metric direction: {definition.direction}")
+
+        # 第二步：方向只允许三种稳定枚举，供报告解释和未来排序使用。
+        if definition.direction not in {
+            "maximize",
+            "minimize",
+            "neutral",
+        }:
+            raise ValueError(
+                f"invalid metric direction: {definition.direction}"
+            )
+
         self._items[definition.name] = definition
 
-    # 阅读注释（函数）：处理 require 相关逻辑。
     def require(self, names: list[str]) -> list[MetricDefinition]:
-        """处理 require 相关逻辑。
+        """按请求顺序解析指标定义，并拒绝未知名称。"""
 
-        参数:
-            names: names，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            list[MetricDefinition]
-
-        阅读提示:
-            主要直接调用：ValueError, join。
-        """
         missing = [name for name in names if name not in self._items]
         if missing:
             raise ValueError(f"unknown metrics: {', '.join(missing)}")
         return [self._items[name] for name in names]
 
-    # 阅读注释（函数）：处理 directions 相关逻辑。
     def directions(self, names: list[str]) -> dict[str, str]:
-        """处理 directions 相关逻辑。
+        """返回请求指标的优化方向映射。"""
 
-        参数:
-            names: names，具体约束请结合类型标注和调用方确认。
+        return {
+            item.name: item.direction
+            for item in self.require(names)
+        }
 
-        返回:
-            dict[str, str]
+    def validate_samples(
+        self,
+        names: list[str],
+        samples: list[RAGEvalSample],
+    ) -> None:
+        """检查所有样本是否提供所选指标要求的黄金标签。
 
-        阅读提示:
-            主要直接调用：self.require。
+        Raises:
+            ValueError: 任一指标缺少所需黄金标签时，汇总最多五个样本 ID 后抛出。
         """
-        return {item.name: item.direction for item in self.require(names)}
 
-    # 阅读注释（函数）：校验 samples。
-    def validate_samples(self, names: list[str], samples: list[RAGEvalSample]) -> None:
-        """校验 samples。
-
-        参数:
-            names: names，具体约束请结合类型标注和调用方确认。
-            samples: samples，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.require, join, len, errors.append, ValueError。
-        """
+        # 第一步：先解析指标定义，确保名称全部合法。
         definitions = self.require(names)
         errors: list[str] = []
+
+        # 第二步：按指标声明的 required_gold 类型筛查缺失样本。
         for definition in definitions:
             if definition.required_gold == "retrieval_ids":
                 missing = [
@@ -410,50 +325,102 @@ class MetricRegistry:
                 ]
             elif definition.required_gold == "expected_keywords":
                 missing = [
-                    sample.sample_id for sample in samples if not sample.expected_keywords
+                    sample.sample_id
+                    for sample in samples
+                    if not sample.expected_keywords
                 ]
             elif definition.required_gold == "answer_keywords":
                 missing = [
-                    sample.sample_id for sample in samples if not sample.answer_keywords
+                    sample.sample_id
+                    for sample in samples
+                    if not sample.answer_keywords
                 ]
             else:
                 missing = []
+
+            # 第三步：错误信息只预览前五个 ID，避免大型数据集异常无限膨胀。
             if missing:
                 preview = ", ".join(missing[:5])
                 suffix = "..." if len(missing) > 5 else ""
                 errors.append(
-                    f"metric {definition.name} missing {definition.required_gold} "
-                    f"for samples: {preview}{suffix}"
+                    f"metric {definition.name} missing "
+                    f"{definition.required_gold} for samples: "
+                    f"{preview}{suffix}"
                 )
+
+        # 第四步：一次性报告全部指标缺失问题，减少反复修数据的轮次。
         if errors:
             raise ValueError("; ".join(errors))
 
 
-# 阅读注释（函数）：构建 default 指标 注册表。
 def build_default_metric_registry() -> MetricRegistry:
-    """构建 default 指标 注册表。
+    """构建项目默认策略指标注册表。"""
 
-    返回:
-        MetricRegistry
-
-    阅读提示:
-        主要直接调用：MetricRegistry, MetricDefinition, registry.register。
-    """
     registry = MetricRegistry()
+
+    # 指标定义同时声明方向、是否需要回答以及所需黄金标签类型。
     for definition in (
-        MetricDefinition("hit_at_k", "maximize", False, hit_at_k, "retrieval_ids"),
-        MetricDefinition("recall_at_k", "maximize", False, recall_at_k, "retrieval_ids"),
-        MetricDefinition("mrr", "maximize", False, reciprocal_rank, "retrieval_ids"),
-        MetricDefinition("ndcg_at_k", "maximize", False, ndcg_at_k, "retrieval_ids"),
         MetricDefinition(
-            "context_keyword_hit", "maximize", False, context_keyword_hit, "expected_keywords"
+            "hit_at_k",
+            "maximize",
+            False,
+            hit_at_k,
+            "retrieval_ids",
         ),
         MetricDefinition(
-            "answer_keyword_hit", "maximize", True, answer_keyword_hit, "answer_keywords"
+            "recall_at_k",
+            "maximize",
+            False,
+            recall_at_k,
+            "retrieval_ids",
         ),
-        MetricDefinition("citation_count", "neutral", True, citation_count),
-        MetricDefinition("result_count", "neutral", False, result_count),
-        MetricDefinition("latency_ms", "minimize", False, latency_ms),
+        MetricDefinition(
+            "mrr",
+            "maximize",
+            False,
+            reciprocal_rank,
+            "retrieval_ids",
+        ),
+        MetricDefinition(
+            "ndcg_at_k",
+            "maximize",
+            False,
+            ndcg_at_k,
+            "retrieval_ids",
+        ),
+        MetricDefinition(
+            "context_keyword_hit",
+            "maximize",
+            False,
+            context_keyword_hit,
+            "expected_keywords",
+        ),
+        MetricDefinition(
+            "answer_keyword_hit",
+            "maximize",
+            True,
+            answer_keyword_hit,
+            "answer_keywords",
+        ),
+        MetricDefinition(
+            "citation_count",
+            "neutral",
+            True,
+            citation_count,
+        ),
+        MetricDefinition(
+            "result_count",
+            "neutral",
+            False,
+            result_count,
+        ),
+        MetricDefinition(
+            "latency_ms",
+            "minimize",
+            False,
+            latency_ms,
+        ),
     ):
         registry.register(definition)
+
     return registry

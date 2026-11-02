@@ -1,19 +1,23 @@
-# =============================================================================
-# 中文阅读说明：章节级检索 Query Builder。
-# 只负责把 ProjectInput + section title 转换为普通检索或恢复检索查询，不执行 RAG。
-# =============================================================================
-"""Build section-aware retrieval queries for scheme generation."""
+"""把 ProjectInput 与章节标题转换为确定性的普通或恢复检索查询。
+
+该服务只组织查询意图，不执行 RAG。它会过滤 ``unspecified``、默认项目等占位值，优先
+使用真实项目类型/名称，必要时才从用户请求或文档标题提取项目标签。
+"""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Optional
 
+from apps.enterprise_document.schemas.pre_write_admission import (
+    EvidenceRequirementsSnapshotSchema,
+)
+from apps.enterprise_document.schemas.pre_write_control import RecoveryTargetProjection
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 
 
 class SectionRetrievalQueryBuilder:
-    """Build deterministic section/recovery queries from project context."""
+    """为不同章节附加领域提示，并在恢复模式强调可直接绑定引用的原文证据。"""
 
     @staticmethod
     def build(
@@ -22,6 +26,7 @@ class SectionRetrievalQueryBuilder:
         *,
         recovery: bool = False,
     ) -> str:
+        """构造章节检索 Query；``recovery=True`` 时收紧到确定性陈述支撑证据。"""
         placeholder_values = {
             "",
             "unspecified",
@@ -85,4 +90,75 @@ class SectionRetrievalQueryBuilder:
         return (
             f"{project_label}建设方案的“{section_title}”章节：{hints}。"
             f"{recovery_clause}"
+        )
+
+    @staticmethod
+    def build_recovery_target_query(
+        target: RecoveryTargetProjection,
+        requirements: EvidenceRequirementsSnapshotSchema,
+        *,
+        section_title: str | None = None,
+    ) -> str:
+        """Render a Step-5 query from the frozen typed Recovery target only.
+
+        Requirement/criterion wording is dereferenced mechanically from the exact
+        canonical Requirements Snapshot named by ``target.requirements_sha256``.
+        The optional section title is contextual phrasing only; it cannot add a
+        blocker, requirement, domain hint, or other Recovery authority.
+        """
+
+        if target.requirements_sha256 != requirements.requirements_sha256:
+            raise ValueError("Recovery target Requirements Snapshot is stale")
+
+        requirement_by_id = {
+            item.requirement_id: item for item in requirements.requirements
+        }
+        criterion_by_id = {
+            criterion.criterion_id: criterion
+            for requirement in requirements.requirements
+            for criterion in requirement.criteria
+        }
+        blocking_requirements = tuple(target.blocking_requirement_ids)
+        blocking_criteria = tuple(target.blocking_criterion_ids)
+        conflict_criteria = tuple(target.unresolved_conflict_criterion_ids)
+        indeterminate_requirements = tuple(target.indeterminate_requirement_ids)
+        indeterminate_criteria = tuple(target.indeterminate_criterion_ids)
+
+        unresolved_requirement_ids = (
+            set(blocking_requirements) | set(indeterminate_requirements)
+        ) - set(requirement_by_id)
+        if unresolved_requirement_ids:
+            raise ValueError("Recovery target requirement id cannot be resolved")
+        unresolved_criterion_ids = (
+            set(blocking_criteria)
+            | set(conflict_criteria)
+            | set(indeterminate_criteria)
+        ) - set(criterion_by_id)
+        if unresolved_criterion_ids:
+            raise ValueError("Recovery target criterion id cannot be resolved")
+
+        lines: list[str] = []
+        for requirement_id in blocking_requirements:
+            lines.append(f"要求[{requirement_id}]")
+        for criterion_id in blocking_criteria:
+            criterion = criterion_by_id[criterion_id]
+            lines.append(f"判据[{criterion_id}]：{criterion.criterion}")
+        for criterion_id in conflict_criteria:
+            criterion = criterion_by_id[criterion_id]
+            lines.append(f"冲突判据[{criterion_id}]：{criterion.criterion}")
+        for criterion_id in indeterminate_criteria:
+            criterion = criterion_by_id[criterion_id]
+            lines.append(f"不确定判据[{criterion_id}]：{criterion.criterion}")
+
+        # A current DENY projection should carry at least one stable blocker.  Do
+        # not fall back to caller/project heuristics if the typed target is empty.
+        if not lines:
+            raise ValueError("RecoveryTargetProjection contains no resolvable blocker")
+
+        context = str(section_title or "").strip()
+        prefix = f"针对“{context}”章节，" if context else ""
+        return (
+            f"{prefix}仅检索并补充以下已冻结证据缺口："
+            + "；".join(lines)
+            + "。不得扩展到未列出的要求或判据；优先返回可直接绑定引用的原文证据。"
         )

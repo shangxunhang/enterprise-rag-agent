@@ -8,6 +8,7 @@ from queue import Empty, Queue
 import threading
 import time
 import traceback
+from core.diagnostics import current_diagnostics
 from typing import Any, Callable, Literal
 
 from core.runtime.execution_control import (
@@ -48,7 +49,7 @@ class WorkflowNodeExecutionOutcome:
 
 
 class WorkflowNodeExecutionRunner:
-    """Own worker, deadline, cancellation, side-effect and idle lifecycles."""
+    """Own tracked workers, elapsed observation, explicit cancel and commits."""
 
     def __init__(
         self,
@@ -79,7 +80,7 @@ class WorkflowNodeExecutionRunner:
 
     def wait_for_idle(self, timeout_seconds: float | None = None) -> bool:
         timeout = None if timeout_seconds is None else max(0.0, timeout_seconds)
-        with self._worker_condition:
+        with current_diagnostics().span("worker.wait_for_idle", "DRAIN_WAIT"), self._worker_condition:
             return self._worker_condition.wait_for(
                 lambda: (
                     not self._active_worker_controls
@@ -148,7 +149,7 @@ class WorkflowNodeExecutionRunner:
         thread_name: str,
         attempt_succeeded: Callable[[Any], bool],
     ) -> WorkflowNodeExecutionOutcome:
-        """Run one callback without allowing a late worker to commit."""
+        """Keep healthy work running; revoke late commits only after cancellation."""
 
         timeout = max(0.001, float(timeout_seconds))
         started_at = self.now_iso()
@@ -165,7 +166,9 @@ class WorkflowNodeExecutionRunner:
         def invoke() -> None:
             try:
                 def run_callback():
-                    with activate_execution_control(control):
+                    diagnostics = current_diagnostics()
+                    diagnostics.emit({"event_type": "WORKER_START", "unit_id": "F02", "operation_ref": execution_id, "category": "WORKER", "worker_identity": execution_id})
+                    with diagnostics.span(execution_id, "WORKER", unit_id="F02", worker_identity=execution_id), activate_execution_control(control):
                         return callback(control)
 
                 value = context.run(run_callback)
@@ -175,6 +178,7 @@ class WorkflowNodeExecutionRunner:
                     ("error", (exc, traceback.format_exc()), time.monotonic())
                 )
             finally:
+                context.run(lambda: current_diagnostics().emit({"event_type": "WORKER_FINISH", "unit_id": "F02", "operation_ref": execution_id, "category": "WORKER", "worker_identity": execution_id}))
                 self._worker_finished(execution_id)
 
         worker = threading.Thread(
@@ -183,26 +187,32 @@ class WorkflowNodeExecutionRunner:
             daemon=True,
         )
         self._register_worker(execution_id, control)
+        current_diagnostics().emit({"event_type": "WORKER_SUBMIT", "unit_id": "F02", "operation_ref": execution_id, "category": "QUEUE", "worker_identity": execution_id})
         try:
             worker.start()
         except BaseException:
             self._worker_finished(execution_id)
             raise
-        worker.join(timeout=timeout)
+        with current_diagnostics().span(execution_id, "WORKER_JOIN_WAIT", worker_identity=execution_id):
+            worker.join(timeout=min(timeout, 0.05))
+            while worker.is_alive() and not control.is_cancelled:
+                # Aggregate time is observable, not a terminal fact. Bounded
+                # joins keep explicit cancellation responsive while the worker
+                # remains registered until its actual exit.
+                worker.join(timeout=0.05)
         latency_ms = int(round((time.monotonic() - started) * 1000))
         worker_still_active = worker.is_alive()
 
         try:
             kind, payload, completed_monotonic = result_queue.get_nowait()
         except Empty:
-            if worker_still_active:
-                control.cancel("deadline_exceeded")
+            if control.is_cancelled:
                 return self._outcome(
-                    "timeout",
+                    "cancelled",
                     started_at=started_at,
                     latency_ms=latency_ms,
                     control=control,
-                    worker_still_active=True,
+                    worker_still_active=worker_still_active,
                 )
             return self._outcome(
                 "no_result",
@@ -211,16 +221,6 @@ class WorkflowNodeExecutionRunner:
                 control=control,
             )
 
-        if completed_monotonic >= control.deadline_monotonic:
-            control.cancel("deadline_exceeded")
-        if control.cancel_reason == "deadline_exceeded":
-            return self._outcome(
-                "timeout",
-                started_at=started_at,
-                latency_ms=latency_ms,
-                control=control,
-                worker_still_active=worker_still_active,
-            )
         if control.is_cancelled:
             return self._outcome(
                 "cancelled",
@@ -237,11 +237,7 @@ class WorkflowNodeExecutionRunner:
             )
         except WorkflowExecutionCancelled as exc:
             return self._outcome(
-                (
-                    "timeout"
-                    if control.cancel_reason == "deadline_exceeded"
-                    else "cancelled"
-                ),
+                "cancelled",
                 started_at=started_at,
                 latency_ms=latency_ms,
                 control=control,

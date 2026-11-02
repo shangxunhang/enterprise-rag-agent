@@ -1,0 +1,31 @@
+schema_version: post_write_execution_config_v1
+config_id: post-write-target-v1
+config_version: v1
+
+technical_retry:
+  profile_id: post-write-technical-retry
+  profile_version: v1
+  max_attempts: 2
+  retryable_failure_categories:
+    - TIMEOUT
+    - TRANSIENT_PROVIDER
+
+faithfulness:
+  profile_id: faithfulness-default
+  profile_version: v1
+  max_window_claims: 16
+  max_window_evidence_members: 32
+  model_context_budget: 12000
+
+consistency:
+  profile_id: consistency-default
+  profile_version: v1
+  small_n_binary_member_limit: 8
+  max_binary_batch_size: 32
+  composite_max_arity: 3
+  composite_candidate_budget: 24
+  large_n_candidate_source_policy: high-recall-union-v1
+  bridge_policy: cross-partition-required-v1
+  second_pass_trigger_policy: ambiguity-or-unresolved-v1
+  model_context_budget: 12000
+  procedure_contract_version: consistency-procedure-v1

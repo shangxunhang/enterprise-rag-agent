@@ -1,23 +1,7 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：FaissRetriever。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/retriever.py
-================
+"""Mini-RAG 使用的平面 FAISS 向量检索器。
 
-检索模块。
-
-职责：
-1. 加载 FAISS index
-2. 加载 chunk metadata
-3. 使用 embedder 将 query 编码成向量
-4. 在 FAISS 中检索 top-k 相似 chunk
-5. 根据 FAISS 返回的 indices 找回原始 chunk 信息
-
-注意：
-FAISS 只返回向量编号和相似度分数。
-真正的 chunk 文本需要从 chunk_meta.json 中按编号取回。
+FAISS 只保存向量和编号，正文及文档元数据来自同批生成的 ``chunk_meta``。初始化时必须
+验证两者数量一致，检索时再按 FAISS 返回的索引位置恢复 Chunk 并构造 v1 结果。
 """
 
 from pathlib import Path
@@ -30,7 +14,6 @@ from rag.Index.indexer import load_faiss_index, load_chunk_meta
 from rag.schema.Retrieval_Result_Schema import build_retrieval_result
 
 
-# 阅读注释（类）：封装 faiss retriever，集中封装相关状态、依赖和行为。
 class FaissRetriever:
     """
     基于 FAISS 的向量检索器。
@@ -38,7 +21,6 @@ class FaissRetriever:
     它不负责构建索引，只负责加载已有索引并检索。
     """
 
-    # 阅读注释（函数）：初始化 FaissRetriever，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         index_path: Path,
@@ -62,7 +44,6 @@ class FaissRetriever:
 
         self._check_index_and_meta()
 
-    # 阅读注释（函数）：检查 索引 and meta。
     def _check_index_and_meta(self) -> None:
         """
         检查 FAISS index 中的向量数量是否和 chunk_meta 数量一致。
@@ -76,7 +57,6 @@ class FaissRetriever:
                 f"len(chunk_meta)={len(self.chunk_meta)}"
             )
 
-    # 阅读注释（函数）：搜索 FaissRetriever。
     def search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
         """
         根据 query 检索 top-k chunk。

@@ -1,0 +1,84 @@
+{
+  "schema_version": "model_capabilities_v1",
+  "revision": "post-step7-20260913-v1",
+  "entries": [
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-flash",
+      "endpoint": "https://api.deepseek.com",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "revision": "2026-09-13: declared conservative decimal planning caps; published 1M context, 384K output; not an empirical tokenizer boundary"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-flash",
+      "endpoint": "https://api.deepseek.com/v1",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "revision": "2026-09-13: declared conservative decimal planning caps; published 1M context, 384K output; not an empirical tokenizer boundary"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4-flash",
+      "endpoint": "https://api.deepseek.com",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "revision": "2026-09-13: declared conservative decimal planning caps; published 1M context, 384K output; not an empirical tokenizer boundary"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4-flash",
+      "endpoint": "https://api.deepseek.com/v1",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "revision": "2026-09-13: declared conservative decimal planning caps; published 1M context, 384K output; not an empirical tokenizer boundary"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4-flash-vision-exp",
+      "endpoint": "https://api.deepseek.com",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "revision": "2026-09-13: declared conservative decimal planning caps; published 1M context, 384K output; not an empirical tokenizer boundary"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4-flash-vision-exp",
+      "endpoint": "https://api.deepseek.com/v1",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "revision": "2026-09-13: declared conservative decimal planning caps; published 1M context, 384K output; not an empirical tokenizer boundary"
+    },
+    {
+      "provider": "local_huggingface",
+      "model": "Qwen2.5-1.5B-Instruct",
+      "context_window": 32768,
+      "max_output_tokens": 8192,
+      "source": "Qwen2.5 model config max_position_embeddings; existing local operational output ceiling",
+      "revision": "2026-09-13: declared local planning capability"
+    },
+    {
+      "provider": "local_huggingface",
+      "model": "Qwen2.5-3B-Instruct",
+      "context_window": 32768,
+      "max_output_tokens": 8192,
+      "source": "Qwen2.5 model config max_position_embeddings; existing local operational output ceiling",
+      "revision": "2026-09-13: declared local planning capability"
+    },
+    {
+      "provider": "local_huggingface",
+      "model": "Qwen2.5-7B-Instruct-GPTQ-Int4",
+      "context_window": 32768,
+      "max_output_tokens": 8192,
+      "source": "Qwen2.5 model config max_position_embeddings; existing local operational output ceiling",
+      "revision": "2026-09-13: declared local planning capability"
+    }
+  ]
+}

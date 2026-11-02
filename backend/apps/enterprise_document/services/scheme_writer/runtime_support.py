@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SchemeWriterRuntimeSupport。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Runtime support shared by SchemeWriter services."""
+"""SchemeWriter 拆分服务共享的时间与结构化错误兼容入口。"""
 
 import traceback
 from typing import Optional
@@ -12,26 +8,16 @@ from schemas.common import ErrorSchema
 from schemas.failure import FailureCategory
 
 
-# 阅读注释（类）：封装 scheme writer 运行时 support，集中封装相关状态、依赖和行为。
 class SchemeWriterRuntimeSupport:
-    """Compatibility helpers backed by the canonical runtime error factory."""
+    """以统一 ErrorFactory 替代旧 Agent 内部散落的时间和异常构造代码。"""
 
     _runtime_error_factory = ErrorFactory()
 
-    # 阅读注释（函数）：处理 now iso 相关逻辑。
     @classmethod
     def now_iso(cls) -> str:
-        """处理 now iso 相关逻辑。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：cls._runtime_error_factory.clock.now_iso。
-        """
+        """返回与错误工厂共用时钟的 ISO 时间。"""
         return cls._runtime_error_factory.clock.now_iso()
 
-    # 阅读注释（函数）：处理 错误 相关逻辑。
     @classmethod
     def error(
         cls,
@@ -45,20 +31,10 @@ class SchemeWriterRuntimeSupport:
         requires_new_input: bool = False,
         user_message: Optional[str] = None,
     ) -> ErrorSchema:
-        """处理 错误 相关逻辑。
+        """把异常或校验消息转换为 SchemeWriter 来源的结构化错误。
 
-        参数:
-            code: code，具体约束请结合类型标注和调用方确认。
-            exc_or_message: exc or 消息，具体约束请结合类型标注和调用方确认。
-            node: node，具体约束请结合类型标注和调用方确认。
-            retryable: retryable，具体约束请结合类型标注和调用方确认。
-            user_message: user 消息，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ErrorSchema
-
-        阅读提示:
-            主要直接调用：isinstance, str, traceback.format_exc, cls._runtime_error_factory.create。
+        Exception 会保留真实类型和当前堆栈；纯字符串按运行时校验错误处理。失败类别仍需由
+        最近事实源明确提供，避免在兼容工具中根据错误文案猜测。
         """
         if isinstance(exc_or_message, Exception):
             message = str(exc_or_message)

@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：后端业务模块。
-# 主要定义：Clock、SystemClock。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Clock abstraction used to make runtime code deterministic in tests."""
+"""提供可替换的墙上时钟抽象。
+
+运行时代码通过 ``Clock`` 获取可持久化时间戳，而不是直接调用 ``datetime.now``。
+测试可注入固定时钟，从而稳定验证状态迁移、轨迹顺序和超时边界。耗时测量不使用
+本模块，而使用基于单调时钟的 ``core.runtime.timing``。
+"""
 
 from __future__ import annotations
 
@@ -10,25 +11,24 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 
-# 阅读注释（类）：封装 clock，集中封装相关状态、依赖和行为。
 class Clock(Protocol):
-    """封装 clock，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：处理 now iso 相关逻辑。
+    """声明生成当前 UTC 时间字符串的最小接口。"""
+
     def now_iso(self) -> str:
-        """Return the current UTC time in ISO-8601 format."""
+        """返回带时区信息的当前 UTC ISO-8601 时间字符串。"""
+
+        ...
 
 
-# 阅读注释（类）：封装 system clock，集中封装相关状态、依赖和行为。
 class SystemClock:
-    """封装 system clock，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：处理 now iso 相关逻辑。
+    """使用操作系统当前时间实现 ``Clock`` 协议。"""
+
     def now_iso(self) -> str:
-        """处理 now iso 相关逻辑。
+        """读取当前 UTC 时间并编码为 ISO-8601 字符串。
 
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：isoformat, datetime.now。
+        Returns:
+            例如 ``2026-07-27T08:00:00+00:00`` 的带时区字符串。
         """
+
+        # 明确指定 UTC，避免无时区 datetime 在跨机器持久化后产生歧义。
         return datetime.now(timezone.utc).isoformat()

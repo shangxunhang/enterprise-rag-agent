@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：RAGEvaluator。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Evaluator for task-level RAG capture records."""
+"""把一条 DataCapture 风格的 RAG 样本转换为可解释评测结果。"""
 
 from __future__ import annotations
 
@@ -14,41 +10,45 @@ from .metrics import (
     completeness_proxy,
     context_precision,
     context_recall_proxy,
-    faithfulness_proxy,
     extract_answer,
     extract_context_text,
     extract_query,
+    faithfulness_proxy,
     weighted_overall,
 )
 from .schemas import RAGEvalResultSchema
 
 
-# 阅读注释（类）：封装 ragevaluator，集中封装相关状态、依赖和行为。
 class RAGEvaluator:
-    """RAGAS-style lightweight evaluator.
+    """使用确定性词法代理指标评估任务级 RAG 采集记录。
 
-    Input is one DataCaptureRecord-like dict from:
-    data/captures/eval_samples/<run_id>_eval_samples.jsonl
+    输入通常来自 ``data/captures/eval_samples/<run_id>_eval_samples.jsonl``。
+    评估器兼容显式顶层字段和旧版 ``eval_sample`` 嵌套字段，但计算时只使用一份
+    归一化数据，避免同一证据被重复计数。
     """
 
-    # 阅读注释（函数）：评估 RAGEvaluator。
-    def evaluate(self, sample: Dict[str, Any], sample_index: int = 1) -> RAGEvalResultSchema:
-        """评估 RAGEvaluator。
+    def evaluate(
+        self,
+        sample: Dict[str, Any],
+        sample_index: int = 1,
+    ) -> RAGEvalResultSchema:
+        """计算单个采集样本的六项指标、总分和复核标记。
 
-        参数:
-            sample: sample，具体约束请结合类型标注和调用方确认。
-            sample_index: sample 索引，具体约束请结合类型标注和调用方确认。
+        Args:
+            sample: DataCaptureRecord 风格字典，可包含查询、回答、上下文、召回块、
+                引用、黄金章节和来源元数据。
+            sample_index: 当样本缺少 ``record_id`` 时生成稳定回退标识所用的序号。
 
-        返回:
-            RAGEvalResultSchema
-
-        阅读提示:
-            主要直接调用：extract_query, extract_answer, extract_context_text, sample.get, isinstance, eval_sample.get, label.get, context_precision。
+        Returns:
+            完整 ``RAGEvalResultSchema``，包含指标解释、规模统计和质量标记。
         """
+
+        # 第一步：通过统一提取函数兼容不同采集版本中的查询、回答和上下文字段。
         query = extract_query(sample)
         answer = extract_answer(sample)
         context_text = extract_context_text(sample)
 
+        # 第二步：优先使用顶层显式召回与引用；旧记录再回退到 eval_sample 内部。
         retrieved_chunks = sample.get("retrieved_chunks") or []
         citations = sample.get("citations") or []
         eval_sample = sample.get("eval_sample") or {}
@@ -58,6 +58,7 @@ class RAGEvaluator:
         if not citations and isinstance(eval_sample, dict):
             citations = eval_sample.get("citations") or []
 
+        # 第三步：从评测样本读取结构完整度要求，旧记录可从 label 回退恢复。
         required_sections: List[str] = []
         if isinstance(eval_sample, dict):
             required_sections = eval_sample.get("required_sections") or []
@@ -66,43 +67,62 @@ class RAGEvaluator:
             if isinstance(label, dict):
                 required_sections = label.get("required_sections") or []
 
-        m_context_precision = context_precision(query=query, retrieved_chunks=retrieved_chunks)
-        m_context_recall = context_recall_proxy(
+        # 第四步：分别计算检索精度、召回代理、忠实度代理和回答相关性代理。
+        context_precision_metric = context_precision(
+            query=query,
+            retrieved_chunks=retrieved_chunks,
+        )
+        context_recall_metric = context_recall_proxy(
             query=query,
             context_text=context_text,
             retrieved_chunks=retrieved_chunks,
         )
-        m_faithfulness = faithfulness_proxy(answer=answer, context_text=context_text)
-        m_answer_relevance = answer_relevance_proxy(query=query, answer=answer)
-        m_citation_coverage = citation_coverage(
+        faithfulness_metric = faithfulness_proxy(
+            answer=answer,
+            context_text=context_text,
+        )
+        answer_relevance_metric = answer_relevance_proxy(
+            query=query,
+            answer=answer,
+        )
+
+        # 第五步：独立计算引用覆盖和章节完整度，避免被文本重叠分数间接替代。
+        citation_coverage_metric = citation_coverage(
             answer=answer,
             citations=citations,
             retrieved_chunks=retrieved_chunks,
         )
-        m_completeness = completeness_proxy(answer=answer, required_sections=required_sections)
+        completeness_metric = completeness_proxy(
+            answer=answer,
+            required_sections=required_sections,
+        )
 
+        # 第六步：按稳定指标名称构造权重输入并计算归一化总分。
         metric_map = {
-            "context_precision": m_context_precision,
-            "context_recall_proxy": m_context_recall,
-            "faithfulness_proxy": m_faithfulness,
-            "answer_relevance_proxy": m_answer_relevance,
-            "citation_coverage": m_citation_coverage,
-            "completeness_proxy": m_completeness,
+            "context_precision": context_precision_metric,
+            "context_recall_proxy": context_recall_metric,
+            "faithfulness_proxy": faithfulness_metric,
+            "answer_relevance_proxy": answer_relevance_metric,
+            "citation_coverage": citation_coverage_metric,
+            "completeness_proxy": completeness_metric,
         }
         overall = weighted_overall(metric_map)
 
+        # 第七步：根据关键维度阈值生成可筛选质量标记。
         quality_flags: List[str] = []
-        if m_context_precision.score < 0.3:
+        if context_precision_metric.score < 0.3:
             quality_flags.append("low_context_precision")
-        if m_faithfulness.score < 0.3:
+        if faithfulness_metric.score < 0.3:
             quality_flags.append("low_faithfulness_proxy")
-        if m_citation_coverage.score < 0.5:
+        if citation_coverage_metric.score < 0.5:
             quality_flags.append("low_citation_coverage")
         if overall < 0.5:
             quality_flags.append("need_human_review")
 
+        # 第八步：优先沿用采集记录身份，缺失时按输入顺序生成回退样本标识。
         sample_id = sample.get("record_id") or f"sample_{sample_index:04d}"
 
+        # 第九步：返回结构化结果；人工复核采用更保守的 0.75 阈值或任一质量标记。
         return RAGEvalResultSchema(
             sample_id=sample_id,
             task_id=sample.get("task_id"),
@@ -110,12 +130,12 @@ class RAGEvaluator:
             capture_type=sample.get("capture_type"),
             query=query,
             answer=answer,
-            context_precision=m_context_precision,
-            context_recall_proxy=m_context_recall,
-            faithfulness_proxy=m_faithfulness,
-            answer_relevance_proxy=m_answer_relevance,
-            citation_coverage=m_citation_coverage,
-            completeness_proxy=m_completeness,
+            context_precision=context_precision_metric,
+            context_recall_proxy=context_recall_metric,
+            faithfulness_proxy=faithfulness_metric,
+            answer_relevance_proxy=answer_relevance_metric,
+            citation_coverage=citation_coverage_metric,
+            completeness_proxy=completeness_metric,
             overall_score=overall,
             need_human_review=overall < 0.75 or bool(quality_flags),
             quality_flags=quality_flags,

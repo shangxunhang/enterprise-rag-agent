@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SectionAdvisoryService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""章节事实风险与建议性质量检查服务。
+
+该服务识别正文中的项目特定数量、型号、资源承诺和其他高风险陈述，并判断它们是否得到
+调用方 ProjectInput 或检索证据支持，或是否已明确限定为建议/待确认。强制硬门禁由独立
+HighRiskClaimGate 执行；这里保留兼容 facade 与较宽的 advisory 检查。
+"""
 
 
 from dataclasses import dataclass
@@ -335,29 +336,16 @@ class _MandatoryProjectFact:
         )
 
 
-# 阅读注释（类）：封装 章节 advisory 服务，封装一组可复用的业务能力。
 class SectionAdvisoryService:
-    """封装 章节 advisory 服务，封装一组可复用的业务能力。"""
-    # 阅读注释（函数）：处理 项目 fact corpus 相关逻辑。
+    """从项目事实和引用证据构造支持语料，发现无依据的具体项目断言。"""
     @staticmethod
     def _project_fact_corpus(project_input: ProjectInputSchema) -> str:
-        """Return only caller-supplied fact values, never schema field names."""
+        """只收集调用方提供的事实值，不把 Schema 字段名或运行控制项当作支持证据。"""
 
         values: list[str] = []
 
-        # 阅读注释（函数）：收集 _project_fact_corpus。
         def collect(value: Any) -> None:
-            """收集 _project_fact_corpus。
-
-            参数:
-                value: value，具体约束请结合类型标注和调用方确认。
-
-            返回:
-                None
-
-            阅读提示:
-                主要直接调用：isinstance, value.strip, values.append, str, value.values, collect。
-            """
+            """递归收集非空、非占位的原子事实值。"""
             if value is None or value is False:
                 return
             if isinstance(value, str):
@@ -651,7 +639,6 @@ class SectionAdvisoryService:
             ).violations
         )
 
-    # 阅读注释（函数）：处理 项目 fact violations 相关逻辑。
     @classmethod
     def project_fact_violations(
         cls,
@@ -659,13 +646,11 @@ class SectionAdvisoryService:
         project_input: ProjectInputSchema,
         citations: List[CitationSchema],
     ) -> List[Dict[str, Any]]:
-        """Detect unsupported project-specific assertions.
+        """发现缺乏 ProjectInput 或检索证据支持的项目特定高风险断言。
 
-        The validator intentionally targets high-risk concrete claims (counts,
-        models, named technologies and resource commitments). Generic prose is
-        not treated as a project fact. A claim is accepted when it is qualified
-        as pending confirmation or receives sufficient lexical support from
-        caller-supplied ProjectInput values or retrieved child evidence.
+        检查目标是数量、型号、性能和人员/硬件承诺，而不是一般技术说明。已经限定为建议、
+        待补充或需确认的表述不视为确定事实；其余 Claim 需被调用方事实值或引用原文直接
+        覆盖，或达到保守的词项重合阈值。
         """
 
         support_text = "\n".join(

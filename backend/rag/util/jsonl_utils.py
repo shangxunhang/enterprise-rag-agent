@@ -1,74 +1,65 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：ensure_parent、iter_jsonl_paths、load_jsonl_dicts、write_jsonl。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/util/jsonl_utils.py
-================================
+"""读取单个 JSONL 文件或 Spark ``part-*`` 输出目录，并写出 JSONL。
 
-JSONL 文件读写工具。
-
-职责：
-1. 读取单个 JSONL 文件或 Spark 输出目录中的 part-* 文件
-2. 写出 JSONL 文件
-3. 创建输出目录
-
-不负责：
-1. schema 标准化
-2. embedding
-3. Milvus 入库
+本模块只处理文件发现和逐行 JSON 对象读写，不负责 Schema 标准化、Embedding 或
+Milvus 入库。输入目录只扫描直接子文件，不递归扫描更深层目录。
 """
 
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-import json
 
 
-# 阅读注释（函数）：确保 父块 满足运行约束。
 def ensure_parent(path: str | Path) -> None:
-    """确保 父块 满足运行约束。
+    """为目标文件创建非空父目录。
 
-    参数:
-        path: 目标文件或目录路径。
+    Args:
+        path: 即将写入的文件路径。
 
-    返回:
-        None
-
-    阅读提示:
-        主要直接调用：Path, str, parent.mkdir。
+    当前目录文件（父目录为 ``.``）不触发 mkdir；其他父目录按需递归创建。
     """
-    p = Path(path)
-    parent = p.parent
+
+    # 第一步：统一为 Path 并提取父目录。
+    target = Path(path)
+    parent = target.parent
+
+    # 第二步：只有实际目录层级存在时才创建，避免对空路径执行无意义操作。
     if parent and str(parent) not in ("", "."):
         parent.mkdir(parents=True, exist_ok=True)
 
 
-# 阅读注释（函数）：处理 iter jsonl paths 相关逻辑。
 def iter_jsonl_paths(input_path: str | Path) -> Iterable[Path]:
-    """处理 iter jsonl paths 相关逻辑。
+    """枚举一个 JSONL 文件或目录中的候选数据文件。
 
-    参数:
-        input_path: 输入 路径，具体约束请结合类型标注和调用方确认。
+    Args:
+        input_path: 普通文件，或包含 ``part-*``、``.jsonl``、``.json`` 文件的目录。
 
-    返回:
-        Iterable[Path]
+    Yields:
+        单文件直接返回自身；目录按文件名排序返回直接子文件。
 
-    阅读提示:
-        主要直接调用：Path, p.is_file, p.is_dir, sorted, p.iterdir, x.is_file, x.name.startswith, x.suffix.lower。
+    Raises:
+        FileNotFoundError: 路径既不是文件也不是目录时抛出。
     """
-    p = Path(input_path)
-    if p.is_file():
-        yield p
+
+    # 第一步：普通文件不限制扩展名，调用方明确指定即视为候选数据源。
+    source = Path(input_path)
+    if source.is_file():
+        yield source
         return
 
-    if p.is_dir():
-        candidates = sorted([
-            x for x in p.iterdir()
-            if x.is_file() and (
-                x.name.startswith("part-") or x.suffix.lower() in {".jsonl", ".json"}
-            )
-        ])
+    # 第二步：目录模式兼容 Spark part-* 输出和常规 JSON/JSONL 文件。
+    if source.is_dir():
+        candidates = sorted(
+            [
+                item
+                for item in source.iterdir()
+                if item.is_file()
+                and (
+                    item.name.startswith("part-")
+                    or item.suffix.lower() in {".jsonl", ".json"}
+                )
+            ]
+        )
         for item in candidates:
             yield item
         return
@@ -76,55 +67,76 @@ def iter_jsonl_paths(input_path: str | Path) -> Iterable[Path]:
     raise FileNotFoundError(f"Input path not found: {input_path}")
 
 
-# 阅读注释（函数）：加载 jsonl dicts。
-def load_jsonl_dicts(input_path: str | Path, max_records: Optional[int] = None) -> List[Dict[str, Any]]:
-    """加载 jsonl dicts。
+def load_jsonl_dicts(
+    input_path: str | Path,
+    max_records: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """按文件和行顺序读取 JSON 对象记录。
 
-    参数:
-        input_path: 输入 路径，具体约束请结合类型标注和调用方确认。
-        max_records: max 记录集合，具体约束请结合类型标注和调用方确认。
+    Args:
+        input_path: 单文件或 ``iter_jsonl_paths`` 支持的目录。
+        max_records: 可选全局最大记录数，跨多个文件累计。
 
-    返回:
-        List[Dict[str, Any]]
+    Returns:
+        解析后为字典的记录列表。非字典 JSON 行按原行为静默跳过。
 
-    阅读提示:
-        主要直接调用：iter_jsonl_paths, path.open, enumerate, line.strip, json.loads, ValueError, isinstance, records.append。
+    Raises:
+        ValueError: 任一非空行不是合法 JSON 时，附带文件和行号后抛出。
     """
+
     records: List[Dict[str, Any]] = []
+
+    # 第一步：按确定性文件顺序读取所有候选文件。
     for path in iter_jsonl_paths(input_path):
-        with path.open("r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, start=1):
-                line = line.strip()
-                if not line:
+        with path.open("r", encoding="utf-8") as handle:
+            # 第二步：逐行解析，空行不占 max_records 配额。
+            for line_number, line in enumerate(handle, start=1):
+                normalized = line.strip()
+                if not normalized:
                     continue
+
                 try:
-                    obj = json.loads(line)
+                    item = json.loads(normalized)
                 except json.JSONDecodeError as exc:
                     raise ValueError(
-                        f"Invalid JSON line: file={path}, line={line_no}, err={exc}"
+                        f"Invalid JSON line: file={path}, "
+                        f"line={line_number}, err={exc}"
                     ) from exc
-                if isinstance(obj, dict):
-                    records.append(obj)
-                if max_records is not None and len(records) >= max_records:
+
+                # 第三步：只收集对象行，保持本工具的返回类型契约。
+                if isinstance(item, dict):
+                    records.append(item)
+
+                # 第四步：达到全局上限后立即停止后续文件读取。
+                if (
+                    max_records is not None
+                    and len(records) >= max_records
+                ):
                     return records
+
     return records
 
 
-# 阅读注释（函数）：写入 jsonl。
-def write_jsonl(records: Iterable[Dict[str, Any]], output_path: str | Path) -> None:
-    """写入 jsonl。
+def write_jsonl(
+    records: Iterable[Dict[str, Any]],
+    output_path: str | Path,
+) -> None:
+    """覆盖写入 UTF-8 JSONL 文件。
 
-    参数:
-        records: 记录集合，具体约束请结合类型标注和调用方确认。
-        output_path: 输出 路径，具体约束请结合类型标注和调用方确认。
+    Args:
+        records: 按期望输出顺序提供的字典可迭代对象。
+        output_path: 目标文件路径。
 
-    返回:
-        None
-
-    阅读提示:
-        主要直接调用：ensure_parent, open, Path, f.write, json.dumps。
+    每条记录使用紧凑单行 JSON，并保留中文字符。该写入不是追加或原子发布；需要
+    崩溃安全和幂等语义时应使用 ``CrashSafeJsonlRecordSink``。
     """
+
+    # 第一步：创建目标父目录。
     ensure_parent(output_path)
-    with Path(output_path).open("w", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    # 第二步：覆盖目标文件并逐记录写入一行。
+    with Path(output_path).open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(
+                json.dumps(record, ensure_ascii=False) + "\n"
+            )

@@ -1,39 +1,18 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：create_dirs、create_file、main。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-init_mini_rag.py
-================
+"""在当前工作目录生成一个可独立运行的教学版 Mini-RAG 项目骨架。
 
-Mini-RAG 项目初始化脚本。
-
-功能：
-1. 创建 mini_rag 项目目录
-2. 创建 configs / data / src / scripts / ragtests / vector_store 等目录
-3. 创建必要的 __init__.py 文件
-4. 自动生成 configs/BaseConfig.py
-5. 创建 3 个示例 txt 文档
-
-运行方式：
-    python init_mini_rag.py
+脚本创建配置、原始/处理数据、源码、向量库、脚本和测试目录，写入最小 BaseConfig
+以及三份示例知识文档。所有文件都采用“存在即跳过”策略，不覆盖用户已经编辑的内容。
 """
 
 from pathlib import Path
 
 
-# =========================
-# 1. 项目根目录名称
-# =========================
-
+# 新项目固定创建在当前工作目录下的 mini_rag 子目录。
 PROJECT_NAME = "mini_rag"
 ROOT_DIR = Path.cwd() / PROJECT_NAME
 
 
-# =========================
-# 2. 需要创建的目录
-# =========================
-
+# 目录清单覆盖配置、数据、源码、向量产物、脚本和测试六类资源。
 DIRS = [
     ROOT_DIR / "configs",
     ROOT_DIR / "data" / "raw",
@@ -45,101 +24,42 @@ DIRS = [
 ]
 
 
-# =========================
-# 3. BaseConfig.py 内容
-# =========================
-
-CONFIG_CONTENT = '''"""
-configs/BaseConfig.py
-=================
-
-Mini-RAG 项目的全局配置文件。
-
-它只负责定义：
-1. 项目路径
-2. 数据目录
-3. 中间产物路径
-4. 向量库路径
-5. chunk 参数
-6. embedding 模型配置
-7. 检索参数
-
-不负责执行业务逻辑。
-"""
+# 将被写入新项目 configs/BaseConfig.py 的完整模板。
+CONFIG_CONTENT = '''"""Mini-RAG 的路径、分块、Embedding 和检索默认配置。"""
 
 from pathlib import Path
 
 
-# =========================
-# 1. 项目根目录
-# =========================
-
-# 当前文件位置：
-# mini_rag/configs/BaseConfig.py
-# parent        -> configs/
-# parent.parent -> mini_rag/
+# 配置文件位于 <project>/configs/BaseConfig.py，因此父目录的父目录是项目根。
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-
-# =========================
-# 2. 数据目录
-# =========================
-
+# 原始数据和离线处理中间产物目录。
 DATA_DIR = ROOT_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 
-
-# =========================
-# 3. 中间产物文件
-# =========================
-
+# Reader 和 Chunker 的默认 JSON 中间文件。
 DOCUMENTS_FILE = PROCESSED_DATA_DIR / "documents.json"
 CHUNKS_FILE = PROCESSED_DATA_DIR / "chunks_old.json"
 
-
-# =========================
-# 4. 向量库目录
-# =========================
-
+# FAISS 向量索引和按行对应的 Chunk metadata。
 VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
-
 FAISS_INDEX_FILE = VECTOR_STORE_DIR / "faiss.index"
 CHUNK_META_FILE = VECTOR_STORE_DIR / "chunk_meta.json"
 
-
-# =========================
-# 5. Chunk 参数
-# =========================
-
-# 第一版先使用固定长度切分
+# 固定窗口分块参数，单位为字符。
 CHUNK_SIZE = 500
-
-# 相邻 chunk 的重叠字符数
 CHUNK_OVERLAP = 50
 
-
-# =========================
-# 6. Embedding 模型
-# =========================
-
-# 第一版使用多语言 sentence-transformers 模型
-# 后面可以替换为中文效果更强的 bge-small-zh / bge-base-zh
+# 教学项目默认使用多语言 Sentence Transformer，可替换为本地中文模型路径。
 EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
-
-# =========================
-# 7. 检索参数
-# =========================
-
+# Retriever 默认返回的结果数。
 TOP_K = 3
 '''
 
 
-# =========================
-# 4. 示例文档内容
-# =========================
-
+# 三份示例文档分别覆盖 RAG、Embedding 和 FAISS 基础概念。
 DOC_001 = """RAG 是 Retrieval-Augmented Generation 的缩写，中文通常称为检索增强生成。
 
 RAG 的核心思想是：在大模型生成答案之前，先从外部知识库中检索相关资料，然后把这些资料和用户问题一起放入 prompt 中，让大模型基于资料回答。
@@ -162,65 +82,79 @@ FAISS 本身主要保存向量索引，chunk 的原文内容、来源文件、ch
 """
 
 
-# 阅读注释（函数）：创建 dirs。
 def create_dirs() -> None:
-    """
-    创建项目目录。
-    """
-    for dir_path in DIRS:
-        dir_path.mkdir(parents=True, exist_ok=True)
+    """递归创建项目所需目录，已存在目录保持不变。"""
+
+    # 按声明顺序创建；parents=True 允许一次创建 data/raw 等多级路径。
+    for directory in DIRS:
+        directory.mkdir(parents=True, exist_ok=True)
 
 
-# 阅读注释（函数）：创建 文件。
 def create_file(file_path: Path, content: str = "") -> None:
-    """
-    创建文件。
-
-    如果文件已经存在，则不覆盖，避免误删已有内容。
+    """仅在目标不存在时创建 UTF-8 文件。
 
     Args:
-        file_path: 文件路径
-        content: 文件内容
+        file_path: 目标文件路径。
+        content: 初始文本内容，默认创建空文件。
+
+    已存在文件会打印 Skip 并保持原内容，保证重复运行脚本不会覆盖用户代码或数据。
     """
+
+    # 第一步：保护现有文件，不执行覆盖写入。
     if file_path.exists():
         print(f"[Skip] 文件已存在: {file_path}")
         return
 
+    # 第二步：创建父目录，兼容调用方传入不在预声明 DIRS 中的文件。
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    # 第三步：以 UTF-8 写入初始内容。
+    with open(file_path, "w", encoding="utf-8") as handle:
+        handle.write(content)
 
     print(f"[Create] 文件已创建: {file_path}")
 
 
-# 阅读注释（函数）：处理 main 相关逻辑。
 def main() -> None:
-    """
-    初始化 Mini-RAG 项目。
-    """
+    """执行完整 Mini-RAG 项目初始化流程。"""
+
+    # 第一步：展示实际目标根目录，避免在错误工作目录中生成项目而不自知。
     print(f"[Init] 项目根目录: {ROOT_DIR}")
 
-    # 1. 创建目录
+    # 第二步：创建目录骨架。
     create_dirs()
 
-    # 2. 创建 __init__.py
+    # 第三步：创建 Python 包标记文件。
     create_file(ROOT_DIR / "__init__.py")
     create_file(ROOT_DIR / "configs" / "__init__.py")
     create_file(ROOT_DIR / "src" / "__init__.py")
 
-    # 3. 创建 BaseConfig.py
-    create_file(ROOT_DIR / "configs" / "BaseConfig.py", CONFIG_CONTENT)
+    # 第四步：写入最小全局配置。
+    create_file(
+        ROOT_DIR / "configs" / "BaseConfig.py",
+        CONFIG_CONTENT,
+    )
 
-    # 4. 创建示例 txt 文档
-    create_file(ROOT_DIR / "data" / "raw" / "doc_001.txt", DOC_001)
-    create_file(ROOT_DIR / "data" / "raw" / "doc_002.txt", DOC_002)
-    create_file(ROOT_DIR / "data" / "raw" / "doc_003.txt", DOC_003)
+    # 第五步：写入三份可立即用于 Reader/Chunker/FAISS 教学链的原始文本。
+    create_file(
+        ROOT_DIR / "data" / "raw" / "doc_001.txt",
+        DOC_001,
+    )
+    create_file(
+        ROOT_DIR / "data" / "raw" / "doc_002.txt",
+        DOC_002,
+    )
+    create_file(
+        ROOT_DIR / "data" / "raw" / "doc_003.txt",
+        DOC_003,
+    )
 
+    # 第六步：提示用户进入新项目目录继续后续步骤。
     print("\n[Done] Mini-RAG 项目初始化完成。")
     print("下一步进入项目目录：")
     print(f"cd {PROJECT_NAME}")
 
 
+# 仅直接运行脚本时创建文件，模块导入不会产生文件系统副作用。
 if __name__ == "__main__":
     main()

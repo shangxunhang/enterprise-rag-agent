@@ -1,15 +1,13 @@
-# =============================================================================
-# 中文阅读说明：上下文管理模块，用于组织证据、历史状态和 Token 预算。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Bounded LLM context construction for Agent/Workflow model calls."""
+"""模型调用上下文规划与预算控制包。
+
+该包把长期共享 ``ContextBundle`` 中的候选事实转换为一次调用可消费的有界
+``LLMContextPackage``，并记录排序、截断、丢弃和 Token 估算决定。
+"""
 
 from .manager import LLMContextManager
 from .policies import SectionGenerationContextPolicy
-from .token_estimator import DeterministicTokenEstimator
 
 __all__ = [
     "LLMContextManager",
     "SectionGenerationContextPolicy",
-    "DeterministicTokenEstimator",
 ]

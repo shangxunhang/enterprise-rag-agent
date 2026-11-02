@@ -1,0 +1,75 @@
+schema_version: offline_index_build_config_v1
+build_id: evidence_gate_stage_c_20260803_r2
+dataset_version: cleaned_text_units_document_profiled_v1_r2
+source:
+  path: data/raw/jsonl/cleaned_text_unit_v1_batch_20260803.jsonl
+  format: jsonl
+  tenant_id: default
+  kb_id: default
+  document_profiles_path: data/catalog/document_profiles_v1.jsonl
+  require_document_profiles: true
+chunker:
+  name: type_aware_parent_child
+  version: v1
+  params:
+    unit: char
+    require_document_profile: true
+    parent_chunk_version: parent_chunk_profiled_v1.0
+    child_chunk_version: child_chunk_profiled_v1.0
+    strategy_params:
+      heading_parent_paragraph_child:
+        parent_chunk_size: 1500
+        parent_chunk_overlap: 120
+        child_chunk_size: 480
+        child_chunk_overlap: 48
+      policy_article_clause:
+        parent_chunk_size: 1200
+        parent_chunk_overlap: 80
+        child_chunk_size: 400
+        child_chunk_overlap: 40
+      fact_record:
+        parent_chunk_size: 900
+        parent_chunk_overlap: 40
+        child_chunk_size: 300
+        child_chunk_overlap: 30
+      table_row_record:
+        parent_chunk_size: 700
+        parent_chunk_overlap: 20
+        child_chunk_size: 260
+        child_chunk_overlap: 20
+      template_section:
+        parent_chunk_size: 1600
+        parent_chunk_overlap: 80
+        child_chunk_size: 450
+        child_chunk_overlap: 40
+      fixed_token_fallback:
+        parent_chunk_size: 1200
+        parent_chunk_overlap: 100
+        child_chunk_size: 400
+        child_chunk_overlap: 40
+embedding:
+  mode: model
+  name: m3e_base
+  version: local_m3e_base_profiled_v1
+  model_name: D:/models/huggingface/embedding/m3e-base
+  device: cuda
+  batch_size: 8
+  dim: 768
+index:
+  backend: milvus_lite
+  metric_type: COSINE
+  collection_name: rag_child_chunks
+  recreate: true
+  insert_batch_size: 128
+  max_text_chars: 8192
+outputs:
+  root_dir: E:/rag-agent-indexes
+  active_pointer: data/processed/indexes/active_index.json
+  update_active_pointer: false
+deterministic_created_at: "2026-08-03T17:15:00+08:00"
+notes: >-
+  Stage C profile-aware rebuild revision 2. Uses only the 31-document formal cleaned batch,
+  stores the immutable version on E: because D: lacks safe Milvus headroom,
+  rejects unprofiled/hash-mismatched documents, excludes the reviewed Gold file,
+  routes chunking by DocumentProfile.parsing.chunk_strategy, and preserves the
+  previous active index until lifecycle verification and explicit activation.

@@ -1,18 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：ParentChildRetriever。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/retriever/parent_child_retriever.py
-================================================
+"""P1 父子检索：Milvus 子块 dense 命中后回填父块上下文。
 
-P1 parent-child retriever：
-Milvus dense child hits -> parent_chunk_id 回填 parent -> retrieval_result_v2。
-
-职责边界：
-- P1 只做 dense retrieval + parent backfill。
-- 不做 BM25，不做 RRF，不做 rerank，不做 prompt context packing。
+该层只完成单来源向量召回与 Parent Store 查询，输出 ``retrieval_result_v2``。它不执行
+BM25、RRF、Cross-Encoder 重排或 Prompt Context Packing，便于单独验证“子块命中、
+父块生成上下文”的基础机制。
 """
 
 from __future__ import annotations
@@ -24,11 +15,9 @@ from rag.store.parent_chunk_store import ParentChunkStore
 from rag.retriever.milvus_child_retriever import MilvusChildRetriever
 
 
-# 阅读注释（类）：封装 父块 子块 retriever，集中封装相关状态、依赖和行为。
 class ParentChildRetriever:
     """Combine Milvus child retrieval with parent chunk backfill."""
 
-    # 阅读注释（函数）：初始化 ParentChildRetriever，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         child_retriever: MilvusChildRetriever,
@@ -36,20 +25,7 @@ class ParentChildRetriever:
         context_granularity: str = "parent",
         dedup_parent: bool = False,
     ):
-        """初始化 ParentChildRetriever，保存运行所需的依赖、配置或状态。
-
-        参数:
-            child_retriever: 子块 retriever，具体约束请结合类型标注和调用方确认。
-            parent_store: 父块 store，具体约束请结合类型标注和调用方确认。
-            context_granularity: 上下文 granularity，具体约束请结合类型标注和调用方确认。
-            dedup_parent: dedup 父块，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：ValueError。
-        """
+        """注入子块召回器和父块存储，并校验生成上下文粒度。"""
         if context_granularity not in {"parent", "child"}:
             raise ValueError("context_granularity must be 'parent' or 'child'")
         self.child_retriever = child_retriever
@@ -57,19 +33,8 @@ class ParentChildRetriever:
         self.context_granularity = context_granularity
         self.dedup_parent = dedup_parent
 
-    # 阅读注释（函数）：处理 deduplicate by 父块 相关逻辑。
     def _deduplicate_by_parent(self, child_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """处理 deduplicate by 父块 相关逻辑。
-
-        参数:
-            child_hits: 子块 hits，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：set, hit.get, seen.add, deduped.append。
-        """
+        """按首次出现的父块去重；缺少父块 ID 的异常子块保持独立。"""
         seen = set()
         deduped: List[Dict[str, Any]] = []
         for hit in child_hits:
@@ -82,7 +47,6 @@ class ParentChildRetriever:
             deduped.append(hit)
         return deduped
 
-    # 阅读注释（函数）：检索 ParentChildRetriever。
     def retrieve(
         self,
         query: str,
@@ -91,14 +55,10 @@ class ParentChildRetriever:
         filter_expr: Optional[str] = None,
         dedup_parent: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
-        """Return retrieval_result_v2 list.
+        """执行子块 dense 召回、可选父级去重和 Parent Store 回填。
 
-        Args:
-            query: 用户问题。
-            top_k: 最终返回条数。
-            child_top_k: Milvus child 初召回条数；None 时等于 top_k。
-            filter_expr: Milvus metadata filter，例如 `doc_id == "doc1"`。
-            dedup_parent: 是否按 parent_chunk_id 去重；None 使用实例默认值。
+        ``score`` 保留子块向量命中分数；``text`` 由 ``context_granularity`` 决定使用父块
+        还是子块。父块缺失不会伪造内容，而是回退到子块并记录 ``parent_found=False``。
         """
         if not query or not query.strip():
             raise ValueError("query cannot be empty")

@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_resource_pool、MilvusDenseChildRetrieverPlugin、BM25ChildRetrieverPlugin。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Configuration-driven child-retriever plugins."""
+"""将 Milvus dense 与内存 BM25 子块召回器接入配置驱动插件协议。
+
+插件从共享 ``resource_pool`` 获取重量级 Backend，只负责把 ``RetrievalRequest`` 中的授权
+缩小条件传递给对应来源，并包装为 ``CandidateSet``。
+"""
 
 from __future__ import annotations
 
@@ -11,19 +11,8 @@ from typing import Any
 from rag.schema.candidate import CandidateSet, RetrievalRequest
 
 
-# 阅读注释（函数）：处理 resource pool 相关逻辑。
 def _resource_pool(build_context: Any) -> Any:
-    """处理 resource pool 相关逻辑。
-
-    参数:
-        build_context: build 上下文，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Any
-
-    阅读提示:
-        主要直接调用：isinstance, context.get, ValueError。
-    """
+    """从组合根构造上下文读取必需资源池；缺失时拒绝创建半配置插件。"""
     context = build_context if isinstance(build_context, dict) else {}
     pool = context.get("resource_pool")
     if pool is None:
@@ -31,46 +20,22 @@ def _resource_pool(build_context: Any) -> Any:
     return pool
 
 
-# 阅读注释（类）：封装 milvus dense 子块 retriever 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class MilvusDenseChildRetrieverPlugin:
-    """封装 milvus dense 子块 retriever 插件，作为可配置插件接入 RAG 或 Agent 主链。"""
+    """向量子块来源插件，使用请求中的 Milvus ``filter_expr``。"""
     source_name = "dense"
 
-    # 阅读注释（函数）：初始化 MilvusDenseChildRetrieverPlugin，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         build_context: Any = None,
         top_k: int = 10,
     ) -> None:
-        """初始化 MilvusDenseChildRetrieverPlugin，保存运行所需的依赖、配置或状态。
-
-        参数:
-            build_context: build 上下文，具体约束请结合类型标注和调用方确认。
-            top_k: top k，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：max, int, get_dense_retriever, _resource_pool。
-        """
+        """保存来源召回上限并从资源池取得共享 Milvus Backend。"""
         self.top_k = max(1, int(top_k))
         self.backend = _resource_pool(build_context).get_dense_retriever()
 
-    # 阅读注释（函数）：检索 MilvusDenseChildRetrieverPlugin。
     def retrieve(self, request: RetrievalRequest) -> CandidateSet:
-        """检索 MilvusDenseChildRetrieverPlugin。
-
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            CandidateSet
-
-        阅读提示:
-            主要直接调用：self.backend.search, CandidateSet, len, getattr。
-        """
+        """执行 dense 召回并附加 Embedding、Collection、向量库和过滤表达式血缘。"""
         hits = self.backend.search(
             query=request.query,
             top_k=self.top_k,
@@ -93,61 +58,29 @@ class MilvusDenseChildRetrieverPlugin:
             },
         )
 
-    # 阅读注释（函数）：释放 MilvusDenseChildRetrieverPlugin 持有的资源。
     def close(self) -> None:
-        """释放 MilvusDenseChildRetrieverPlugin 持有的资源。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：getattr, callable, close。
-        """
+        """兼容独立使用时释放 Backend；共享资源池会去重关闭同一实例。"""
         close = getattr(self.backend, "close", None)
         if callable(close):
             close()
 
 
-# 阅读注释（类）：封装 bm25 子块 retriever 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class BM25ChildRetrieverPlugin:
-    """封装 bm25 子块 retriever 插件，作为可配置插件接入 RAG 或 Agent 主链。"""
+    """关键词子块来源插件，显式传递租户、KB、文件和文档范围。"""
     source_name = "keyword"
 
-    # 阅读注释（函数）：初始化 BM25ChildRetrieverPlugin，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
         build_context: Any = None,
         top_k: int = 10,
     ) -> None:
-        """初始化 BM25ChildRetrieverPlugin，保存运行所需的依赖、配置或状态。
-
-        参数:
-            build_context: build 上下文，具体约束请结合类型标注和调用方确认。
-            top_k: top k，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：max, int, get_keyword_retriever, _resource_pool。
-        """
+        """保存来源召回上限并从资源池取得共享 BM25 Backend。"""
         self.top_k = max(1, int(top_k))
         self.backend = _resource_pool(build_context).get_keyword_retriever()
 
-    # 阅读注释（函数）：检索 BM25ChildRetrieverPlugin。
     def retrieve(self, request: RetrievalRequest) -> CandidateSet:
-        """检索 BM25ChildRetrieverPlugin。
-
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            CandidateSet
-
-        阅读提示:
-            主要直接调用：self.backend.search, list, CandidateSet, len。
-        """
+        """执行授权范围内关键词召回，并在 metadata 回显实际范围与命中数量。"""
         hits = self.backend.search(
             query=request.query,
             top_k=self.top_k,

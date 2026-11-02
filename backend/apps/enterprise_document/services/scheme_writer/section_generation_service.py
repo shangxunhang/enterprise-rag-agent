@@ -1,24 +1,41 @@
-# =============================================================================
-# 中文阅读说明：方案章节生成主流程：组装上下文、调用模型、处理截断、绑定引用，并执行 Self-RAG 检查与修复。
-# 主要定义：SectionGenerationService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""单章节文本生成、恢复、引用绑定和质量评估主流程。
+
+该服务从已经选定的章节证据开始：渲染受预算约束的 Prompt、调用模型、处理失败或截断、
+执行确定性引用绑定和高风险事实检查，再按配置触发语义门禁、Self-RAG 或 Grounding 修复。
+章节检索与文档级装配由外层协调器负责。
+"""
 
 
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.quality.budget import current_workflow_budget
+from apps.enterprise_document.schemas.gate_decision import DeliveryMode
+from apps.enterprise_document.schemas.pre_write_writer import (
+    WriterGenerationInvocationSchema,
+)
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
-from apps.enterprise_document.schemas.scheme_writer_schema import SemanticGateResultSchema, SchemeSectionSchema, SectionEvalSchema
+from apps.enterprise_document.schemas.scheme_writer_schema import (
+    SchemeSectionSchema,
+    SectionEvalSchema,
+    SemanticGateResultSchema,
+    TruncationCheckSchema,
+)
 from apps.enterprise_document.schemas.table_agent_schema import StructuredFactSchema
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
 from apps.enterprise_document.services.output_validation import detect_truncation
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSourceSchema, WarningSchema
 from schemas.failure import FailureCategory
 from schemas.model import ModelResponseSchema
-from schemas.rag import RAGContextSchema
+from schemas.rag import EvidenceBundleSchema, RAGContextSchema
 from schemas.status import ExecutionStatus
+from apps.enterprise_document.services.gate_enforcement import (
+    GateEnforcementController,
+    GateEnforcementDecision,
+    GateFailureKind,
+)
 from apps.enterprise_document.services.semantic_section_judge import SemanticSectionJudge
 from .advisory_service import SectionAdvisoryService
 from .citation_service import CitationService
@@ -26,15 +43,40 @@ from .constants import CITATION_PATTERN as _CITATION_PATTERN
 from .grounding_repair_service import GroundingRepairService
 from .high_risk_claim_service import HighRiskClaimGate
 from .model_service import SectionModelService
-from .prompt_service import SectionPromptService
+from .prompt_service import (
+    SectionPromptService,
+    TargetInitialSectionPromptResult,
+    TargetTechnicalRecoveryIntegrityError,
+    materialize_target_technical_recovery_context,
+)
 from .runtime_support import SchemeWriterRuntimeSupport
-from .section_content_recovery import SectionContentRecovery
+from .section_content_recovery import SectionContentRecovery, SectionContentRecoveryResult
 from .section_quality_evaluator import SectionQualityEvaluator
+from .writer_governance import (
+    WriterClaimAuditor,
+    blocked_claim_audit,
+    inject_required_qualifiers,
+    writer_gate_prompt_contract,
+)
 
 
-# 阅读注释（类）：封装 章节 生成 服务，封装一组可复用的业务能力。
+@dataclass(frozen=True)
+class TargetSectionContentResult:
+    """Unwired Gate-free model/content mechanics result for future S11-15 use."""
+
+    success: bool
+    content: str
+    model_response: ModelResponseSchema
+    recovery: Optional[SectionContentRecoveryResult]
+    truncation: TruncationCheckSchema
+    context_package_id: str
+    context_sha256: str
+    evidence_bundle_sha256: str
+    technical_failure_reason: Optional[str] = None
+
+
 class SectionGenerationService:
-    """封装 章节 生成 服务，封装一组可复用的业务能力。"""
+    """把一次模型输出收敛为可评测、可引用且带恢复血缘的章节产物。"""
 
     def __init__(
         self,
@@ -46,6 +88,8 @@ class SectionGenerationService:
         grounding_repair_service: GroundingRepairService,
         advisory_service: SectionAdvisoryService,
         semantic_judge: SemanticSectionJudge,
+        writer_claim_auditor: WriterClaimAuditor | None = None,
+        gate_enforcement_controller: GateEnforcementController | None = None,
         enable_semantic_gate: bool,
         semantic_gate_model_name: str,
         generation_checker: object | None,
@@ -59,6 +103,10 @@ class SectionGenerationService:
         self.grounding_repair_service = grounding_repair_service
         self.advisory_service = advisory_service
         self.high_risk_claim_gate = HighRiskClaimGate()
+        self.writer_claim_auditor = writer_claim_auditor or WriterClaimAuditor()
+        self.gate_enforcement_controller = (
+            gate_enforcement_controller or GateEnforcementController()
+        )
         self.semantic_judge = semantic_judge
         self.enable_semantic_gate = enable_semantic_gate
         self.semantic_gate_model_name = semantic_gate_model_name
@@ -74,6 +122,271 @@ class SectionGenerationService:
         self.quality_evaluator = SectionQualityEvaluator(
             runtime_support=self.runtime_support,
         )
+
+    def generate_target_content(
+        self,
+        shared_state: SharedStateSchema,
+        *,
+        project_input: ProjectInputSchema,
+        target_prompt: TargetInitialSectionPromptResult,
+        canonical_messages: list[dict[str, str]] | None = None,
+        canonical_allowed_aliases: tuple[str, ...] | None = None,
+        canonical_context_package: dict[str, Any] | None = None,
+    ) -> TargetSectionContentResult:
+        """Execute only Target model generation and minimum technical recovery.
+
+        Authorization, routing, at-most-once execution, persistence, and Post-write
+        validation belong to other frozen owners. This PREP method is intentionally
+        unwired and uses the same model/content recovery capability as the legacy
+        path without interpreting any control-plane state.
+        """
+
+        recovery_context = target_prompt.technical_recovery_context
+        context_package = materialize_target_technical_recovery_context(
+            recovery_context
+        )
+        if (
+            shared_state.task_id != recovery_context.task_id
+            or shared_state.run_id != recovery_context.run_id
+            or project_input.task_id != recovery_context.task_id
+            or target_prompt.section_id != recovery_context.section_id
+            or target_prompt.section_title != recovery_context.section_title
+            or target_prompt.section_order != recovery_context.section_order
+            or target_prompt.evidence_bundle_sha256
+            != recovery_context.evidence_bundle_sha256
+        ):
+            raise TargetTechnicalRecoveryIntegrityError(
+                "Target content inputs do not match the locked technical context"
+            )
+        using_canonical_context = bool(canonical_messages)
+        if using_canonical_context and canonical_allowed_aliases is None:
+            raise TargetTechnicalRecoveryIntegrityError(
+                "Locked Writer citation usage is missing before model dispatch"
+            )
+        response = self.model_service.call_model(
+            shared_state,
+            prompt=("" if using_canonical_context else recovery_context.initial_prompt_text),
+            section_id=recovery_context.section_id,
+            section_title=recovery_context.section_title,
+            project_input=project_input,
+            available_citation_ids=(
+                list(canonical_allowed_aliases)
+                if using_canonical_context else list(recovery_context.citation_ids)
+            ),
+            context_package=(
+                canonical_context_package
+                if using_canonical_context
+                else context_package.model_dump(mode="json")
+            ),
+            prompt_id=(
+                "sif10_context_package_v1"
+                if using_canonical_context
+                else recovery_context.prompt_id
+            ),
+            prompt_version=(
+                "v1" if using_canonical_context else recovery_context.prompt_version
+            ),
+            messages=canonical_messages,
+        )
+        if not response.success:
+            return TargetSectionContentResult(
+                success=False,
+                content=response.content,
+                model_response=response,
+                recovery=None,
+                truncation=detect_truncation("", response.finish_reason),
+                context_package_id=recovery_context.context_package_id,
+                context_sha256=recovery_context.context_sha256,
+                evidence_bundle_sha256=recovery_context.evidence_bundle_sha256,
+                technical_failure_reason=(
+                    response.error_message or "target model call failed"
+                ),
+            )
+
+        if using_canonical_context:
+            # SIF-10 owns the exact model-visible input.  The historical content
+            # recovery path rewrites prompts for truncation/compression and would
+            # therefore create post-fingerprint input mutation.  ModelGateway
+            # provider retry/fallback remains legal because it reuses this exact
+            # request; semantic regeneration requires a new governed occurrence.
+            content = response.content.strip()
+            truncation = detect_truncation(
+                content,
+                response.finish_reason,
+                project_input.generation_requirements.min_section_chars,
+            )
+            technical_failure_reason = None
+            if not content:
+                technical_failure_reason = "target model output is empty"
+            elif truncation.truncated:
+                technical_failure_reason = (
+                    "target model output truncated under locked SIF-10 Context"
+                )
+            package_ref = dict(
+                (canonical_context_package or {}).get("package_ref") or {}
+            )
+            model_input = dict(
+                (canonical_context_package or {}).get("model_input") or {}
+            )
+            return TargetSectionContentResult(
+                success=technical_failure_reason is None,
+                content=content,
+                model_response=response,
+                recovery=None,
+                truncation=truncation,
+                context_package_id=str(
+                    package_ref.get("context_package_id")
+                    or recovery_context.context_package_id
+                ),
+                context_sha256=str(
+                    model_input.get("final_model_input_sha256")
+                    or recovery_context.context_sha256
+                ),
+                evidence_bundle_sha256=recovery_context.evidence_bundle_sha256,
+                technical_failure_reason=technical_failure_reason,
+            )
+
+        try:
+            recovery = self.content_recovery.recover_target(
+                shared_state,
+                response=response,
+                project_input=project_input,
+                recovery_context=recovery_context,
+            )
+        except TargetTechnicalRecoveryIntegrityError as exc:
+            return TargetSectionContentResult(
+                success=False,
+                content="",
+                model_response=response,
+                recovery=None,
+                truncation=detect_truncation(
+                    response.content,
+                    response.finish_reason,
+                    project_input.generation_requirements.min_section_chars,
+                ),
+                context_package_id=recovery_context.context_package_id,
+                context_sha256=recovery_context.context_sha256,
+                evidence_bundle_sha256=recovery_context.evidence_bundle_sha256,
+                technical_failure_reason=(
+                    f"target recovery integrity failure: {exc}"
+                ),
+            )
+        content = recovery.content.strip()
+        technical_failure_reason: Optional[str] = None
+        if not content:
+            technical_failure_reason = "target model output is empty"
+        elif recovery.truncation.truncated:
+            technical_failure_reason = "target model output remains truncated"
+        return TargetSectionContentResult(
+            success=technical_failure_reason is None,
+            content=content,
+            model_response=response,
+            recovery=recovery,
+            truncation=recovery.truncation,
+            context_package_id=recovery_context.context_package_id,
+            context_sha256=recovery_context.context_sha256,
+            evidence_bundle_sha256=recovery_context.evidence_bundle_sha256,
+            technical_failure_reason=technical_failure_reason,
+        )
+
+    def generate_from_pre_write_invocation(
+        self,
+        invocation: WriterGenerationInvocationSchema,
+        shared_state: SharedStateSchema,
+        *,
+        project_input: ProjectInputSchema,
+        target_prompt: TargetInitialSectionPromptResult,
+        canonical_messages: list[dict[str, str]] | None = None,
+        canonical_allowed_aliases: tuple[str, ...] | None = None,
+        canonical_context_package: dict[str, Any] | None = None,
+    ) -> TargetSectionContentResult:
+        """Execute the narrow S11-17 Target entry for one locked invocation.
+
+        S11-15 remains the authorization and at-most-once owner.  This method
+        validates only the supplied immutable Prompt/context lock and then
+        delegates to the existing Gate-free Target content mechanics.
+        """
+
+        normalized = (
+            invocation
+            if isinstance(invocation, WriterGenerationInvocationSchema)
+            else WriterGenerationInvocationSchema.model_validate(invocation)
+        )
+        snapshot = normalized.model_dump(mode="json")[
+            "unified_writer_input_snapshot"
+        ]
+        section = dict(snapshot.get("section") or {})
+        prompt_lock = dict(snapshot.get("target_prompt_lock") or {})
+        recovery = target_prompt.technical_recovery_context
+        expected_prompt_lock = {
+            "prompt_id": recovery.prompt_id,
+            "prompt_version": recovery.prompt_version,
+            "initial_prompt_text": recovery.initial_prompt_text,
+            "context_package": target_prompt.context_package.model_dump(mode="json"),
+            "context_package_id": recovery.context_package_id,
+            "context_sha256": recovery.context_sha256,
+            "writer_evidence_semantics_json": (
+                recovery.writer_evidence_semantics_json
+            ),
+            "structured_writing_facts_json": (
+                recovery.structured_writing_facts_json
+            ),
+            "citation_ids": list(recovery.citation_ids),
+            "evidence_bundle_sha256": recovery.evidence_bundle_sha256,
+        }
+        identity_matches = (
+            snapshot.get("task_id") == shared_state.task_id
+            and snapshot.get("run_id") == shared_state.run_id
+            and snapshot.get("document_id")
+            == normalized.writer_subject_ref.document_id
+            and normalized.writer_subject_ref.run_id == shared_state.run_id
+            and section.get("section_id")
+            == normalized.writer_subject_ref.section_id
+            and section.get("section_id") == target_prompt.section_id
+            and section.get("section_title") == target_prompt.section_title
+            and section.get("section_order") == target_prompt.section_order
+            and project_input.task_id == shared_state.task_id
+        )
+        lineage_matches = (
+            prompt_lock == expected_prompt_lock
+            and normalized.canonical_evidence_input.evidence_bundle_sha256
+            == target_prompt.evidence_bundle_sha256
+            and target_prompt.evidence_bundle_sha256
+            == recovery.evidence_bundle_sha256
+            and target_prompt.prompt_result.rendered_text
+            == recovery.initial_prompt_text
+        )
+        if not identity_matches or not lineage_matches:
+            raise TargetTechnicalRecoveryIntegrityError(
+                "Target invocation does not match its locked Prompt/context lineage"
+            )
+        return self.generate_target_content(
+            shared_state,
+            project_input=project_input,
+            target_prompt=target_prompt,
+            canonical_messages=canonical_messages,
+            canonical_allowed_aliases=canonical_allowed_aliases,
+            canonical_context_package=canonical_context_package,
+        )
+
+    def resolve_writer_gate_enforcement(
+        self,
+        binding: WriterGateBindingSchema | None,
+    ) -> GateEnforcementDecision:
+        """Resolve the execution consequence without mutating the writer gate."""
+
+        if binding is None or binding.legacy_artifact_incomplete:
+            return self.gate_enforcement_controller.resolve(
+                gate_passed=False,
+                failure_kind=GateFailureKind.TECHNICAL,
+            )
+        return self.gate_enforcement_controller.resolve(
+            gate_passed=binding.ordinary_generation_permitted,
+            failure_kind=GateFailureKind.BUSINESS,
+        )
+
+    def writer_gate_blocks(self, binding: WriterGateBindingSchema | None) -> bool:
+        return self.resolve_writer_gate_enforcement(binding).should_block
 
     def build_insufficient_evidence_section(
         self,
@@ -160,7 +473,121 @@ class SectionGenerationService:
             },
         )
 
-    # 阅读注释（函数）：生成 章节。
+    def build_gate_blocked_section(
+        self,
+        shared_state: SharedStateSchema,
+        *,
+        project_input: ProjectInputSchema,
+        section_title: str,
+        section_order: int,
+        rag_context: RAGContextSchema,
+        citations: List[CitationSchema],
+        writer_gate_binding: WriterGateBindingSchema,
+    ) -> SchemeSectionSchema:
+        """Publish only a diagnostic refusal when the final gate forbids writing."""
+
+        started_at = self.runtime_support.now_iso()
+        section_id = f"section_{shared_state.run_id}_{section_order:03d}"
+        mode = writer_gate_binding.gate_decision.delivery_mode
+        legacy_incomplete = writer_gate_binding.legacy_artifact_incomplete
+        review_required = bool(
+            legacy_incomplete or mode is DeliveryMode.HUMAN_REVIEW
+        )
+        content = (
+            f"“{section_title}”章节的 Writer 身份或 Evidence 血缘字段不完整，"
+            "已转入人工复核，当前不生成正式章节正文。"
+            if legacy_incomplete
+            else (
+                f"“{section_title}”章节已由最终证据门禁转入人工复核，"
+                "当前不生成正式章节正文。"
+                if review_required
+                else f"“{section_title}”章节缺少可用于正式写作的合格证据，"
+                "当前不生成正式章节正文。"
+            )
+        )
+        reason = (
+            "legacy_writer_artifact_incomplete"
+            if legacy_incomplete
+            else (
+                "writer_human_review_required"
+                if review_required
+                else "writer_generation_blocked"
+            )
+        )
+        audit = blocked_claim_audit(
+            content,
+            writer_gate_binding,
+            legacy_incomplete=legacy_incomplete,
+        )
+        warning = WarningSchema(
+            warning_code=(
+                "SECTION_WRITER_ARTIFACT_INCOMPLETE"
+                if legacy_incomplete
+                else (
+                    "SECTION_WRITER_HUMAN_REVIEW_REQUIRED"
+                    if review_required
+                    else "SECTION_WRITER_GATE_BLOCKED"
+                )
+            ),
+            message=reason,
+            source=ErrorSourceSchema(
+                component="SectionGenerationService",
+                agent_name="SchemeWriterAgent",
+                step_name=section_id,
+            ),
+            details={
+                "delivery_mode": mode.value,
+                "gate_decision": writer_gate_binding.gate_decision.model_dump(
+                    mode="json"
+                ),
+            },
+            created_at=self.runtime_support.now_iso(),
+        )
+        truncation = detect_truncation(content, "stop", 0)
+        return SchemeSectionSchema(
+            section_id=section_id,
+            section_title=section_title,
+            section_order=section_order,
+            input={
+                "project_input": project_input.model_dump(),
+                "rag_context": rag_context.model_dump(),
+                "available_citation_ids": [item.citation_id for item in citations],
+                "writer_gate_binding": writer_gate_binding.model_dump(mode="json"),
+            },
+            prompt="",
+            model_output="",
+            content=content,
+            status=ExecutionStatus.PARTIAL_SUCCESS,
+            citation_ids=[],
+            citation_bindings=[],
+            truncation=truncation,
+            eval_result=SectionEvalSchema(
+                passed=False,
+                checks={
+                    "writer_gate_bound": True,
+                    "generation_allowed": False,
+                    "claim_audit_passed": False,
+                    "normal_generation_blocked": True,
+                },
+                failures=[reason],
+                warnings=[reason],
+            ),
+            warnings=[warning],
+            started_at=started_at,
+            finished_at=self.runtime_support.now_iso(),
+            extra={
+                "generation_blocked": True,
+                "generation_block_reason": reason,
+                "writer_execution_status": audit.execution_status.value,
+                "writer_gate_binding": writer_gate_binding.model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "claim_audit": audit.model_dump(mode="json", exclude_none=True),
+                "need_human_review": review_required,
+                "formal_deliverable_eligible": False,
+            },
+        )
+
     def generate_section(
         self,
         shared_state: SharedStateSchema,
@@ -173,30 +600,40 @@ class SectionGenerationService:
         citations: List[CitationSchema],
         structured_facts: List[StructuredFactSchema],
         previous_sections: List[SchemeSectionSchema],
+        evidence_bundle: EvidenceBundleSchema | None = None,
         generation_attempt: int = 1,
+        writer_gate_binding: WriterGateBindingSchema | None = None,
     ) -> SchemeSectionSchema:
-        """生成 章节。
+        """执行一个章节的完整生成和质量收敛流程。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            document_id: 文档 标识，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            section_order: 章节 order，具体约束请结合类型标注和调用方确认。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            structured_facts: structured facts，具体约束请结合类型标注和调用方确认。
-            previous_sections: previous sections，具体约束请结合类型标注和调用方确认。
-            generation_attempt: 生成 attempt，具体约束请结合类型标注和调用方确认。
+        主路径按文件内“生成阶段”注释推进：构造 Context/Prompt、执行模型调用、恢复截断或
+        过长输出、绑定并验证引用、检查项目事实和高风险承诺、执行可选语义与 Self-RAG
+        评估，最后返回携带原始输出、正文、引用、评测、警告和恢复元数据的章节对象。
 
-        返回:
-            SchemeSectionSchema
-
-        阅读提示:
-            主要直接调用：self.runtime_support.now_iso, self.prompt_service.render_section_prompt, dict, get, self.model_service.call_model, self.runtime_support.error, SchemeSectionSchema, project_input.model_dump。
+        ``generation_attempt`` 只改变模型调用身份，便于补充检索后重新生成时保留独立血缘；
+        不会静默覆盖第一次尝试的模型响应。
         """
         started_at = self.runtime_support.now_iso()
         section_id = f"section_{shared_state.run_id}_{section_order:03d}"
+        writer_enforcement: GateEnforcementDecision | None = None
+        if writer_gate_binding is not None:
+            if writer_gate_binding.section_id != section_id:
+                raise ValueError("writer gate section_id does not match generation section")
+            if writer_gate_binding.section_title != section_title:
+                raise ValueError("writer gate section_title does not match generation section")
+            writer_enforcement = self.resolve_writer_gate_enforcement(
+                writer_gate_binding
+            )
+            if writer_enforcement.should_block:
+                return self.build_gate_blocked_section(
+                    shared_state,
+                    project_input=project_input,
+                    section_title=section_title,
+                    section_order=section_order,
+                    rag_context=rag_context,
+                    citations=citations,
+                    writer_gate_binding=writer_gate_binding,
+                )
         model_section_id = (
             section_id
             if generation_attempt <= 1
@@ -212,14 +649,30 @@ class SectionGenerationService:
             rag_context,
             citations,
             previous_sections,
+            evidence_bundle=evidence_bundle,
         )
         context_package = dict(
             (prompt_result.extra or {}).get("llm_context_package") or {}
         )
+        writer_prompt = prompt_result.rendered_text
+        if writer_gate_binding is not None:
+            writer_prompt += writer_gate_prompt_contract(writer_gate_binding)
+            if (
+                writer_enforcement is not None
+                and writer_enforcement.would_block_in_strict
+                and writer_enforcement.should_continue
+            ):
+                writer_prompt += (
+                    "\n【Shadow Enforcement】上述门禁判定保持真实失败；"
+                    "本次仅为链路观察而继续生成草稿，不代表门禁已通过，也不得改写门禁约束。\n"
+                )
+            context_package["writer_gate_binding"] = writer_gate_binding.model_dump(
+                mode="json", exclude_none=True
+            )
         # 生成阶段 2：通过 ModelGateway 调用 LLM 生成章节。
         response = self.model_service.call_model(
             shared_state,
-            prompt=prompt_result.rendered_text,
+            prompt=writer_prompt,
             section_id=model_section_id,
             section_title=section_title,
             project_input=project_input,
@@ -250,7 +703,7 @@ class SectionGenerationService:
                     "project_input": project_input.model_dump(),
                     "llm_context_package": context_package,
                 },
-                prompt=prompt_result.rendered_text,
+                prompt=writer_prompt,
                 model_output=response.content,
                 content=response.content,
                 status=failure_status,
@@ -281,8 +734,11 @@ class SectionGenerationService:
         truncation_recovery_strategy = recovery.truncation_recovery_strategy
         compression_response = recovery.compression_response
         compression_fallback_strategy = recovery.compression_fallback_strategy
-        target_section_chars = recovery.target_section_chars
-        max_section_chars = recovery.max_section_chars
+        technical_recovery_target_chars = (
+            recovery.technical_recovery_target_chars
+        )
+        max_section_chars = recovery.technical_max_section_chars
+        requested_target_section_chars = recovery.requested_target_section_chars
         overlong = recovery.overlong
 
         # Semantic review is optional and advisory only in stage 1.  The core
@@ -639,6 +1095,35 @@ class SectionGenerationService:
         # retain marker-like tokens that were inserted before grounding rejected
         # the corresponding claim/evidence pair.
         content = self.citation_service.reconcile_citation_markers(content, bindings)
+        applied_qualifiers: list[str] = []
+        if writer_gate_binding is not None:
+            content, applied_qualifiers = inject_required_qualifiers(
+                content,
+                writer_gate_binding,
+            )
+
+        # ``bindings`` above are working bindings for repair and Self-RAG. The
+        # qualifier prefix changes paragraph/claim identity and marker offsets,
+        # so persisted bindings must be rebuilt from the final visible content.
+        bindings = self.citation_service.supported_bindings(
+            self.citation_service.bind_citations(
+                document_id=document_id,
+                section_id=section_id,
+                content=content,
+                citations=citations,
+            ),
+            citations,
+        )
+        content = self.citation_service.reconcile_citation_markers(content, bindings)
+        bindings = self.citation_service.supported_bindings(
+            self.citation_service.bind_citations(
+                document_id=document_id,
+                section_id=section_id,
+                content=content,
+                citations=citations,
+            ),
+            citations,
+        )
         citation_ok = (not citation_required) or bool(bindings)
 
         # Citation repair / grounded regeneration may have replaced the prose.
@@ -684,6 +1169,38 @@ class SectionGenerationService:
                 target_section_id=section_id,
             ).violations
         )
+        claim_audit = (
+            self.writer_claim_auditor.audit(
+                content,
+                binding=writer_gate_binding,
+                applied_qualifiers=applied_qualifiers,
+                runtime_context={
+                    "task_id": shared_state.task_id,
+                    "workflow_run_id": shared_state.run_id,
+                    "run_id": shared_state.run_id,
+                    "section_id": section_id,
+                    "section_title": section_title,
+                    "shared_state": shared_state,
+                },
+                force_evaluate=bool(
+                    writer_enforcement is not None
+                    and writer_enforcement.would_block_in_strict
+                    and writer_enforcement.should_continue
+                ),
+            )
+            if writer_gate_binding is not None
+            else None
+        )
+        if claim_audit is not None and writer_enforcement is not None:
+            claim_audit = claim_audit.model_copy(
+                update={
+                    "metadata": {
+                        **dict(claim_audit.metadata),
+                        **writer_enforcement.as_metadata(gate_id="G15"),
+                    }
+                },
+                deep=True,
+            )
 
         quality = self.quality_evaluator.evaluate(
             section_id=section_id,
@@ -703,6 +1220,31 @@ class SectionGenerationService:
         error = quality.error
         section_warnings = quality.warnings
         semantic_scope_issues = quality.semantic_scope_issues
+        eval_result = quality.eval_result
+        if claim_audit is not None:
+            checks = dict(eval_result.checks or {})
+            checks["writer_gate_bound"] = True
+            checks["generation_allowed"] = writer_gate_binding.generation_allowed
+            checks["claim_audit_passed"] = claim_audit.passed
+            failures = list(eval_result.failures or [])
+            if not claim_audit.passed:
+                failures.append("生成后 Claim Audit 未通过")
+                status = ExecutionStatus.FAILED
+                error = self.runtime_support.error(
+                    "SECTION_CLAIM_AUDIT_FAILED",
+                    "generated claims exceed the final evidence gate",
+                    node=section_id,
+                    retryable=False,
+                    failure_category=FailureCategory.UNKNOWN,
+                    user_message=f"‘{section_title}’章节包含未获允许的声明。",
+                )
+            eval_result = eval_result.model_copy(
+                update={
+                    "passed": bool(eval_result.passed and claim_audit.passed),
+                    "checks": checks,
+                    "failures": list(dict.fromkeys(failures)),
+                }
+            )
 
         return SchemeSectionSchema(
             section_id=section_id,
@@ -713,8 +1255,13 @@ class SectionGenerationService:
                 "rag_context": rag_context.model_dump(),
                 "available_citation_ids": [item.citation_id for item in citations],
                 "llm_context_package": context_package,
+                "writer_gate_binding": (
+                    writer_gate_binding.model_dump(mode="json", exclude_none=True)
+                    if writer_gate_binding is not None
+                    else None
+                ),
             },
-            prompt=prompt_result.rendered_text,
+            prompt=writer_prompt,
             model_output=response.content,
             content=content,
             status=status,
@@ -723,7 +1270,7 @@ class SectionGenerationService:
             citation_bindings=bindings,
             source_fact_ids=[item.fact_id for item in structured_facts],
             truncation=truncation,
-            eval_result=quality.eval_result,
+            eval_result=eval_result,
             warnings=section_warnings,
             started_at=started_at,
             finished_at=self.runtime_support.now_iso(),
@@ -784,7 +1331,55 @@ class SectionGenerationService:
                 "repair_result": repair_result,
                 "repair_recheck": repair_recheck_result,
                 "repair_accepted": repair_accepted,
-                "target_section_chars": target_section_chars,
+                "length_metadata_version": "section_length_metadata_v2",
+                "requested_target_section_chars": requested_target_section_chars,
+                "technical_recovery_target_chars": technical_recovery_target_chars,
+                "technical_max_section_chars": max_section_chars,
+                # Existing keys retain their technical meanings for readers
+                # of earlier Section metadata. They are never the V3 soft target.
+                "target_section_chars": technical_recovery_target_chars,
                 "max_section_chars": max_section_chars,
+                "legacy_length_metadata_semantics": (
+                    "target_section_chars=technical_recovery_target_chars;"
+                    "max_section_chars=technical_max_section_chars"
+                ),
+                "writer_execution_status": (
+                    writer_gate_binding.execution_status.value
+                    if writer_gate_binding is not None
+                    else "not_assessed"
+                ),
+                "writer_gate_binding": (
+                    writer_gate_binding.model_dump(mode="json", exclude_none=True)
+                    if writer_gate_binding is not None
+                    else None
+                ),
+                "required_qualifiers_applied": applied_qualifiers,
+                "claim_audit": (
+                    claim_audit.model_dump(mode="json", exclude_none=True)
+                    if claim_audit is not None
+                    else None
+                ),
+                "gate_enforcement": (
+                    writer_enforcement.as_metadata(gate_id="G06/G11")
+                    if writer_enforcement is not None
+                    else None
+                ),
+                "formal_deliverable_eligible": bool(
+                    claim_audit is not None
+                    and claim_audit.passed
+                    and writer_gate_binding is not None
+                    and writer_gate_binding.generation_allowed
+                    and not writer_gate_binding.gate_decision.human_review_required
+                    and status
+                    in {
+                        ExecutionStatus.SUCCESS,
+                        ExecutionStatus.PARTIAL_SUCCESS,
+                    }
+                ),
+                "need_human_review": bool(
+                    writer_gate_binding is None
+                    or writer_gate_binding.gate_decision.human_review_required
+                    or (claim_audit is not None and claim_audit.human_review_required)
+                ),
             },
         )

@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：evaluate_scheme_draft、extract_runtime_hard_failures。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Hard-failure rules shared by runtime and offline evaluation."""
+"""运行时与离线评测共用的文档级硬失败规则。
+
+该门禁只消费已经装配完成的草稿和结构化运行事实，统一检查必需章节、截断、工具状态、
+输出结构、引用出现次数与绑定一致性、Chunk 血缘、证据覆盖和高风险项目事实。它不会
+调用模型，也不会修复正文；失败草稿可保留诊断，但不得升级为业务交付物。
+"""
 
 from __future__ import annotations
 
@@ -16,6 +17,12 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
     SchemeDraftSchema,
 )
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
+from apps.enterprise_document.services.project_input_normalization.input_contract import (
+    read_saved_project_input,
+)
+from apps.enterprise_document.services.writer_artifact_integrity import (
+    validate_writer_section_artifact,
+)
 from apps.enterprise_document.services.scheme_writer.citation_integrity_service import (
     CitationOccurrenceIntegrityGate,
 )
@@ -33,7 +40,6 @@ _CITATION_PATTERN = re.compile(r"\[([A-Za-z0-9_.:\-]+)\]")
 _REFUSAL_TERMS = ("证据不足", "无法确认", "待补充", "需项目方确认", "无法得出")
 
 
-# 阅读注释（函数）：评估 scheme draft。
 def evaluate_scheme_draft(
     draft: SchemeDraftSchema,
     *,
@@ -48,24 +54,12 @@ def evaluate_scheme_draft(
     evidence_sufficient: bool = True,
     workflow_complete: bool = True,
 ) -> HardGateResultSchema:
-    """评估 scheme draft。
+    """对完整草稿执行确定性文档硬门禁。
 
-    参数:
-        draft: draft，具体约束请结合类型标注和调用方确认。
-        citation_required: 引用 required，具体约束请结合类型标注和调用方确认。
-        retrieved_chunk_ids: retrieved 文本块 标识集合，具体约束请结合类型标注和调用方确认。
-        citation_required_sections: 引用 required sections，具体约束请结合类型标注和调用方确认。
-        tool_failed: 工具 failed，具体约束请结合类型标注和调用方确认。
-        key_fields_valid: key fields valid，具体约束请结合类型标注和调用方确认。
-        output_schema_valid: 输出 Schema valid，具体约束请结合类型标注和调用方确认。
-        evidence_sufficient: 证据 sufficient，具体约束请结合类型标注和调用方确认。
-        workflow_complete: 工作流 complete，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        HardGateResultSchema
-
-    阅读提示:
-        主要直接调用：all, failures.append, len, strip, str, sorted, join, bool。
+    引用检查不仅要求存在标记，还要求每次可见 marker 与唯一 Binding 对应、Binding 指向
+    canonical Citation，且来源 Chunk 属于已检索集合。项目高风险事实会用最终正文重新
+    计算，不能仅信任章节阶段记录的旧结果。明确因证据不足而 blocked 的章节可作为安全
+    拒绝说明存在，但普通未评估或证据不足章节不能被文档级判断替代。
     """
     checks: Dict[str, bool] = {}
     failures: list[str] = []
@@ -353,7 +347,7 @@ def evaluate_scheme_draft(
             continue
         try:
             inferred_project_inputs[section.section_id] = (
-                ProjectInputSchema.model_validate(payload)
+                read_saved_project_input(payload)
             )
         except Exception:
             project_input_parse_failures.append(section.section_id)
@@ -452,6 +446,173 @@ def evaluate_scheme_draft(
     if unsupported_project_facts:
         failures.append("存在未获项目输入或已验证证据支撑的高风险项目事实")
 
+    # Stage E.1: recompute writer integrity from the current artifact. Historical
+    # ``claim_audit.passed`` and ``formal_deliverable_eligible`` booleans are only
+    # upstream assertions; they are never accepted as the final fact source.
+    substantive_writer_sections = [
+        section for section in draft.sections if str(section.content or "").strip()
+    ]
+    writer_integrity_results = {
+        section.section_id: validate_writer_section_artifact(
+            section,
+            document_id=draft.document_id,
+            run_id=draft.run_id,
+        )
+        for section in substantive_writer_sections
+    }
+    writer_status_by_section: dict[str, str] = {}
+    for section in substantive_writer_sections:
+        result = writer_integrity_results[section.section_id]
+        writer_status_by_section[section.section_id] = (
+            "not_assessed"
+            if "legacy_writer_artifact_incomplete" in result.failure_codes
+            else (
+                result.binding.execution_status.value
+                if result.binding is not None
+                else "not_assessed"
+            )
+        )
+
+    writer_check_names = (
+        "writer_gate_bound",
+        "writer_binding_identity_fields_present",
+        "writer_binding_section_identity_valid",
+        "writer_execution_status_consistent",
+        "writer_generation_allowed",
+        "writer_human_review_clear",
+        "writer_claim_audit_present",
+        "writer_claim_audit_schema_valid",
+        "writer_audit_section_identity_valid",
+        "writer_audit_content_hash_valid",
+        "writer_audit_binding_hash_valid",
+        "writer_evidence_lineage_fields_present",
+        "writer_audit_evidence_lineage_valid",
+        "writer_audit_claim_boundary_valid",
+        "writer_audit_claim_spans_valid",
+        "writer_classifier_policy_valid",
+        "writer_claim_audit_recomputed_valid",
+        "writer_claim_audits_passed",
+        "writer_required_qualifiers_applied",
+        "writer_section_status_deliverable",
+        "writer_formal_eligibility_recomputed",
+    )
+    for check_name in writer_check_names:
+        checks[check_name] = all(
+            result.checks.get(check_name, False)
+            for result in writer_integrity_results.values()
+        )
+
+    writer_failure_messages = {
+        "writer_gate_bound": "存在未绑定最终证据门禁的章节",
+        "writer_binding_identity_fields_present": "Writer Binding 缺少正式发布所需身份字段",
+        "writer_binding_section_identity_valid": "Writer Binding 与当前章节、文档或运行身份不一致",
+        "writer_execution_status_consistent": "章节 Writer 执行状态与最终门禁不一致",
+        "writer_generation_allowed": "存在被阻断或不允许生成的章节",
+        "writer_human_review_clear": "文档仍包含待人工复核章节",
+        "writer_claim_audit_present": "存在缺失 Claim Audit 的章节",
+        "writer_claim_audit_schema_valid": "存在 Claim Audit Schema 无效的章节",
+        "writer_audit_section_identity_valid": "Claim Audit 与当前章节身份不一致",
+        "writer_audit_content_hash_valid": "writer_claim_audit_stale：正文与审计 Hash 不一致",
+        "writer_audit_binding_hash_valid": "Claim Audit 与当前 Writer Binding Hash 不一致",
+        "writer_evidence_lineage_fields_present": "Writer Binding 或 Claim Audit 缺少 Evidence Contract 血缘字段",
+        "writer_audit_evidence_lineage_valid": "Claim Audit Evidence Contract 血缘不一致",
+        "writer_audit_claim_boundary_valid": "Claim Audit 与当前 Gate Claim 边界不一致",
+        "writer_audit_claim_spans_valid": "Generated Claim Span 与当前正文不一致",
+        "writer_classifier_policy_valid": "Claim Classifier 策略身份无效或不受支持",
+        "writer_claim_audit_recomputed_valid": "当前正文重新执行 Claim Audit 的结果不一致",
+        "writer_claim_audits_passed": "存在未通过的章节 Claim Audit",
+        "writer_required_qualifiers_applied": "限定交付章节未完整保留最终门禁限定语",
+        "writer_section_status_deliverable": "存在不可交付状态的章节",
+        "writer_formal_eligibility_recomputed": "writer_formal_eligibility_mismatch：上游布尔值与 Hard Gate 重算不一致",
+    }
+    for check_name, message in writer_failure_messages.items():
+        if not checks[check_name]:
+            failures.append(message)
+
+    writer_failure_code_section_ids: dict[str, list[str]] = {}
+    writer_integrity_by_section: dict[str, dict[str, Any]] = {}
+    for section_id, result in writer_integrity_results.items():
+        writer_integrity_by_section[section_id] = {
+            "checks": dict(result.checks),
+            "failure_codes": list(result.failure_codes),
+            "upstream_formal_deliverable_eligible": (
+                result.upstream_formal_deliverable_eligible
+            ),
+            "recomputed_formal_deliverable_eligible": (
+                result.recomputed_formal_deliverable_eligible
+            ),
+            "metadata": dict(result.metadata),
+        }
+        for code in result.failure_codes:
+            writer_failure_code_section_ids.setdefault(code, []).append(section_id)
+
+    writer_gate_missing_section_ids = writer_failure_code_section_ids.get(
+        "writer_gate_missing", []
+    )
+    writer_gate_invalid_section_ids = writer_failure_code_section_ids.get(
+        "writer_gate_invalid", []
+    )
+    writer_binding_identity_fields_missing_section_ids = (
+        writer_failure_code_section_ids.get(
+            "writer_binding_identity_fields_missing", []
+        )
+    )
+    writer_binding_identity_mismatch_section_ids = (
+        writer_failure_code_section_ids.get("writer_binding_identity_mismatch", [])
+    )
+    writer_evidence_lineage_fields_missing_section_ids = (
+        writer_failure_code_section_ids.get(
+            "writer_evidence_lineage_fields_missing", []
+        )
+    )
+    legacy_writer_artifact_incomplete_section_ids = (
+        writer_failure_code_section_ids.get(
+            "legacy_writer_artifact_incomplete", []
+        )
+    )
+    writer_audit_identity_mismatch_section_ids = (
+        writer_failure_code_section_ids.get("writer_audit_identity_mismatch", [])
+    )
+    writer_stale_claim_audit_section_ids = writer_failure_code_section_ids.get(
+        "writer_claim_audit_stale", []
+    )
+    writer_status_mismatch_section_ids = writer_failure_code_section_ids.get(
+        "writer_execution_status_mismatch", []
+    )
+    writer_blocked_section_ids = writer_failure_code_section_ids.get(
+        "writer_generation_not_allowed", []
+    )
+    writer_human_review_section_ids = writer_failure_code_section_ids.get(
+        "writer_human_review_required", []
+    )
+    writer_claim_audit_missing_section_ids = writer_failure_code_section_ids.get(
+        "writer_claim_audit_missing", []
+    )
+    writer_claim_audit_invalid_section_ids = writer_failure_code_section_ids.get(
+        "writer_claim_audit_invalid", []
+    )
+    writer_claim_audit_failed_section_ids = writer_failure_code_section_ids.get(
+        "writer_claim_audit_failed", []
+    )
+    writer_qualifier_failure_section_ids = writer_failure_code_section_ids.get(
+        "writer_required_qualifier_missing", []
+    )
+    writer_formal_eligibility_mismatch_section_ids = (
+        writer_failure_code_section_ids.get(
+            "writer_formal_eligibility_mismatch", []
+        )
+    )
+    writer_formal_ineligible_section_ids = [
+        section_id
+        for section_id, result in writer_integrity_results.items()
+        if not result.recomputed_formal_deliverable_eligible
+    ]
+    checks["writer_formal_deliverable_eligible"] = not (
+        writer_formal_ineligible_section_ids
+    )
+    if not checks["writer_formal_deliverable_eligible"]:
+        failures.append("存在经 Document Hard Gate 重算后不具备正式交付资格的章节")
+
     # Do not infer a safe no-evidence response from prose keywords.  A phrase
     # such as “证据不足，但本项目确定建设1000个节点” must not let the unsupported
     # claim hitchhike through the gate.  When evidence is insufficient, only
@@ -464,8 +625,19 @@ def evaluate_scheme_draft(
         section.section_id
         for section in substantive_sections
         if bool((section.extra or {}).get("generation_blocked"))
-        and str((section.extra or {}).get("generation_block_reason") or "")
-        == "evidence_insufficient"
+        and (
+            str(
+                (section.extra or {}).get("generation_block_reason") or ""
+            )
+            == "evidence_insufficient"
+            or str(
+                (section.extra or {}).get("generation_block_reason") or ""
+            ).startswith("writer_")
+            or str(
+                (section.extra or {}).get("writer_execution_status") or ""
+            )
+            in {"blocked", "human_review", "not_assessed"}
+        )
     ]
     explicitly_blocked_for_no_evidence = bool(substantive_sections) and (
         len(evidence_blocked_section_ids) == len(substantive_sections)
@@ -529,15 +701,58 @@ def evaluate_scheme_draft(
             ),
             "final_unsupported_project_facts": final_unsupported_project_facts,
             "partial_sections": partial_sections,
+            "writer_status_by_section": writer_status_by_section,
+            "writer_gate_missing_section_ids": writer_gate_missing_section_ids,
+            "writer_gate_invalid_section_ids": writer_gate_invalid_section_ids,
+            "writer_binding_identity_fields_missing_section_ids": (
+                writer_binding_identity_fields_missing_section_ids
+            ),
+            "writer_binding_identity_mismatch_section_ids": (
+                writer_binding_identity_mismatch_section_ids
+            ),
+            "writer_audit_identity_mismatch_section_ids": (
+                writer_audit_identity_mismatch_section_ids
+            ),
+            "writer_evidence_lineage_fields_missing_section_ids": (
+                writer_evidence_lineage_fields_missing_section_ids
+            ),
+            "legacy_writer_artifact_incomplete_section_ids": (
+                legacy_writer_artifact_incomplete_section_ids
+            ),
+            "writer_stale_claim_audit_section_ids": (
+                writer_stale_claim_audit_section_ids
+            ),
+            "writer_status_mismatch_section_ids": writer_status_mismatch_section_ids,
+            "writer_blocked_section_ids": writer_blocked_section_ids,
+            "writer_human_review_section_ids": writer_human_review_section_ids,
+            "writer_claim_audit_missing_section_ids": (
+                writer_claim_audit_missing_section_ids
+            ),
+            "writer_claim_audit_invalid_section_ids": (
+                writer_claim_audit_invalid_section_ids
+            ),
+            "writer_claim_audit_failed_section_ids": (
+                writer_claim_audit_failed_section_ids
+            ),
+            "writer_qualifier_failure_section_ids": (
+                writer_qualifier_failure_section_ids
+            ),
+            "writer_formal_eligibility_mismatch_section_ids": (
+                writer_formal_eligibility_mismatch_section_ids
+            ),
+            "writer_formal_ineligible_section_ids": (
+                writer_formal_ineligible_section_ids
+            ),
+            "writer_failure_code_section_ids": writer_failure_code_section_ids,
+            "writer_integrity_by_section": writer_integrity_by_section,
             "evidence_blocked_section_ids": evidence_blocked_section_ids,
             "explicitly_blocked_for_no_evidence": explicitly_blocked_for_no_evidence,
         },
     )
 
 
-# 阅读注释（函数）：提取 运行时 hard failures。
 def extract_runtime_hard_failures(run_summary: Dict[str, Any]) -> list[str]:
-    """Read embedded hard-gate failures from run_demo output."""
+    """从主链摘要提取嵌入的硬门禁失败；缺失明细时补充主链失败状态。"""
 
     failures: list[str] = []
     scheme = run_summary.get("scheme_writer_output") or {}

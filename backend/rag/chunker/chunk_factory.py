@@ -1,24 +1,15 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：build_chunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-# src/rag_template/chunker/chunk_factory.py
+"""旧平面 Chunker 的策略名到实现对象映射。
+
+``heading_recursive`` 不是独立算法：HeadingChunker 对超长章节已经内置 RecursiveChunker
+兜底，因此两个策略名指向同一实现。
+"""
 from rag.chunker.fixed_chunker import FixedSizeChunker
 from rag.chunker.HeadingChunker import HeadingChunker
 from rag.chunker.RecursiveChunker import RecursiveChunker
 
 
-# 阅读注释（函数）：构建 chunker。
 def build_chunker(chunk_strategy: str, chunk_size: int, chunk_overlap: int):
-    """
-    根据策略名创建 Chunker。
-
-    支持：
-    - fixed
-    - recursive
-    - heading
-    - heading_recursive: 等同 heading，因为 HeadingChunker 内部已经对超长 section 递归兜底
-    """
+    """规范化策略别名并构造 Fixed、Recursive 或 Heading Chunker。"""
     strategy = (chunk_strategy or "fixed").lower().strip()
 
     if strategy in ["fixed", "fixed_size"]:

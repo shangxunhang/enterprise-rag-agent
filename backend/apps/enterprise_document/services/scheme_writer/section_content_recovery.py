@@ -5,16 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
+from pydantic import ValidationError
+
 from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import TruncationCheckSchema
 from apps.enterprise_document.services.output_validation import detect_truncation
+from context_manager.manager import ContextBudgetExceededError
 from schemas.citation import CitationSchema
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
 
 from .model_service import SectionModelService
-from .prompt_service import SectionPromptService
+from .prompt_service import SectionPromptService, TargetTechnicalRecoveryContext
+from .section_technical_length_policy import build_section_technical_length_policy
 
 
 @dataclass
@@ -27,9 +31,22 @@ class SectionContentRecoveryResult:
     truncation_recovery_strategy: Optional[str]
     compression_response: Optional[ModelResponseSchema]
     compression_fallback_strategy: Optional[str]
-    target_section_chars: int
-    max_section_chars: int
+    technical_recovery_target_chars: int
+    technical_max_section_chars: int
+    requested_target_section_chars: Optional[int]
     overlong: bool
+
+    @property
+    def target_section_chars(self) -> int:
+        """Legacy alias whose meaning remains the technical recovery base."""
+
+        return self.technical_recovery_target_chars
+
+    @property
+    def max_section_chars(self) -> int:
+        """Legacy alias whose meaning remains the technical overlong bound."""
+
+        return self.technical_max_section_chars
 
 
 class SectionContentRecovery:
@@ -68,8 +85,10 @@ class SectionContentRecovery:
         remaining_retries = max(
             0, project_input.generation_requirements.max_section_retries
         )
-        target_section_chars = self.prompt_service.target_section_chars(project_input)
-        max_section_chars = int(target_section_chars * 1.5)
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        max_section_chars = length_policy.technical_max_section_chars
         overlong = len(content) > max_section_chars
         retry_index = 1
 
@@ -126,21 +145,46 @@ class SectionContentRecovery:
 
         compression_response: Optional[ModelResponseSchema] = None
         compression_fallback_strategy: Optional[str] = None
+        compression_context_failed = False
         if overlong and not truncation.truncated:
             print(
                 f"[SectionCompression] START section={section_title} chars={len(content)} "
                 f"limit={max_section_chars}",
                 flush=True,
             )
-            compression_response = self.model_service.compress_overlong_section(
-                shared_state,
-                original_content=content,
-                section_id=model_section_id,
-                section_title=section_title,
-                project_input=project_input,
-                citations=citations,
-            )
-            if compression_response.success and compression_response.content.strip():
+            try:
+                compression_response = self.model_service.compress_overlong_section(
+                    shared_state,
+                    original_content=content,
+                    section_id=model_section_id,
+                    section_title=section_title,
+                    project_input=project_input,
+                    citations=citations,
+                )
+            except ContextBudgetExceededError as exc:
+                compression_context_failed = True
+                print(
+                    f"[SectionCompression] CONTEXT_FALLBACK section={section_title} "
+                    f"reason={type(exc).__name__}:{exc}",
+                    flush=True,
+                )
+            except ValidationError as exc:
+                # Compression is a recovery path. A context-package validation
+                # failure must degrade to the deterministic recovery below rather
+                # than abort the section/workflow. Re-raise unrelated schema bugs.
+                if "LLMContextPackageSchema" not in str(exc):
+                    raise
+                compression_context_failed = True
+                print(
+                    f"[SectionCompression] CONTEXT_FALLBACK section={section_title} "
+                    f"reason={type(exc).__name__}:{exc}",
+                    flush=True,
+                )
+            if (
+                compression_response is not None
+                and compression_response.success
+                and compression_response.content.strip()
+            ):
                 candidate = compression_response.content.strip()
                 candidate_truncation = detect_truncation(
                     candidate,
@@ -183,7 +227,9 @@ class SectionContentRecovery:
                     )
                     overlong = len(content) > max_section_chars
                     compression_fallback_strategy = (
-                        compression_fallback_strategy
+                        "compression_context_budget_complete_sentence_prefix"
+                        if compression_context_failed
+                        else compression_fallback_strategy
                         or "deterministic_complete_sentence_prefix"
                     )
             print(
@@ -199,7 +245,165 @@ class SectionContentRecovery:
             truncation_recovery_strategy=truncation_recovery_strategy,
             compression_response=compression_response,
             compression_fallback_strategy=compression_fallback_strategy,
-            target_section_chars=target_section_chars,
-            max_section_chars=max_section_chars,
+            technical_recovery_target_chars=(
+                length_policy.technical_recovery_target_chars
+            ),
+            technical_max_section_chars=max_section_chars,
+            requested_target_section_chars=getattr(
+                project_input.generation_requirements, "target_section_chars", None
+            ),
+            overlong=overlong,
+        )
+
+    def recover_target(
+        self,
+        shared_state: SharedStateSchema,
+        *,
+        response: ModelResponseSchema,
+        project_input: ProjectInputSchema,
+        recovery_context: TargetTechnicalRecoveryContext,
+    ) -> SectionContentRecoveryResult:
+        """Recover Target output using only its immutable semantic lock."""
+
+        content = response.content.strip()
+        truncation = detect_truncation(
+            content,
+            response.finish_reason,
+            project_input.generation_requirements.min_section_chars,
+        )
+        truncation_retry_responses: list[ModelResponseSchema] = []
+        truncation_recovery_strategy: Optional[str] = None
+        remaining_retries = max(
+            0, project_input.generation_requirements.max_section_retries
+        )
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        max_section_chars = length_policy.technical_max_section_chars
+        overlong = len(content) > max_section_chars
+        retry_index = 1
+
+        while truncation.truncated and remaining_retries > 0:
+            retry_response = self.model_service.retry_target_truncated_section(
+                shared_state,
+                project_input=project_input,
+                recovery_context=recovery_context,
+                retry_index=retry_index,
+            )
+            truncation_retry_responses.append(retry_response)
+            remaining_retries -= 1
+            retry_index += 1
+            if not retry_response.success or not retry_response.content.strip():
+                continue
+            candidate = retry_response.content.strip()
+            candidate_truncation = detect_truncation(
+                candidate,
+                retry_response.finish_reason,
+                project_input.generation_requirements.min_section_chars,
+            )
+            content = candidate
+            truncation = candidate_truncation
+            overlong = len(content) > max_section_chars
+
+        if truncation.truncated:
+            recovered = self.model_service.recover_complete_prefix(
+                content,
+                min_chars=project_input.generation_requirements.min_section_chars,
+                max_chars=max_section_chars,
+            )
+            if recovered:
+                content = recovered
+                truncation = detect_truncation(
+                    content,
+                    "stop",
+                    project_input.generation_requirements.min_section_chars,
+                )
+                overlong = len(content) > max_section_chars
+                truncation_recovery_strategy = "complete_sentence_prefix"
+
+        compression_response: Optional[ModelResponseSchema] = None
+        compression_fallback_strategy: Optional[str] = None
+        compression_context_failed = False
+        if overlong and not truncation.truncated:
+            try:
+                compression_response = (
+                    self.model_service.compress_target_overlong_section(
+                        shared_state,
+                        original_content=content,
+                        project_input=project_input,
+                        recovery_context=recovery_context,
+                    )
+                )
+            except ContextBudgetExceededError:
+                compression_context_failed = True
+            if (
+                compression_response is not None
+                and compression_response.success
+                and compression_response.content.strip()
+            ):
+                candidate = compression_response.content.strip()
+                candidate_truncation = detect_truncation(
+                    candidate,
+                    compression_response.finish_reason,
+                    project_input.generation_requirements.min_section_chars,
+                )
+                if not candidate_truncation.truncated and len(candidate) < len(content):
+                    content = candidate
+                    truncation = candidate_truncation
+                    overlong = len(content) > max_section_chars
+                elif candidate_truncation.truncated:
+                    recovered_candidate = self.model_service.recover_complete_prefix(
+                        candidate,
+                        min_chars=(
+                            project_input.generation_requirements.min_section_chars
+                        ),
+                        max_chars=max_section_chars,
+                    )
+                    if recovered_candidate and len(recovered_candidate) < len(content):
+                        content = recovered_candidate
+                        truncation = detect_truncation(
+                            content,
+                            "stop",
+                            project_input.generation_requirements.min_section_chars,
+                        )
+                        overlong = len(content) > max_section_chars
+                        compression_fallback_strategy = (
+                            "compressed_complete_sentence_prefix"
+                        )
+            if overlong:
+                deterministic = self.model_service.recover_complete_prefix(
+                    content,
+                    min_chars=project_input.generation_requirements.min_section_chars,
+                    max_chars=max_section_chars,
+                )
+                if deterministic and len(deterministic) < len(content):
+                    content = deterministic
+                    truncation = detect_truncation(
+                        content,
+                        "stop",
+                        project_input.generation_requirements.min_section_chars,
+                    )
+                    overlong = len(content) > max_section_chars
+                    compression_fallback_strategy = (
+                        "compression_context_budget_complete_sentence_prefix"
+                        if compression_context_failed
+                        else compression_fallback_strategy
+                        or "deterministic_complete_sentence_prefix"
+                    )
+
+        return SectionContentRecoveryResult(
+            content=content,
+            truncation=truncation,
+            truncation_retry_responses=truncation_retry_responses,
+            truncation_recovery_strategy=truncation_recovery_strategy,
+            compression_response=compression_response,
+            compression_fallback_strategy=compression_fallback_strategy,
+            technical_recovery_target_chars=(
+                length_policy.technical_recovery_target_chars
+            ),
+            technical_max_section_chars=max_section_chars,
+            requested_target_section_chars=getattr(
+                project_input.generation_requirements, "target_section_chars", None
+            ),
             overlong=overlong,
         )

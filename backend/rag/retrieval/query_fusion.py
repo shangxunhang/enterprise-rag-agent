@@ -1,31 +1,20 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：MultiQueryFusion。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Multi-query RRF fusion independent from the RAG engine shell."""
+"""独立于 RAG Engine 外壳的多 Query 父级候选 RRF 融合。
+
+输入按 Query 标签分组，每组内部已有排名；融合键优先采用 ``parent/context_chunk_id``，
+因此同一父级上下文被不同改写 Query 命中时只保留一条候选，并累加倒数排名贡献。
+"""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from core.diagnostics import capture_pool
 
 
-# 阅读注释（类）：封装 multi 查询 融合，集中封装相关状态、依赖和行为。
 class MultiQueryFusion:
-    """封装 multi 查询 融合，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：处理 结果 key 相关逻辑。
+    """融合原 Query、改写 Query 和 HyDE Query 的父级候选。"""
     @staticmethod
     def result_key(result: Dict[str, Any]) -> str:
-        """处理 结果 key 相关逻辑。
-
-        参数:
-            result: 待处理的结果对象。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：str, result.get。
-        """
+        """选择最能代表生成上下文身份的稳定键，并回退到命中 Chunk。"""
         return str(
             result.get("parent_chunk_id")
             or result.get("context_chunk_id")
@@ -35,47 +24,22 @@ class MultiQueryFusion:
             or ""
         )
 
-    # 阅读注释（函数）：处理 safe rank 相关逻辑。
     @staticmethod
     def safe_rank(value: Any, fallback: int) -> int:
-        """处理 safe rank 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-            fallback: fallback，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            int
-
-        阅读提示:
-            主要直接调用：int。
-        """
+        """把排名转为整数，缺失或非法时使用列表位置。"""
         try:
             return fallback if value is None else int(value)
         except Exception:
             return fallback
 
-    # 阅读注释（函数）：处理 safe score 相关逻辑。
     @staticmethod
     def safe_score(value: Any, default: float = 0.0) -> float:
-        """处理 safe score 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-            default: default，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            float
-
-        阅读提示:
-            主要直接调用：float。
-        """
+        """把分数转为浮点数，非法值不参与排序。"""
         try:
             return default if value is None else float(value)
         except Exception:
             return default
 
-    # 阅读注释（函数）：融合 MultiQueryFusion。
     def fuse(
         self,
         query_results: Dict[str, List[Dict[str, Any]]],
@@ -83,18 +47,10 @@ class MultiQueryFusion:
         rrf_k: int,
         top_k: int,
     ) -> List[Dict[str, Any]]:
-        """融合 MultiQueryFusion。
+        """按 ``1 / (rrf_k + rank)`` 累加多 Query 贡献并返回前 ``top_k``。
 
-        参数:
-            query_results: 查询 结果集合，具体约束请结合类型标注和调用方确认。
-            rrf_k: rrf k，具体约束请结合类型标注和调用方确认。
-            top_k: top k，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：query_results.items, enumerate, isinstance, self.result_key, self.safe_rank, raw_result.get, float, dict。
+        metadata 保留每个 Query 的来源排名、单次贡献和参与 Query 列表；最终 ``score``
+        改为 Query Fusion 分数，而原召回分数仅作为同分时的次级排序依据。
         """
         if not query_results:
             return []
@@ -140,6 +96,8 @@ class MultiQueryFusion:
             reverse=True,
         )
         selected = values[: int(top_k)]
+        capture_pool("R-QUERY-FUSION", values, unit_id="C07", operation_id="query_rrf_before_top_k",
+            phase="BEFORE_TOP_K", rrf_k=rrf_k, top_k=top_k)
         for rank, item in enumerate(selected, start=1):
             metadata = item.setdefault("metadata", {})
             item["rank"] = rank
@@ -150,4 +108,6 @@ class MultiQueryFusion:
             sources = metadata.get("retrieval_sources", [])
             if "query_fusion" not in sources:
                 metadata["retrieval_sources"] = list(sources) + ["query_fusion"]
+        capture_pool("R-QUERY-FUSION", selected, unit_id="C07", operation_id="query_rrf_after_top_k",
+            phase="RESULT", rrf_k=rrf_k, top_k=top_k, drop_reason="QUERY_FUSION_TOP_K")
         return selected

@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：EvalRunner、build_default_eval_samples。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Evaluation runner for the corrected section-oriented workflow."""
+"""执行面向分章节建设方案工作流的端到端离线评测。
+
+本模块负责三件事：调用真实运行入口生成一次任务产物、把运行摘要转换为结构化
+评测结果、将多个结果聚合并写成 JSON/JSONL 报告。软评分用于比较整体完成度，
+运行时硬失败和文档硬门禁具有否决权，不能被较高的平均分掩盖。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from eval.agent.hard_gate import extract_runtime_hard_failures
 from schemas.eval_schema import (
@@ -21,128 +22,126 @@ from schemas.eval_schema import (
 )
 
 
-# 阅读注释（类）：封装 评测 runner，集中封装相关状态、依赖和行为。
 class EvalRunner:
-    """封装 评测 runner，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 EvalRunner，保存运行所需的依赖、配置或状态。
-    def __init__(self, output_dir: str | Path = "data/eval_outputs", min_output_chars: int = 100) -> None:
-        """初始化 EvalRunner，保存运行所需的依赖、配置或状态。
+    """运行建设方案样本并检查业务结果、可观测性和数据采集产物。
 
-        参数:
-            output_dir: 输出 dir，具体约束请结合类型标注和调用方确认。
-            min_output_chars: min 输出 chars，具体约束请结合类型标注和调用方确认。
+    Attributes:
+        output_dir: 最终评测报告的输出目录。
+        min_output_chars: 草稿正文通过最低长度检查所需的字符数。
 
-        返回:
-            None
+    该类不负责构建生产运行时。调用方通过 ``run_func`` 注入真实任务入口，使评测
+    与应用装配解耦，同时仍然验证实际主链生成的文件和结构化摘要。
+    """
 
-        阅读提示:
-            主要直接调用：Path, self.output_dir.mkdir。
+    def __init__(
+        self,
+        output_dir: str | Path = "data/eval_outputs",
+        min_output_chars: int = 100,
+    ) -> None:
+        """初始化报告目录和最低正文长度阈值。
+
+        Args:
+            output_dir: 保存聚合报告的目录；不存在时立即创建。
+            min_output_chars: 正文长度软检查阈值，不直接替代业务硬门禁。
         """
+
+        # 第一步：标准化输出目录并确保后续写报告时父目录存在。
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 第二步：保存可配置的软检查阈值，供每个样本统一使用。
         self.min_output_chars = min_output_chars
 
-    # 阅读注释（函数）：处理 now iso 相关逻辑。
     @staticmethod
     def _now_iso() -> str:
-        """处理 now iso 相关逻辑。
+        """返回带时区的 UTC ISO 时间戳。"""
 
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：isoformat, datetime.now。
-        """
+        # 评测结果使用 UTC，避免不同时区执行产生不可比较的时间语义。
         return datetime.now(timezone.utc).isoformat()
 
-    # 阅读注释（函数）：处理 new 标识 相关逻辑。
     @staticmethod
     def _new_id(prefix: str) -> str:
-        """处理 new 标识 相关逻辑。
+        """生成带业务前缀的短随机标识。"""
 
-        参数:
-            prefix: prefix，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：uuid.uuid4。
-        """
+        # 前缀用于区分报告和结果，随机后缀避免同一时刻并发执行重名。
         return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
-    # 阅读注释（函数）：处理 文件 exists 相关逻辑。
     @staticmethod
     def _file_exists(path: str | Path | None) -> bool:
-        """处理 文件 exists 相关逻辑。
+        """判断可选路径是否指向一个已存在的文件系统对象。"""
 
-        参数:
-            path: 目标文件或目录路径。
-
-        返回:
-            bool
-
-        阅读提示:
-            主要直接调用：bool, exists, Path。
-        """
+        # 空路径直接视为不存在，避免 Path(None) 产生无关异常。
         return bool(path and Path(path).exists())
 
-    # 阅读注释（函数）：读取 jsonl。
     @staticmethod
     def _read_jsonl(path: str | Path | None) -> List[Dict[str, Any]]:
-        """读取 jsonl。
+        """读取 JSONL 文件中的非空对象行。
 
-        参数:
-            path: 目标文件或目录路径。
+        Args:
+            path: 可选 JSONL 路径。路径为空或不存在时返回空列表。
 
-        返回:
-            List[Dict[str, Any]]
+        Returns:
+            按文件顺序解析的字典列表。
 
-        阅读提示:
-            主要直接调用：exists, Path, json.loads, splitlines, read_text, line.strip。
+        Raises:
+            json.JSONDecodeError: 任一非空行不是合法 JSON 时抛出。损坏的 Trace
+                属于评测基础设施错误，不应静默跳过。
         """
+
+        # 第一步：缺失文件返回空集合，由上层的 exists/complete 检查决定是否失败。
         if not path or not Path(path).exists():
             return []
+
+        # 第二步：逐行解析并忽略纯空白行，保持 JSONL 的事件顺序。
         return [
             json.loads(line)
             for line in Path(path).read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
 
-    # 阅读注释（函数）：评估 summary。
-    def evaluate_summary(self, sample: EvalSampleSchema, run_summary: Dict[str, Any]) -> EvalResultSchema:
-        """评估 summary。
+    def evaluate_summary(
+        self,
+        sample: EvalSampleSchema,
+        run_summary: Dict[str, Any],
+    ) -> EvalResultSchema:
+        """把一次真实运行摘要转换为结构化评测结果。
 
-        参数:
-            sample: sample，具体约束请结合类型标注和调用方确认。
-            run_summary: run summary，具体约束请结合类型标注和调用方确认。
+        Args:
+            sample: 黄金样本及其章节、关键词和引用要求。
+            run_summary: 主链运行入口返回的摘要，包含草稿、Writer 输出和产物路径。
 
-        返回:
-            EvalResultSchema
-
-        阅读提示:
-            主要直接调用：run_summary.get, draft.get, item.get, all, sum, len, bool, self._file_exists。
+        Returns:
+            同时包含硬成功判定、软评分、细分检查和诊断信息的结果对象。
         """
+
+        # 第一步：读取生成草稿和 Writer 输出；缺失字段按空结构处理以形成可诊断失败。
         draft = run_summary.get("generated_draft") or {}
         writer_output = run_summary.get("scheme_writer_output") or {}
         content = draft.get("full_text") or draft.get("content") or ""
         sections = draft.get("sections") or []
         paths = run_summary.get("paths") or {}
 
+        # 第二步：用章节标题集合检查黄金样本要求的全部章节是否存在。
         required_sections = sample.expected.required_sections
         section_titles = {item.get("section_title") for item in sections}
-        has_required_sections = all(item in section_titles for item in required_sections)
+        has_required_sections = all(
+            section_title in section_titles
+            for section_title in required_sections
+        )
 
+        # 第三步：计算预期关键词的字面覆盖率；无关键词约束时该项记为满分。
         keywords = sample.expected.expected_keywords
         hit_count = sum(1 for keyword in keywords if keyword in content)
         keyword_hit_rate = hit_count / len(keywords) if keywords else 1.0
 
+        # 第四步：引用验收以已绑定到具体声明位置的 citation_bindings 为准。
         citation_bindings = draft.get("citation_bindings") or []
         has_citations = bool(citation_bindings)
         citation_requirement_met = (
             not sample.expected.expected_citation_required or has_citations
         )
 
+        # 第五步：读取 Trace 并检查主链关键生命周期事件是否完整出现。
         trace_exists = self._file_exists(paths.get("trace"))
         trace_events = self._read_jsonl(paths.get("trace")) if trace_exists else []
         event_types = [item.get("event_type") for item in trace_events]
@@ -158,11 +157,13 @@ class EvalRunner:
         }
         trace_complete = required_trace_events.issubset(set(event_types))
 
+        # 第六步：复用运行时硬门禁提取器，保证离线评测与线上交付标准一致。
         hard_failures = extract_runtime_hard_failures(run_summary)
         hard_gate_passed = not hard_failures and bool(
             (writer_output.get("hard_gate") or {}).get("passed", True)
         )
 
+        # 第七步：构造可单独诊断的软检查项，包括业务产物和可观测/采集基础设施。
         checks = {
             "pipeline_success": run_summary.get("status") == "success",
             "hard_gate_passed": hard_gate_passed,
@@ -177,7 +178,7 @@ class EvalRunner:
         passed_count = sum(checks.values())
         score = passed_count / len(checks)
 
-        # Hard failures are vetoes. A high soft score can never override them.
+        # 第八步：计算严格成功。硬失败、硬门禁、主链状态、章节或引用任一不满足都失败。
         success = (
             not hard_failures
             and hard_gate_passed
@@ -186,6 +187,7 @@ class EvalRunner:
             and citation_requirement_met
         )
 
+        # 第九步：保存稳定指标字段，并将扩展检查和计数放入 extra 供报告诊断。
         metrics = EvalMetricsSchema(
             success=success,
             has_required_sections=has_required_sections,
@@ -202,6 +204,8 @@ class EvalRunner:
                 "trace_event_count": len(trace_events),
             },
         )
+
+        # 第十步：返回逐样本结果；正文只保留预览，完整内容仍由运行产物路径承载。
         return EvalResultSchema(
             eval_result_id=self._new_id("eval_result"),
             sample_id=sample.sample_id,
@@ -220,31 +224,30 @@ class EvalRunner:
             },
         )
 
-    # 阅读注释（函数）：评估 samples。
     def evaluate_samples(
         self,
         samples: List[EvalSampleSchema],
-        run_func,
+        run_func: Callable[..., Dict[str, Any]],
         run_id_prefix: str = "run_eval",
         output_root: str | Path = "data",
         clean_existing: bool = True,
     ) -> Dict[str, Any]:
-        """评估 samples。
+        """依次运行全部样本并构建聚合报告。
 
-        参数:
-            samples: samples，具体约束请结合类型标注和调用方确认。
-            run_func: run func，具体约束请结合类型标注和调用方确认。
-            run_id_prefix: run 标识 prefix，具体约束请结合类型标注和调用方确认。
-            output_root: 输出 root，具体约束请结合类型标注和调用方确认。
-            clean_existing: clean existing，具体约束请结合类型标注和调用方确认。
+        Args:
+            samples: 待运行的结构化评测样本。
+            run_func: 真实应用入口。必须接受本方法传入的关键字参数并返回运行摘要。
+            run_id_prefix: 为本批次生成 run_id 时使用的前缀。
+            output_root: 运行产物根目录，不是最终报告目录。
+            clean_existing: 是否要求运行入口清理相同 run_id 的旧产物。
 
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：enumerate, run_func, results.append, self.evaluate_summary, self.build_report。
+        Returns:
+            ``build_report`` 生成的聚合报告字典。
         """
+
         results: List[EvalResultSchema] = []
+
+        # 第一步：为每个样本生成确定性可读的 task/run 标识并调用真实主链。
         for index, sample in enumerate(samples, start=1):
             run_id = f"{run_id_prefix}_{sample.sample_id}_{index}"
             task_id = f"task_{run_id}"
@@ -256,22 +259,24 @@ class EvalRunner:
                 output_root=output_root,
                 clean_existing=clean_existing,
             )
+
+            # 第二步：每次运行结束后立即评测，防止后续样本覆盖其内存摘要。
             results.append(self.evaluate_summary(sample, run_summary))
+
+        # 第三步：所有样本完成后统一聚合，确保分母等于实际结果数。
         return self.build_report(results)
 
-    # 阅读注释（函数）：构建 report。
     def build_report(self, results: List[EvalResultSchema]) -> Dict[str, Any]:
-        """构建 report。
+        """把逐样本结果聚合为批次级报告。
 
-        参数:
-            results: 待处理的结果集合。
+        Args:
+            results: 已完成评测的样本结果列表。
 
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：len, sum, item.metrics.extra.get, self._new_id, self._now_iso, item.model_dump。
+        Returns:
+            包含批次标识、汇总指标和完整逐样本结果的字典。
         """
+
+        # 第一步：统计严格成功和包含硬失败的样本数。
         total = len(results)
         success_count = sum(1 for item in results if item.metrics.success)
         hard_failure_count = sum(
@@ -279,6 +284,8 @@ class EvalRunner:
             for item in results
             if (item.metrics.extra.get("hard_failures") or [])
         )
+
+        # 第二步：对可比较的软指标取宏平均；空结果集统一返回 0。
         return {
             "schema_version": "eval_report_v2",
             "eval_report_id": self._new_id("eval_report"),
@@ -289,59 +296,87 @@ class EvalRunner:
                 "success_rate": success_count / total if total else 0.0,
                 "hard_failure_count": hard_failure_count,
                 "average_score": (
-                    sum(item.score or 0.0 for item in results) / total if total else 0.0
+                    sum(item.score or 0.0 for item in results) / total
+                    if total
+                    else 0.0
                 ),
                 "required_sections_rate": (
-                    sum(1 for item in results if item.metrics.has_required_sections) / total
-                    if total else 0.0
+                    sum(
+                        1
+                        for item in results
+                        if item.metrics.has_required_sections
+                    )
+                    / total
+                    if total
+                    else 0.0
                 ),
                 "keyword_hit_rate": (
-                    sum(item.metrics.context_keyword_hit or 0.0 for item in results) / total
-                    if total else 0.0
+                    sum(
+                        item.metrics.context_keyword_hit or 0.0
+                        for item in results
+                    )
+                    / total
+                    if total
+                    else 0.0
                 ),
             },
             "results": [item.model_dump() for item in results],
         }
 
-    # 阅读注释（函数）：保存 report。
-    def save_report(self, report: Dict[str, Any], report_name: Optional[str] = None) -> Dict[str, str]:
-        """保存 report。
+    def save_report(
+        self,
+        report: Dict[str, Any],
+        report_name: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """将同一报告写为便于阅读的 JSON 和便于流式处理的 JSONL。
 
-        参数:
-            report: report，具体约束请结合类型标注和调用方确认。
-            report_name: report 名称，具体约束请结合类型标注和调用方确认。
+        Args:
+            report: ``build_report`` 返回的完整报告。
+            report_name: 可选文件名前缀；省略时使用本地时间生成唯一名称。
 
-        返回:
-            Dict[str, str]
-
-        阅读提示:
-            主要直接调用：strftime, datetime.now, json_path.write_text, json.dumps, jsonl_path.open, handle.write, str。
+        Returns:
+            ``json`` 和 ``jsonl`` 两种产物的字符串路径。
         """
-        report_name = report_name or f"eval_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        # 第一步：确定共享文件名前缀，并推导两种格式的目标路径。
+        report_name = report_name or (
+            f"eval_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         json_path = self.output_dir / f"{report_name}.json"
         jsonl_path = self.output_dir / f"{report_name}.jsonl"
-        json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 第二步：完整 JSON 保存批次摘要和全部结果，便于人工审阅。
+        json_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # 第三步：JSONL 每行写一个样本结果，便于后续数据分析和增量消费。
         with jsonl_path.open("w", encoding="utf-8") as handle:
             for result in report["results"]:
                 handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+        # 第四步：返回实际路径，供 CLI 或上层报告索引展示。
         return {"json": str(json_path), "jsonl": str(jsonl_path)}
 
 
-# 阅读注释（函数）：构建 default 评测 samples。
-def build_default_eval_samples(created_at: Optional[str] = None) -> List[EvalSampleSchema]:
-    """构建 default 评测 samples。
+def build_default_eval_samples(
+    created_at: Optional[str] = None,
+) -> List[EvalSampleSchema]:
+    """构建一条覆盖硬门禁、章节和引用要求的默认回归样本。
 
-    参数:
-        created_at: created at，具体约束请结合类型标注和调用方确认。
+    Args:
+        created_at: 可选固定时间戳，便于测试得到稳定数据；省略时使用当前 UTC。
 
-    返回:
-        List[EvalSampleSchema]
-
-    阅读提示:
-        主要直接调用：isoformat, datetime.now, EvalSampleSchema, EvalExpectedSchema。
+    Returns:
+        可直接传给 ``EvalRunner.evaluate_samples`` 的样本列表。
     """
+
+    # 第一步：固定时间和标准章节集合，保证输入与黄金预期使用同一份章节定义。
     created_at = created_at or datetime.now(timezone.utc).isoformat()
     sections = ["项目概述", "建设目标", "技术方案", "实施与验收"]
+
+    # 第二步：构造符合生产 ProjectInput 边界的最小建设方案输入。
     base_input = {
         "tenant_id": "eval_tenant",
         "project_name": "评测项目",
@@ -360,6 +395,8 @@ def build_default_eval_samples(created_at: Optional[str] = None) -> List[EvalSam
         },
         "business_goal": "生成可追溯的建设方案文字草稿。",
     }
+
+    # 第三步：把运行输入与黄金验收条件封装为严格 EvalSampleSchema。
     return [
         EvalSampleSchema(
             sample_id="scheme_generation_hard_gate_001",

@@ -1,12 +1,12 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
+"""文档分块函数、内置 Chunker 和工厂公开入口。"""
+
 from rag.chunker.chunk import chunk_documents
 from rag.chunker.fixed_chunker import FixedSizeChunker
 from rag.chunker.RecursiveChunker import RecursiveChunker
 from rag.chunker.HeadingChunker import HeadingChunker
 from rag.chunker.chunk_factory import build_chunker
+
+# 只公开稳定构建接口；具体实现类仍可从其定义模块直接导入。
 __all__ = [
     "chunk_documents",
     "FixedSizeChunker",

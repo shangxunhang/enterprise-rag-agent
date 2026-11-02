@@ -1,229 +1,271 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_iter_jsonl_paths、load_jsonl_dicts、ParentChunkStore。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
+"""读取父块/子块 JSONL，并按身份提供父级上下文回填。
+
+``ParentChunkStore`` 是只读内存索引：启动时加载父块文件，按 ``parent_chunk_id`` 建立
+字典，检索命中子块后可 O(1) 恢复父块正文。JSONL 输入既支持普通文件，也支持 Spark
+输出目录；记录字段会被标准化为父块协议，原始额外字段保存在 ``extra``。
 """
-rag_template/store/parent_chunk_store.py
-=======================================
-
-Parent chunk 本地存储读取层。
-
-P1 目标：
-- 从 parent_chunks.jsonl 或 Spark/本地输出目录加载 parent_chunk_v1。
-- 提供 parent_chunk_id -> parent_chunk 的 O(1) 回填能力。
-- 不负责向量检索、不负责 rerank、不负责 prompt 组装。
-"""
-
-from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, List, Union
+
+from rag.configs.SchemaConfig import (
+    DEFAULT_PARENT_CHUNK_SCHEMA_VERSION,
+)
 
 
-# 阅读注释（函数）：处理 iter jsonl paths 相关逻辑。
-def _iter_jsonl_paths(path: str | Path) -> Iterator[Path]:
-    """处理 iter jsonl paths 相关逻辑。
+PathLike = Union[str, Path]
 
-    参数:
-        path: 目标文件或目录路径。
 
-    返回:
-        Iterator[Path]
+def _iter_jsonl_files(path: Path) -> Iterable[Path]:
+    """枚举单个 JSONL 文件或目录中的数据文件。
 
-    阅读提示:
-        主要直接调用：Path, p.is_file, p.is_dir, sorted, p.iterdir, x.is_file, x.name.startswith, x.suffix.lower。
+    Args:
+        path: 普通文件，或包含 ``part-*``、``.jsonl``、``.json`` 文件的目录。
+
+    Yields:
+        单文件直接返回自身；目录按文件名排序返回直接子文件。
+
+    Raises:
+        FileNotFoundError: 路径既不是文件也不是目录时抛出。
     """
-    p = Path(path)
-    if p.is_file():
-        yield p
+
+    # 普通文件不限制扩展名，调用方显式指定即视为数据源。
+    if path.is_file():
+        yield path
         return
-    if p.is_dir():
+
+    # 目录模式兼容 Spark part-* 和常规 JSON/JSONL 文件。
+    if path.is_dir():
         candidates = sorted(
-            x for x in p.iterdir()
-            if x.is_file() and (x.name.startswith("part-") or x.suffix.lower() in {".jsonl", ".json"})
+            [
+                item
+                for item in path.iterdir()
+                if item.is_file()
+                and (
+                    item.name.startswith("part-")
+                    or item.suffix.lower() in {".jsonl", ".json"}
+                )
+            ]
         )
         for item in candidates:
             yield item
         return
-    raise FileNotFoundError(f"Parent chunk path not found: {path}")
+
+    raise FileNotFoundError(f"Path not found: {path}")
 
 
-# 阅读注释（函数）：加载 jsonl dicts。
-def load_jsonl_dicts(path: str | Path) -> List[Dict[str, Any]]:
-    """加载 jsonl dicts。
+def load_jsonl_dicts(path: PathLike) -> List[Dict[str, Any]]:
+    """读取一个 JSONL 文件或兼容目录中的对象记录。
 
-    参数:
-        path: 目标文件或目录路径。
+    Args:
+        path: 输入文件或目录。
 
-    返回:
-        List[Dict[str, Any]]
+    Returns:
+        按文件名和行顺序读取的对象列表。空行跳过，非对象 JSON 行也跳过。
 
-    阅读提示:
-        主要直接调用：_iter_jsonl_paths, file_path.open, enumerate, line.strip, json.loads, ValueError, isinstance, records.append。
+    Raises:
+        ValueError: 任一非空行不是合法 JSON 时，附带文件和行号抛出。
     """
+
+    input_path = Path(path)
     records: List[Dict[str, Any]] = []
-    for file_path in _iter_jsonl_paths(path):
-        with file_path.open("r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, start=1):
-                line = line.strip()
-                if not line:
+
+    # 第一步：按确定性文件顺序读取。
+    for file_path in _iter_jsonl_files(input_path):
+        with file_path.open("r", encoding="utf-8") as handle:
+            # 第二步：逐行解析，空行不产生记录。
+            for line_number, line in enumerate(handle, start=1):
+                normalized = line.strip()
+                if not normalized:
                     continue
                 try:
-                    obj = json.loads(line)
+                    item = json.loads(normalized)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"Invalid JSONL: file={file_path}, line={line_no}, err={exc}") from exc
-                if isinstance(obj, dict):
-                    records.append(obj)
+                    raise ValueError(
+                        f"Invalid JSON line: file={file_path}, "
+                        f"line={line_number}, err={exc}"
+                    ) from exc
+
+                # 只保留对象行，保持函数返回类型稳定。
+                if isinstance(item, dict):
+                    records.append(item)
+
     return records
 
 
-# 阅读注释（类）：封装 父块 文本块 store，集中封装相关状态、依赖和行为。
-class ParentChunkStore:
-    """In-memory parent_chunk_v1 store.
+def _normalize_parent_record(
+    item: Dict[str, Any],
+) -> Dict[str, Any]:
+    """把兼容父块记录映射为稳定字段集合。
 
-    第一版直接内存加载，适合单机 MVP / 本地测试。
-    后续可以替换成 HDFS、MySQL、MongoDB 或对象存储，但对上层保持 get(parent_chunk_id) 接口不变。
+    ``parent_chunk_id`` 优先读取专用字段，缺失时回退通用 ``chunk_id``。不属于标准
+    顶层字段的内容统一进入 ``extra``，防止旧版本扩展字段丢失。
     """
 
-    # 阅读注释（函数）：初始化 ParentChunkStore，保存运行所需的依赖、配置或状态。
-    def __init__(self, parent_chunks: Iterable[Dict[str, Any]]):
-        """初始化 ParentChunkStore，保存运行所需的依赖、配置或状态。
+    # 第一步：读取父块身份和已有 extra。
+    parent_chunk_id = str(
+        item.get("parent_chunk_id") or item.get("chunk_id") or ""
+    )
+    extra = dict(item.get("extra") or {})
 
-        参数:
-            parent_chunks: 父块 chunks，具体约束请结合类型标注和调用方确认。
+    # 第二步：收集未被标准字段消费的兼容扩展键。
+    reserved_keys = {
+        "schema_version",
+        "chunk_id",
+        "parent_chunk_id",
+        "doc_id",
+        "file_id",
+        "tenant_id",
+        "kb_id",
+        "text",
+        "chunk_index",
+        "parent_index",
+        "chunk_level",
+        "child_chunk_ids",
+        "source",
+        "source_path",
+        "title",
+        "section",
+        "section_level",
+        "page_num",
+        "page_start",
+        "page_end",
+        "start_char",
+        "end_char",
+        "token_count",
+        "chunker_name",
+        "chunker_version",
+        "created_at",
+        "language",
+        "status",
+        "security_level",
+        "extra",
+    }
+    for key, value in item.items():
+        if key not in reserved_keys and key not in extra:
+            extra[key] = value
 
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
+    # 第三步：构造完整父块投影；缺失身份和文本由调用方后续校验或跳过。
+    return {
+        "schema_version": item.get(
+            "schema_version",
+            DEFAULT_PARENT_CHUNK_SCHEMA_VERSION,
+        ),
+        "chunk_id": parent_chunk_id,
+        "parent_chunk_id": parent_chunk_id,
+        "doc_id": item.get("doc_id", ""),
+        "file_id": item.get("file_id"),
+        "tenant_id": item.get("tenant_id"),
+        "kb_id": item.get("kb_id"),
+        "text": str(item.get("text") or ""),
+        "chunk_index": item.get(
+            "chunk_index",
+            item.get("parent_index", 0),
+        ),
+        "parent_index": item.get(
+            "parent_index",
+            item.get("chunk_index", 0),
+        ),
+        "chunk_level": item.get("chunk_level", 0),
+        "child_chunk_ids": item.get("child_chunk_ids") or [],
+        "source": item.get("source"),
+        "source_path": item.get("source_path"),
+        "title": item.get("title"),
+        "section": item.get("section"),
+        "section_level": item.get("section_level"),
+        "page_num": item.get("page_num"),
+        "page_start": item.get("page_start"),
+        "page_end": item.get("page_end"),
+        "start_char": item.get("start_char"),
+        "end_char": item.get("end_char"),
+        "token_count": item.get("token_count"),
+        "chunker_name": item.get("chunker_name"),
+        "chunker_version": item.get("chunker_version"),
+        "created_at": item.get("created_at"),
+        "language": item.get("language", "zh"),
+        "status": item.get("status", "active"),
+        "security_level": item.get(
+            "security_level",
+            "internal",
+        ),
+        "extra": extra,
+    }
 
-        阅读提示:
-            主要直接调用：self._load。
+
+class ParentChunkStore:
+    """在内存中按 ``parent_chunk_id`` 索引父块。"""
+
+    def __init__(self, path: PathLike) -> None:
+        """加载、标准化并索引父块文件。
+
+        空 parent_chunk_id 记录会跳过；重复身份后出现的记录覆盖先前记录，符合字典
+        构建语义。需要严格重复检测时应在离线验证阶段完成。
         """
-        self._parents: Dict[str, Dict[str, Any]] = {}
-        self._load(parent_chunks)
 
-    # 阅读注释（函数）：根据 jsonl 创建 ParentChunkStore。
-    @classmethod
-    def from_jsonl(cls, path: str | Path) -> "ParentChunkStore":
-        """根据 jsonl 创建 ParentChunkStore。
+        self.path = Path(path)
+        raw_records = load_jsonl_dicts(self.path)
+        self._records: Dict[str, Dict[str, Any]] = {}
 
-        参数:
-            path: 目标文件或目录路径。
-
-        返回:
-            'ParentChunkStore'
-
-        阅读提示:
-            主要直接调用：cls, load_jsonl_dicts。
-        """
-        return cls(load_jsonl_dicts(path))
-
-    # 阅读注释（函数）：加载 ParentChunkStore。
-    def _load(self, parent_chunks: Iterable[Dict[str, Any]]) -> None:
-        """加载 ParentChunkStore。
-
-        参数:
-            parent_chunks: 父块 chunks，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：parent.get, str, ValueError。
-        """
-        for parent in parent_chunks:
-            parent_id = parent.get("parent_chunk_id")
-            if not parent_id:
+        # 逐记录标准化并按父块身份写入内存索引。
+        for raw_record in raw_records:
+            record = _normalize_parent_record(raw_record)
+            parent_chunk_id = record["parent_chunk_id"]
+            if not parent_chunk_id:
                 continue
-            parent_id = str(parent_id)
-            if parent_id in self._parents:
-                raise ValueError(f"Duplicate parent_chunk_id: {parent_id}")
-            self._parents[parent_id] = parent
+            self._records[parent_chunk_id] = record
 
-    # 阅读注释（函数）：获取 ParentChunkStore。
-    def get(self, parent_chunk_id: str, default: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """获取 ParentChunkStore。
+    def get(self, parent_chunk_id: str) -> Dict[str, Any]:
+        """返回一个父块记录。
 
-        参数:
-            parent_chunk_id: 父块 文本块 标识，具体约束请结合类型标注和调用方确认。
-            default: default，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Optional[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：self._parents.get, str。
+        Raises:
+            KeyError: 身份为空或未找到时抛出，并包含来源文件路径便于排查。
         """
-        if not parent_chunk_id:
-            return default
-        return self._parents.get(str(parent_chunk_id), default)
 
-    # 阅读注释（函数）：处理 must get 相关逻辑。
-    def must_get(self, parent_chunk_id: str) -> Dict[str, Any]:
-        """处理 must get 相关逻辑。
+        key = str(parent_chunk_id or "")
+        if not key:
+            raise KeyError("parent_chunk_id cannot be empty")
+        if key not in self._records:
+            raise KeyError(
+                f"Parent chunk not found: {key}, source={self.path}"
+            )
+        return self._records[key]
 
-        参数:
-            parent_chunk_id: 父块 文本块 标识，具体约束请结合类型标注和调用方确认。
+    def get_many(
+        self,
+        parent_chunk_ids: List[str],
+        *,
+        strict: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """按输入顺序批量读取父块。
 
-        返回:
-            Dict[str, Any]
+        Args:
+            parent_chunk_ids: 父块身份列表，可包含重复值。
+            strict: 为 True 时任一缺失立即抛出；为 False 时跳过缺失。
 
-        阅读提示:
-            主要直接调用：self.get, KeyError。
+        Returns:
+            与成功查找顺序一致的父块列表，不自动去重。
         """
-        parent = self.get(parent_chunk_id)
-        if parent is None:
-            raise KeyError(f"parent_chunk_id not found: {parent_chunk_id}")
-        return parent
 
-    # 阅读注释（函数）：判断是否存在 ParentChunkStore。
-    def has(self, parent_chunk_id: str) -> bool:
-        """判断是否存在 ParentChunkStore。
+        result: List[Dict[str, Any]] = []
+        for parent_chunk_id in parent_chunk_ids:
+            try:
+                result.append(self.get(parent_chunk_id))
+            except KeyError:
+                if strict:
+                    raise
+        return result
 
-        参数:
-            parent_chunk_id: 父块 文本块 标识，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            bool
-
-        阅读提示:
-            主要直接调用：bool, str。
-        """
-        return bool(parent_chunk_id) and str(parent_chunk_id) in self._parents
-
-    # 阅读注释（函数）：处理 标识集合 相关逻辑。
-    def ids(self) -> List[str]:
-        """处理 标识集合 相关逻辑。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：list, self._parents.keys。
-        """
-        return list(self._parents.keys())
-
-    # 阅读注释（函数）：处理 values 相关逻辑。
-    def values(self) -> List[Dict[str, Any]]:
-        """处理 values 相关逻辑。
-
-        返回:
-            List[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：list, self._parents.values。
-        """
-        return list(self._parents.values())
-
-    # 阅读注释（函数）：处理 len 相关逻辑。
     def __len__(self) -> int:
-        """处理 len 相关逻辑。
+        """返回已索引的唯一父块数量。"""
 
-        返回:
-            int
+        return len(self._records)
 
-        阅读提示:
-            主要直接调用：len。
-        """
-        return len(self._parents)
+    def stats(self) -> Dict[str, Any]:
+        """返回来源路径和父块数量的轻量统计。"""
+
+        return {
+            "source_path": str(self.path),
+            "parent_count": len(self._records),
+        }

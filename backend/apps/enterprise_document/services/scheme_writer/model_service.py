@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SectionModelService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""章节生成及修复操作的统一模型调用服务。
+
+所有正常生成、续写、压缩、截断重试和定向改写都经过同一 ``ModelCallBoundary``，从而
+共享模型角色路由、能力上限、预算预留、Trace 和用量记录。该服务不判断内容是否合格；
+它只构造受约束调用并返回标准模型响应。
+"""
 
 
 import json
@@ -15,18 +16,30 @@ from apps.enterprise_document.quality.model_adapter import (
 )
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from schemas.citation import CitationSchema
+from schemas.context import (
+    ContextBuildRequestSchema,
+    ContextItemSchema,
+    LLMContextPackageSchema,
+)
 from schemas.model import ModelResponseSchema
 from schemas.rag import RAGContextSchema
+from schemas.citation import prompt_visible_citation_text
 from context_manager import LLMContextManager
 from model_gateway.call_boundary import ModelCallBoundary, infer_model_role
 from model_gateway.model_gateway import ModelGateway
-from .prompt_service import SectionPromptService
+from .prompt_service import (
+    SectionPromptService,
+    TargetTechnicalRecoveryContext,
+    TargetTechnicalRecoveryIntegrityError,
+    assert_target_recovery_semantic_items,
+    materialize_target_technical_recovery_context,
+)
 from .runtime_support import SchemeWriterRuntimeSupport
+from .section_technical_length_policy import build_section_technical_length_policy
 
 
-# 阅读注释（类）：封装 章节 模型 服务，封装一组可复用的业务能力。
 class SectionModelService:
-    """封装 章节 模型 服务，封装一组可复用的业务能力。"""
+    """集中管理章节相关模型调用及输出长度恢复策略。"""
 
     def __init__(
         self,
@@ -44,7 +57,6 @@ class SectionModelService:
         self.context_manager = context_manager
         self.prompt_service = prompt_service
         self.runtime_support = runtime_support
-    # 阅读注释（函数）：处理 call 模型 相关逻辑。
     def call_model(
         self,
         shared_state: SharedStateSchema,
@@ -60,28 +72,14 @@ class SectionModelService:
         context_package: Optional[Dict[str, Any]] = None,
         prompt_id: Optional[str] = None,
         prompt_version: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
     ) -> ModelResponseSchema:
-        """处理 call 模型 相关逻辑。
+        """通过角色感知的统一边界执行一次模型调用。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            prompt: 提示词，具体约束请结合类型标注和调用方确认。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            available_citation_ids: available 引用 标识集合，具体约束请结合类型标注和调用方确认。
-            purpose: purpose，具体约束请结合类型标注和调用方确认。
-            suffix: suffix，具体约束请结合类型标注和调用方确认。
-            max_tokens_override: max tokens override，具体约束请结合类型标注和调用方确认。
-            context_package: 上下文 package，具体约束请结合类型标注和调用方确认。
-            prompt_id: 提示词 标识，具体约束请结合类型标注和调用方确认。
-            prompt_version: 提示词 版本，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：RuntimeError, self.context_manager.build_passthrough, int, project_input.generation_requirements.extra.get, passthrough.model_dump, ModelRequestSchema, self.runtime_support.now_iso, self._context_package_summary。
+        ``purpose`` 决定模型角色；输出上限先受 ProjectInput 控制，再受目标模型安全能力
+        收紧。调用方未提供结构化上下文包时，现有辅助 Prompt 会被包装为 passthrough 包，
+        确保所有模型调用都有一致的上下文血缘。响应同时写入 ``generated_outputs``，供
+        Checkpoint、Trace 和 DataCapture 引用。
         """
         if self.model_gateway is None:
             raise RuntimeError("ModelGateway is not configured")
@@ -153,6 +151,7 @@ class SectionModelService:
         )
         response = boundary.generate_response(
             prompt,
+            messages=[dict(item) for item in (messages or [])],
             temperature=0.2,
             max_new_tokens=requested_max_tokens,
             created_at=self.runtime_support.now_iso(),
@@ -175,24 +174,53 @@ class SectionModelService:
         shared_state.generated_outputs[call_id] = response.model_dump()
         return response
 
-    # 阅读注释（函数）：处理 上下文 package summary 相关逻辑。
     @staticmethod
     def _context_package_summary(
         package: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """处理 上下文 package summary 相关逻辑。
-
-        参数:
-            package: package，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Dict[str, Any]
-
-        阅读提示:
-            主要直接调用：dict, package.get, list, len, item.get, sum, budget.get。
-        """
+        """提取适合 Trace 的有界上下文摘要，不复制正文内容。"""
         if not package:
             return {"managed": False}
+        if package.get("schema_version") == "context_package_v1":
+            package_ref = dict(package.get("package_ref") or {})
+            model_input = dict(package.get("model_input") or {})
+            budget_binding = dict(package.get("budget_binding") or {})
+            materializations = list(package.get("selected_materializations") or [])
+            return {
+                "managed": True,
+                "schema_version": package.get("schema_version"),
+                "package_id": package_ref.get("context_package_id"),
+                "context_sha256": package.get("context_semantic_fingerprint"),
+                "final_model_input_sha256": model_input.get(
+                    "final_model_input_sha256"
+                ),
+                "call_purpose": (
+                    dict(package.get("invocation_subject") or {}).get(
+                        "context_purpose"
+                    )
+                ),
+                "section_id": (
+                    str(
+                        dict(package.get("invocation_subject") or {}).get(
+                            "consumer_scope_ref"
+                        )
+                        or ""
+                    ).removeprefix("section:")
+                    or None
+                ),
+                "selected_item_count": len(materializations),
+                "selected_item_ids": [
+                    item.get("candidate_id") for item in materializations
+                ],
+                "estimated_input_tokens": budget_binding.get(
+                    "estimated_final_input_tokens"
+                ),
+                "max_input_tokens": budget_binding.get("model_context_window"),
+                "reserved_output_tokens": budget_binding.get(
+                    "reserved_output_tokens"
+                ),
+                "context_authority": "SIF-10",
+            }
         budget = dict(package.get("budget") or {})
         selected = list(package.get("selected_items") or [])
         decisions = list(package.get("decisions") or [])
@@ -220,7 +248,6 @@ class SectionModelService:
             "lineage": dict(package.get("lineage") or {}),
         }
 
-    # 阅读注释（函数）：处理 continue truncated 章节 相关逻辑。
     def _continue_truncated_section(
         self,
         shared_state: SharedStateSchema,
@@ -232,29 +259,16 @@ class SectionModelService:
         citations: List[CitationSchema],
         rag_context: RAGContextSchema,
     ) -> ModelResponseSchema:
-        """处理 continue truncated 章节 相关逻辑。
+        """请求模型只续写未完成尾部，并使用缩短证据上下文控制再次膨胀。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            original_content: original content，具体约束请结合类型标注和调用方确认。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-            project_input: 规范化后的项目输入。
-            citations: 引用信息集合。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：max, self.prompt_service.target_section_chars, len, self.prompt_service.citation_catalog, self.call_model, min。
+        此方法保留为兼容恢复策略；当前主恢复路径更偏向从头生成紧凑短稿，因为小模型
+        续写常再次触达 Token 上限。
         """
         reduced_context = rag_context.context_text[: max(1000, rag_context.max_context_chars // 2)]
-        remaining_chars = max(
-            160,
-            self.prompt_service.target_section_chars(project_input)
-            - len(original_content),
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
         )
+        remaining_chars = length_policy.continuation_remaining_chars(original_content)
         prompt = (
             f"继续完成“{section_title}”章节。不要重复已完成内容，只输出续写部分。\n"
             f"续写最多 {remaining_chars} 个汉字，只补全未完成句子和必要结论；"
@@ -272,10 +286,9 @@ class SectionModelService:
             available_citation_ids=[item.citation_id for item in citations],
             purpose="scheme_section_continuation",
             suffix="_continue",
-            max_tokens_override=min(256, project_input.generation_requirements.max_tokens_per_section),
+            max_tokens_override=length_policy.continuation_max_tokens,
         )
 
-    # 阅读注释（函数）：重试 truncated 章节。
     def retry_truncated_section(
         self,
         shared_state: SharedStateSchema,
@@ -287,33 +300,101 @@ class SectionModelService:
         rag_context: RAGContextSchema,
         retry_index: int,
     ) -> ModelResponseSchema:
-        """Regenerate one complete compact section after a token-limit stop.
+        """输出达到 Token 上限后，从头生成一版完整且显著缩短的章节。
 
-        Continuation proved unstable with small local models: the model often
-        keeps expanding, consumes another token budget and is truncated again.
-        Recovery therefore starts a fresh generation with a much smaller
-        writing target and a reduced evidence context.
+        小型本地模型续写容易继续扩展并再次截断，因此恢复时按重试次数缩小证据上下文，
+        将目标压到 4–6 个要点，并明确禁止接续旧稿和跨章节展开。
         """
 
         divisor = max(2, retry_index + 1)
         reduced_chars = max(800, rag_context.max_context_chars // divisor)
-        reduced_context = rag_context.context_text[:reduced_chars]
-        target_chars = self.prompt_service.target_section_chars(project_input)
-        compact_target_chars = min(800, max(480, int(target_chars * 0.68)))
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        compact_target_chars = length_policy.compact_retry_target_chars
         contract = self.prompt_service.section_generation_contract(
             section_title, project_input
         )
-        prompt = (
+
+        project_payload = project_input.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        project_fact_fields = (
+            "project_name",
+            "project_type",
+            "customer_type",
+            "business_goal",
+            "total_staff",
+            "functional_department_count",
+            "business_department_count",
+            "department_groups",
+            "hardware_resources",
+            "policy_requirements",
+            "manual_boundaries",
+            "missing_information",
+            "conflicting_information",
+            "extra",
+        )
+        project_facts = {
+            field_name: project_payload[field_name]
+            for field_name in project_fact_fields
+            if field_name in project_payload
+            and project_payload[field_name] not in (None, "", [], {})
+        }
+        compact_project_facts = json.dumps(
+            project_facts,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(compact_project_facts) > 1200:
+            compact_project_facts = compact_project_facts[:1199].rstrip() + "…"
+
+        citation_catalog = []
+        for item in citations:
+            quote_text = prompt_visible_citation_text(item)
+            if len(quote_text) > 240:
+                quote_text = quote_text[:239].rstrip() + "…"
+            rendered = {
+                "marker": f"[{item.citation_id}]",
+                "quote_text": quote_text,
+            }
+            if item.title:
+                rendered["title"] = item.title
+            if item.section:
+                rendered["section"] = item.section
+            citation_catalog.append(rendered)
+        compact_citation_catalog = json.dumps(
+            citation_catalog,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(compact_citation_catalog) > 1800:
+            compact_citation_catalog = compact_citation_catalog[:1799].rstrip() + "…"
+
+        prompt_prefix = (
             f"“{section_title}”章节此前因达到输出上限而未完整结束。请从头生成一版完整短稿。\n"
             f"强制要求：正文控制在 {compact_target_chars} 个汉字以内，最多使用 4 至 6 个要点；"
             "每个要点只保留核心结论，不得续接旧稿，不得重复其他章节，"
             "不得输出章节标题、Markdown 分隔线或无关扩展；最后必须以完整句子结束；"
             "输入缺失时写待补充或需项目方确认。\n"
             f"章节边界：{contract}\n\n"
-            f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
-            f"缩短后的证据上下文：\n{reduced_context}\n\n"
-            f"可用引用：\n{self.prompt_service.citation_catalog(citations)}"
+            f"项目事实：\n{compact_project_facts}\n\n"
+            "缩短后的证据上下文：\n"
         )
+        prompt_suffix = f"\n\n可用引用：\n{compact_citation_catalog}"
+        max_prompt_chars = int(
+            project_input.generation_requirements.max_context_chars
+        )
+        available_context_chars = max(
+            0,
+            max_prompt_chars - len(prompt_prefix) - len(prompt_suffix),
+        )
+        reduced_context = rag_context.context_text[
+            : min(reduced_chars, available_context_chars)
+        ]
+        prompt = f"{prompt_prefix}{reduced_context}{prompt_suffix}"
         return self.call_model(
             shared_state,
             prompt=prompt,
@@ -323,12 +404,72 @@ class SectionModelService:
             available_citation_ids=[item.citation_id for item in citations],
             purpose="scheme_section_retry",
             suffix=f"_retry_{retry_index}",
-            max_tokens_override=min(
-                768, project_input.generation_requirements.max_tokens_per_section
-            ),
+            max_tokens_override=length_policy.retry_max_tokens,
         )
 
-    # 阅读注释（函数）：恢复 complete prefix。
+    @staticmethod
+    def _load_target_recovery_package(
+        recovery_context: TargetTechnicalRecoveryContext,
+    ) -> LLMContextPackageSchema:
+        """Validate and materialize one immutable Target technical context lock."""
+        return materialize_target_technical_recovery_context(recovery_context)
+
+    @staticmethod
+    def _assert_target_semantic_items(
+        package: LLMContextPackageSchema,
+        recovery_context: TargetTechnicalRecoveryContext,
+    ) -> None:
+        """Prove mandatory Evidence/structured semantics survived a projection."""
+
+        assert_target_recovery_semantic_items(package, recovery_context)
+
+    def retry_target_truncated_section(
+        self,
+        shared_state: SharedStateSchema,
+        *,
+        project_input: ProjectInputSchema,
+        recovery_context: TargetTechnicalRecoveryContext,
+        retry_index: int,
+    ) -> ModelResponseSchema:
+        """Retry one truncated Target output under its exact semantic lock."""
+
+        package = self._load_target_recovery_package(recovery_context)
+        if (
+            shared_state.task_id != recovery_context.task_id
+            or shared_state.run_id != recovery_context.run_id
+        ):
+            raise TargetTechnicalRecoveryIntegrityError(
+                "Target retry runtime identity does not match the locked context"
+            )
+        # The locked initial prompt may retain advisory writing guidance; the
+        # new technical wrapper and its token limit come only from this policy.
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        compact_target_chars = length_policy.compact_retry_target_chars
+        prompt = (
+            "【Target技术恢复指令】上一次输出因长度限制未完整结束。"
+            "请在下列锁定的初始Writer语义和上下文内从头生成完整短稿；"
+            f"正文不超过{compact_target_chars}个汉字，最多4至6个要点，"
+            "不得新增事实、改变证据限制、续接旧稿或展开其他章节，"
+            "并以完整句子结束。\n\n"
+            f"【锁定的初始Writer Prompt】\n{recovery_context.initial_prompt_text}"
+        )
+        return self.call_model(
+            shared_state,
+            prompt=prompt,
+            section_id=recovery_context.section_id,
+            section_title=recovery_context.section_title,
+            project_input=project_input,
+            available_citation_ids=list(recovery_context.citation_ids),
+            purpose="scheme_section_retry",
+            suffix=f"_target_retry_{retry_index}",
+            max_tokens_override=length_policy.retry_max_tokens,
+            context_package=package.model_dump(mode="json"),
+            prompt_id=recovery_context.prompt_id,
+            prompt_version=recovery_context.prompt_version,
+        )
+
     @staticmethod
     def recover_complete_prefix(
         content: str,
@@ -336,12 +477,10 @@ class SectionModelService:
         min_chars: int,
         max_chars: int,
     ) -> Optional[str]:
-        """Return a safe complete prefix from a token-limited response.
+        """从被截断输出中恢复满足最小长度且结束于完整句界的安全前缀。
 
-        This is a deterministic recovery, not silent raw truncation.  The
-        method only accepts text ending at a sentence/list-item boundary and
-        only when enough complete content remains to form a usable section.
-        The caller records the recovery strategy in section metadata.
+        这是显式确定性恢复，不是静默按字符硬切；找不到完整结束点或有效内容过短时返回
+        ``None``，由调用方继续重试或判定失败。
         """
 
         normalized = (content or "").strip()
@@ -362,7 +501,6 @@ class SectionModelService:
             return None
         return candidate
 
-    # 阅读注释（函数）：处理 compress overlong 章节 相关逻辑。
     def compress_overlong_section(
         self,
         shared_state: SharedStateSchema,
@@ -373,12 +511,130 @@ class SectionModelService:
         project_input: ProjectInputSchema,
         citations: List[CitationSchema],
     ) -> ModelResponseSchema:
-        """Compress a complete but overlong section instead of free regeneration."""
+        """压缩内容完整但超长的章节，禁止自由重生成或增加新事实。
 
-        target_chars = self.prompt_service.target_section_chars(project_input)
-        hard_limit = int(target_chars * 1.5)
+        固定压缩指令作为 Prompt wrapper，不占 ``max_context_chars``；原始正文、章节边界
+        和引用目录作为结构化候选上下文交给 ``LLMContextManager``，与主 Writer 保持
+        ``managed context <= max_context_chars`` 的同一预算语义。
+        """
+
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        target_chars = length_policy.technical_recovery_target_chars
+        hard_limit = length_policy.technical_max_section_chars
         contract = self.prompt_service.section_generation_contract(
             section_title, project_input
+        )
+        compression_max_tokens = length_policy.compression_max_tokens
+
+        citation_lines: list[str] = []
+        for item in citations:
+            quote_text = prompt_visible_citation_text(item)
+            if len(quote_text) > 240:
+                quote_text = quote_text[:239].rstrip() + "…"
+            citation_lines.append(
+                json.dumps(
+                    {
+                        "citation_id": item.citation_id,
+                        "marker": f"[{item.citation_id}]",
+                        "title": item.title,
+                        "section": item.section,
+                        "quote_text": quote_text,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+
+        context_items = [
+            ContextItemSchema(
+                item_id="compression_original_content",
+                source_type="generated_content",
+                title="待压缩原始正文",
+                content=original_content,
+                priority=110,
+                required=True,
+                truncate_allowed=False,
+            ),
+            ContextItemSchema(
+                item_id="compression_section_contract",
+                source_type="instruction",
+                title="章节边界",
+                content=contract,
+                priority=105,
+                required=True,
+                truncate_allowed=False,
+            ),
+        ]
+        if citation_lines:
+            context_items.append(
+                ContextItemSchema(
+                    item_id="compression_citation_catalog",
+                    source_type="citation",
+                    title="可用引用目录",
+                    content="\n".join(citation_lines),
+                    priority=70,
+                    required=False,
+                    truncate_allowed=True,
+                    citation_ids=[item.citation_id for item in citations],
+                    metadata={
+                        "compaction_strategy": "line_blocks",
+                        "min_blocks": 0,
+                    },
+                )
+            )
+
+        capability_plan: Dict[str, Any] = {}
+        resolved_role = infer_model_role("scheme_section_compression")
+        resolve_capabilities = getattr(self.model_gateway, "routing_capabilities", None)
+        if callable(resolve_capabilities):
+            capability_plan = dict(
+                resolve_capabilities(model_role=resolved_role.value)
+            )
+        configured_input_limit = project_input.generation_requirements.extra.get(
+            "max_input_context_tokens"
+        )
+        if capability_plan:
+            safe_context_window = int(capability_plan["safe_context_window"])
+            max_input_tokens = (
+                min(safe_context_window, int(configured_input_limit))
+                if configured_input_limit is not None
+                else safe_context_window
+            )
+            reserved_output_tokens = min(
+                compression_max_tokens,
+                int(capability_plan["safe_max_output_tokens"]),
+            )
+        else:
+            max_input_tokens = int(configured_input_limit or 8192)
+            reserved_output_tokens = compression_max_tokens
+
+        context_package = self.context_manager.build(
+            ContextBuildRequestSchema(
+                task_id=shared_state.task_id,
+                run_id=shared_state.run_id,
+                call_purpose="scheme_section_compression",
+                section_id=section_id,
+                section_title=section_title,
+                items=context_items,
+                max_context_chars=int(
+                    project_input.generation_requirements.max_context_chars
+                ),
+                max_input_tokens=max_input_tokens,
+                reserved_output_tokens=reserved_output_tokens,
+                safety_margin_tokens=int(
+                    project_input.generation_requirements.extra.get(
+                        "context_safety_margin_tokens"
+                    )
+                    or 256
+                ),
+                lineage={
+                    "context_mode": "managed_compression",
+                    "model_capability_plan": capability_plan,
+                },
+                metadata={"policy_id": "section_compression_context_policy_v1"},
+            )
         )
         prompt = (
             f"下面的‘{section_title}’章节内容完整，但长度超过限制。请执行压缩改写，"
@@ -387,9 +643,7 @@ class SectionModelService:
             "保留核心逻辑和有证据支撑的事实，删除重复说明、空泛形容、跨章节内容和"
             "不必要的小标题；不得增加新事实、资源数量、产品型号或人员承诺；"
             "只输出压缩后的完整正文，并以完整句子结束。\n\n"
-            f"章节边界：\n{contract}\n\n"
-            f"原始正文：\n{original_content}\n\n"
-            f"可用引用目录：\n{self.prompt_service.citation_catalog(citations)}"
+            f"本次压缩上下文：\n{context_package.rendered_context}"
         )
         return self.call_model(
             shared_state,
@@ -400,14 +654,103 @@ class SectionModelService:
             available_citation_ids=[item.citation_id for item in citations],
             purpose="scheme_section_compression",
             suffix="_compress",
-            max_tokens_override=min(
-                640,
-                max(384, int(target_chars * 0.65)),
-                project_input.generation_requirements.max_tokens_per_section,
-            ),
+            max_tokens_override=compression_max_tokens,
+            context_package=context_package.model_dump(),
         )
 
-    # 阅读注释（函数）：改写 invalid 章节。
+    def compress_target_overlong_section(
+        self,
+        shared_state: SharedStateSchema,
+        *,
+        original_content: str,
+        project_input: ProjectInputSchema,
+        recovery_context: TargetTechnicalRecoveryContext,
+    ) -> ModelResponseSchema:
+        """Compress Target content without detaching from locked semantics."""
+
+        initial_package = self._load_target_recovery_package(recovery_context)
+        if (
+            shared_state.task_id != recovery_context.task_id
+            or shared_state.run_id != recovery_context.run_id
+        ):
+            raise TargetTechnicalRecoveryIntegrityError(
+                "Target compression runtime identity does not match the locked context"
+            )
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        target_chars = length_policy.technical_recovery_target_chars
+        hard_limit = length_policy.technical_max_section_chars
+        compression_max_tokens = length_policy.compression_max_tokens
+        locked_items = [
+            item.model_copy(deep=True) for item in initial_package.selected_items
+        ]
+        locked_items.append(
+            ContextItemSchema(
+                item_id="target_compression_original_content",
+                source_type="generated_content",
+                title="待压缩Target正文",
+                content=original_content,
+                priority=120,
+                required=True,
+                truncate_allowed=False,
+            )
+        )
+        context_package = self.context_manager.build(
+            ContextBuildRequestSchema(
+                task_id=recovery_context.task_id,
+                run_id=recovery_context.run_id,
+                call_purpose="scheme_section_compression",
+                section_id=recovery_context.section_id,
+                section_title=recovery_context.section_title,
+                items=locked_items,
+                max_context_chars=initial_package.budget.max_context_chars,
+                max_input_tokens=initial_package.budget.max_input_tokens,
+                reserved_output_tokens=min(
+                    compression_max_tokens,
+                    initial_package.budget.reserved_output_tokens,
+                ),
+                safety_margin_tokens=initial_package.budget.safety_margin_tokens,
+                lineage={
+                    **dict(initial_package.lineage or {}),
+                    "technical_recovery_kind": "target_compression",
+                    "locked_context_package_id": recovery_context.context_package_id,
+                    "locked_context_sha256": recovery_context.context_sha256,
+                    "evidence_bundle_sha256": (
+                        recovery_context.evidence_bundle_sha256
+                    ),
+                },
+                metadata={
+                    "policy_id": "target_locked_compression_context_policy_v1",
+                    "technical_mechanics_only": True,
+                },
+            )
+        )
+        self._assert_target_semantic_items(
+            context_package, recovery_context
+        )
+        prompt = (
+            f"【Target技术压缩指令】下面的‘{recovery_context.section_title}’正文"
+            f"完整但超长。压缩至不超过{target_chars}个汉字，绝对不得超过"
+            f"{hard_limit}个字符；只能删除或压缩表达，不得增加事实、改变锁定的"
+            "Evidence限制、引用范围或结构化事实，只输出完整正文。\n\n"
+            f"【锁定的Target压缩上下文】\n{context_package.rendered_context}"
+        )
+        return self.call_model(
+            shared_state,
+            prompt=prompt,
+            section_id=recovery_context.section_id,
+            section_title=recovery_context.section_title,
+            project_input=project_input,
+            available_citation_ids=list(recovery_context.citation_ids),
+            purpose="scheme_section_compression",
+            suffix="_target_compress",
+            max_tokens_override=compression_max_tokens,
+            context_package=context_package.model_dump(mode="json"),
+            prompt_id=recovery_context.prompt_id,
+            prompt_version=recovery_context.prompt_version,
+        )
+
     def _rewrite_invalid_section(
         self,
         shared_state: SharedStateSchema,
@@ -419,11 +762,19 @@ class SectionModelService:
         citations: List[CitationSchema],
         semantic_issues: List[Dict[str, Any]],
     ) -> ModelResponseSchema:
-        """Apply one issue-directed rewrite based on semantic gate output."""
+        """依据语义门禁问题清单做一次定向修订，不允许无约束扩写。"""
 
-        target_chars = self.prompt_service.target_section_chars(project_input)
+        length_policy = build_section_technical_length_policy(
+            project_input.generation_requirements.max_tokens_per_section
+        )
+        target_chars = length_policy.technical_recovery_target_chars
         contract = self.prompt_service.section_generation_contract(
             section_title, project_input
+        )
+        # A post-write technical rewrite must not turn a V3 initial soft target
+        # into a second length control. Excluding an absent field is inert for V1/V2.
+        project_input_for_rewrite = project_input.model_dump(
+            exclude={"generation_requirements": {"target_section_chars"}}
         )
         prompt = (
             f"‘{section_title}’章节存在语义质量问题。请只按问题清单做定向修订，"
@@ -434,7 +785,7 @@ class SectionModelService:
             "跨章节展开内容，但保留与当前标题直接相关的核心表述。\n\n"
             f"动态章节边界：\n{contract}\n\n"
             f"语义评审问题：\n{json.dumps(semantic_issues, ensure_ascii=False, indent=2)}\n\n"
-            f"项目输入：\n{json.dumps(project_input.model_dump(), ensure_ascii=False, indent=2)}\n\n"
+            f"项目输入：\n{json.dumps(project_input_for_rewrite, ensure_ascii=False, indent=2)}\n\n"
             f"原始正文：\n{original_content}\n\n"
             f"可用引用目录：\n{self.prompt_service.citation_catalog(citations)}"
         )
@@ -447,7 +798,5 @@ class SectionModelService:
             available_citation_ids=[item.citation_id for item in citations],
             purpose="scheme_section_validation_rewrite",
             suffix="_validation_rewrite",
-            max_tokens_override=min(
-                768, project_input.generation_requirements.max_tokens_per_section
-            ),
+            max_tokens_override=length_policy.validation_rewrite_max_tokens,
         )

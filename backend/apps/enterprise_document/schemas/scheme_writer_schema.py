@@ -1,11 +1,13 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Compatibility exports for the decomposed scheme-writer schemas."""
+"""方案生成 Schema 拆分后的旧导入路径兼容汇总。"""
 from apps.enterprise_document.schemas.scheme_writer import (
+    AttemptStateSchema,
+    AttemptStatus,
+    ClaimProjectionStatus,
+    ClaimStateSchema,
     DocumentAssemblyRequestSchema,
     DocumentAssemblyResultSchema,
+    DocumentValidationStateSchema,
+    DocumentValidationStatus,
     DeliverableFinalResultSchema,
     DocumentPlanSchema,
     HardGateResultSchema,
@@ -15,15 +17,27 @@ from apps.enterprise_document.schemas.scheme_writer import (
     SchemeWriterInputSchema,
     SchemeWriterOutputSchema,
     RejectedDraftArtifactSchema,
+    ParallelSectionExecutionEnvelopeSchema,
+    ParallelSectionStateDeltaSchema,
+    PlanProjectionStatus,
+    PlanStateSchema,
+    ResearchProjectionStatus,
+    ResearchStateSchema,
     SectionEvidenceBundleSchema,
     SectionEvidenceRequirementSchema,
     SectionExecutionRequestSchema,
     SectionExecutionResultSchema,
     SectionEvalSchema,
+    SectionLifecycleStatus,
     SectionPlanSchema,
+    SectionStateSchema,
     SemanticGateIssueSchema,
     SemanticGateResultSchema,
     TruncationCheckSchema,
+    VerificationProjectionStatus,
+    VerificationStateSchema,
+    WritingProjectionStatus,
+    WritingStateSchema,
 )
 
 __all__ = [
@@ -44,7 +58,25 @@ __all__ = [
     "SectionEvidenceBundleSchema",
     "SectionExecutionRequestSchema",
     "SectionExecutionResultSchema",
+    "ParallelSectionStateDeltaSchema",
+    "ParallelSectionExecutionEnvelopeSchema",
     "DocumentAssemblyRequestSchema",
     "DocumentAssemblyResultSchema",
     "SectionEvidenceRequirementSchema",
+    "PlanProjectionStatus",
+    "PlanStateSchema",
+    "AttemptStatus",
+    "AttemptStateSchema",
+    "ResearchProjectionStatus",
+    "ResearchStateSchema",
+    "WritingProjectionStatus",
+    "WritingStateSchema",
+    "ClaimProjectionStatus",
+    "ClaimStateSchema",
+    "VerificationProjectionStatus",
+    "VerificationStateSchema",
+    "SectionLifecycleStatus",
+    "SectionStateSchema",
+    "DocumentValidationStatus",
+    "DocumentValidationStateSchema",
 ]

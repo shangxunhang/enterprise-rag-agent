@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
+
 from core.config import AppSettings
+from model_gateway.model_capabilities import ModelCapabilityCatalog
 from model_gateway.fake_llm_client import FakeLLMClient
 from model_gateway.model_contract import (
     ModelProfile,
@@ -18,6 +21,10 @@ from model_gateway.provider_factory import ModelProviderFactory
 
 def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
     """Build the single-node 4070 Ti SUPER model pool and role policies."""
+
+    remote_output = settings.deepseek_max_output_tokens
+    if remote_output is not None and (type(remote_output) is not int or remote_output < 1):
+        raise ValueError("deepseek_max_output_tokens must be a positive integer or None")
 
     if settings.default_model_name == "fake_llm":
         fake_profile = ModelProfile(
@@ -37,6 +44,24 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             ],
         )
 
+    section_generation_candidates = (
+        [settings.section_generation_model_profile]
+        if settings.section_generation_model_profile
+        else ["local_1_5b", "local_3b", "deepseek"]
+    )
+
+    catalog = ModelCapabilityCatalog.load(
+        settings.model_capabilities_path or settings.project_root / "config/model_capabilities.json"
+    )
+
+    def capability(provider, model, output_policy, endpoint="", **metadata):
+        declared = catalog.resolve(provider=provider, model=model, endpoint=endpoint)
+        return {
+            "context_window": declared["context_window"],
+            "max_output_tokens": min(output_policy, declared["provider_max_output_tokens"]),
+            "metadata": {**metadata, "capability_source": declared["capability_source"]},
+        }
+
     profiles = [
         ModelProfile(
             profile_id="local_1_5b",
@@ -44,9 +69,12 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             provider="local_huggingface",
             local_path=str(settings.local_qwen_1_5b_model_path),
             residency_policy=ResidencyPolicy.PRIMARY,
-            context_window=32768,
-            max_output_tokens=settings.local_qwen_max_new_tokens,
-            metadata={"family": "Qwen2.5", "size": "1.5B"},
+            **capability("local_huggingface", PureWindowsPath(str(settings.local_qwen_1_5b_model_path)).name,
+                         settings.local_qwen_max_new_tokens, **{
+                "family": "Qwen2.5",
+                "size": "1.5B",
+                "exclusive_residency_group": "single_cuda_llm",
+            }),
         ),
         ModelProfile(
             profile_id="local_3b",
@@ -54,9 +82,12 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             provider="local_huggingface",
             local_path=str(settings.local_qwen_3b_model_path),
             residency_policy=ResidencyPolicy.RESIDENT,
-            context_window=32768,
-            max_output_tokens=settings.local_qwen_max_new_tokens,
-            metadata={"family": "Qwen2.5", "size": "3B"},
+            **capability("local_huggingface", PureWindowsPath(str(settings.local_qwen_3b_model_path)).name,
+                         settings.local_qwen_max_new_tokens, **{
+                "family": "Qwen2.5",
+                "size": "3B",
+                "exclusive_residency_group": "single_cuda_llm",
+            }),
         ),
         ModelProfile(
             profile_id="deepseek",
@@ -64,9 +95,9 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             provider="openai_compatible",
             provider_model_name=settings.deepseek_provider_model_name,
             residency_policy=ResidencyPolicy.REMOTE,
-            context_window=32768,
-            max_output_tokens=max(2048, settings.local_qwen_max_new_tokens),
-            metadata={"remote": True},
+            **capability("openai_compatible", settings.deepseek_provider_model_name,
+                         remote_output if remote_output is not None else max(2048, settings.local_qwen_max_new_tokens),
+                         settings.deepseek_base_url, remote=True),
         ),
         ModelProfile(
             profile_id="local_7b",
@@ -75,14 +106,13 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
             local_path=str(settings.local_qwen_7b_model_path),
             enabled=False,
             residency_policy=ResidencyPolicy.DISABLED,
-            context_window=32768,
-            max_output_tokens=settings.local_qwen_max_new_tokens,
-            metadata={
+            **capability("local_huggingface", PureWindowsPath(str(settings.local_qwen_7b_model_path)).name,
+                         settings.local_qwen_max_new_tokens, **{
                 "family": "Qwen2.5",
                 "size": "7B",
                 "quantization": "GPTQ-Int4",
                 "activation_policy": "explicitly enable as on_demand before use",
-            },
+            }),
         ),
     ]
 
@@ -113,15 +143,15 @@ def build_default_model_routing(settings: AppSettings) -> ModelRoutingConfig:
         ),
         RoutingPolicy(
             role=ModelRole.SECTION_GENERATION,
-            candidates=["local_3b", "local_1_5b", "deepseek"],
+            candidates=section_generation_candidates,
         ),
         RoutingPolicy(
             role=ModelRole.SEMANTIC_GATE,
-            candidates=["local_1_5b", "local_3b", "deepseek"],
+            candidates=["local_3b", "local_1_5b", "deepseek"],
         ),
         RoutingPolicy(
             role=ModelRole.REPAIR,
-            candidates=["local_3b", "local_1_5b", "deepseek"],
+            candidates=["local_1_5b", "local_3b", "deepseek"],
         ),
     ]
     return ModelRoutingConfig(profiles=profiles, policies=policies)

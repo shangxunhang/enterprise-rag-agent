@@ -1,44 +1,30 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：BaseReader。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/rag_template/reader/base_reader.py
-=====================================
-
-Reader 抽象基类。
-
-所有具体 Reader 都必须实现 read(path) 方法，
-并统一返回 Document Schema 列表。
-"""
+"""定义所有本地文档 Reader 必须实现的统一读取端口。"""
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 
-# 阅读注释（类）：封装 base reader，集中封装相关状态、依赖和行为。
 class BaseReader(ABC):
-    """
-    Reader 抽象基类。
+    """把一种文件格式转换为标准 Document 字典列表。
 
-    不同文件格式的 Reader 继承这个类：
-    - TxtReader
-    - JsonReader
-    - JsonlReader
-    - PdfReader 后续再加
+    Reader 只负责文件解析和字段映射，不负责文本清洗、分块、Embedding 或索引写入。
+    具体实现包括 TXT、JSON 和 JSONL；未来 PDF/Word Reader 也应遵守同一返回契约。
     """
 
-    # 阅读注释（函数）：读取 BaseReader。
     @abstractmethod
     def read(self, path: Path) -> List[Dict]:
-        """
-        读取一个文件，并返回标准 Document Schema 列表。
+        """读取一个文件并返回零个或多个标准文档。
 
         Args:
-            path: 文件路径
+            path: 待读取文件路径。
 
         Returns:
-            documents: 标准 document 列表
+            标准 Document 字典列表。空文件或没有有效记录时可返回空列表。
+
+        Raises:
+            具体异常由格式实现决定；调用方可选择失败即停或记录后跳过。
         """
+
+        # 抽象方法没有默认读取行为，子类必须显式实现格式解析。
         pass

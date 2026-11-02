@@ -7,6 +7,8 @@ import inspect
 from typing import Any
 
 from core.runtime.execution_control import checkpoint_current_execution
+from core.diagnostics import capture_event, capture_pool, current_diagnostics
+from rag.application.retrieval_scope import resolve_canonical_retrieval_scope
 from rag.planning.retrieval_planner import RetrievalPlannerPort
 from rag.ports.pipeline import RerankerPort
 from rag.ports.quality import (
@@ -80,6 +82,84 @@ class ParentChildRetrievalPipeline:
             ),
         }
 
+    @staticmethod
+    def _candidate_ids(result: dict[str, Any]) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in (
+                    result.get("parent_chunk_id"),
+                    result.get("context_chunk_id"),
+                    result.get("child_chunk_id"),
+                    result.get("matched_chunk_id"),
+                    result.get("chunk_id"),
+                    result.get("doc_id"),
+                )
+                if str(value or "").strip()
+            )
+        )
+
+    @classmethod
+    def _apply_final_assessment(
+        cls,
+        *,
+        results: list[dict[str, Any]],
+        assessment: EvidenceAssessment,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        judgement_by_id = {
+            str(item.evidence_id).strip(): item
+            for item in assessment.item_judgements
+            if str(item.evidence_id or "").strip()
+        }
+        annotated: list[dict[str, Any]] = []
+        selected: list[dict[str, Any]] = []
+        rejected_ids: list[str] = []
+        unjudged_ids: list[str] = []
+
+        for raw in results:
+            item = dict(raw)
+            metadata = dict(item.get("metadata") or {})
+            candidate_ids = cls._candidate_ids(item)
+            judgement = next(
+                (
+                    judgement_by_id[candidate_id]
+                    for candidate_id in candidate_ids
+                    if candidate_id in judgement_by_id
+                ),
+                None,
+            )
+            metadata["crag_final_assessment_sufficient"] = bool(
+                assessment.sufficient
+            )
+            if judgement is None:
+                primary_id = candidate_ids[0] if candidate_ids else ""
+                if primary_id:
+                    unjudged_ids.append(primary_id)
+                metadata["crag_final_judgement"] = None
+                item["metadata"] = metadata
+                annotated.append(item)
+                selected.append(item)
+                continue
+
+            judgement_payload = judgement.to_dict()
+            metadata["crag_final_judgement"] = judgement_payload
+            item["metadata"] = metadata
+            annotated.append(item)
+            if str(judgement.relevance).strip().lower() == "irrelevant":
+                rejected_ids.append(str(judgement.evidence_id))
+                continue
+            selected.append(item)
+
+        filter_report = {
+            "applied": bool(judgement_by_id),
+            "assessment_sufficient": bool(assessment.sufficient),
+            "input_count": len(results),
+            "output_count": len(selected),
+            "rejected_irrelevant_ids": list(dict.fromkeys(rejected_ids)),
+            "unjudged_ids": list(dict.fromkeys(unjudged_ids)),
+        }
+        return annotated, selected, filter_report
+
     def _retrieve_one_query(
         self,
         *,
@@ -105,7 +185,22 @@ class ParentChildRetrievalPipeline:
         source_sets: list[CandidateSet] = []
         for retriever in self.retrievers:
             checkpoint_current_execution()
-            source_sets.append(retriever.retrieve(request))
+            source = str(getattr(retriever, "source_name", retriever.__class__.__name__))
+            key = "R-BM25" if source in {"keyword", "bm25"} else "R-DENSE"
+            operation = f"{stage}:{query_label}:{source}"
+            capture_event(key, {"phase": "BEGIN", "query": retrieval_query, "query_index": query_index,
+                "stage": stage, "scope": scope, "filter_expr": filter_expr}, unit_id="C05" if key == "R-BM25" else "C04", operation_id=operation)
+            try:
+                returned = retriever.retrieve(request)
+            except Exception as exc:
+                capture_event(key, {"phase": "ERROR", "query": retrieval_query, "query_index": query_index,
+                    "stage": stage, "exception_type": type(exc).__name__, "complete": False},
+                    unit_id="C05" if key == "R-BM25" else "C04", operation_id=operation)
+                raise
+            source_sets.append(returned)
+            capture_pool(key, returned.candidates, unit_id="C05" if key == "R-BM25" else "C04",
+                operation_id=operation, query=retrieval_query, query_index=query_index, stage=stage,
+                source=returned.source_name, metadata=returned.metadata, scope=scope)
             checkpoint_current_execution()
         fused_children = self.source_fusion.fuse(source_sets)
         checkpoint_current_execution()
@@ -152,10 +247,14 @@ class ParentChildRetrievalPipeline:
                 "request_context": dict(request_context or {}),
             },
         )
+        if current_diagnostics().enabled:
+            capture_event("R-CRAG", {"phase": "ASSESSMENT", "query": query, "round": correction_round,
+                "assessment": assessment.to_dict()}, unit_id="C09", operation_id=f"assessment:{correction_round}")
+        capture_pool("R-CRAG", results, unit_id="C09", operation_id=f"assessment_input:{correction_round}", query=query, round=correction_round, phase="INPUT")
         checkpoint_current_execution()
         return assessment
 
-    def _gate(
+    def _decide_correction(
         self,
         *,
         assessment: EvidenceAssessment,
@@ -196,13 +295,15 @@ class ParentChildRetrievalPipeline:
 
         while True:
             checkpoint_current_execution()
-            decision = self._gate(
+            decision = self._decide_correction(
                 assessment=assessment,
                 correction_budget=correction_budget,
                 completed_rounds=completed_rounds,
                 request_context=request_context,
             )
-            trace["last_gate_decision"] = decision.to_dict()
+            trace["last_correction_decision"] = decision.to_dict()
+            capture_event("R-CORRECT", {"phase": "DECISION", "round": completed_rounds,
+                "decision": decision.to_dict(), "query": query}, unit_id="C10", operation_id=f"correction_decision:{completed_rounds}")
             if not decision.required:
                 trace["final_reason"] = decision.reason
                 break
@@ -218,6 +319,9 @@ class ParentChildRetrievalPipeline:
                 break
 
             round_index = completed_rounds + 1
+            capture_event("R-CORRECT", {"phase": "BEGIN", "round": round_index, "query": query,
+                "queries": queries, "merge_original_candidates": query_plan.merge_original_candidates},
+                unit_id="C10", operation_id=f"correction:{round_index}")
             round_sets: list[CandidateSet] = []
             query_execution: list[dict[str, Any]] = []
             for query_index, corrective_query in enumerate(queries, start=1):
@@ -257,10 +361,12 @@ class ParentChildRetrievalPipeline:
                 request_context=request_context,
             )
             trace["triggered"] = True
+            capture_pool("R-CORRECT", current_reranked, unit_id="C10", operation_id=f"correction:{round_index}",
+                query=query, round=round_index, phase="RESULT", merge_original_candidates=query_plan.merge_original_candidates)
             trace["rounds"].append(
                 {
                     "round": round_index,
-                    "gate_decision": decision.to_dict(),
+                    "correction_decision": decision.to_dict(),
                     "query_plan": query_plan.to_dict(),
                     "query_execution": query_execution,
                     "query_fusion_execution": fusion_metadata,
@@ -280,12 +386,28 @@ class ParentChildRetrievalPipeline:
         filter_expr: str | None,
         keyword_doc_ids: list[str] | None,
         keyword_scope: dict[str, Any] | None = None,
+        access_scope_enforced: bool = False,
         extra_metadata: dict[str, Any] | None = None,
     ) -> RetrievalStageResult:
         checkpoint_current_execution()
+        canonical_scope = resolve_canonical_retrieval_scope(
+            filter_expr=filter_expr,
+            keyword_scope=keyword_scope,
+            keyword_doc_ids=keyword_doc_ids,
+            access_scope_enforced=bool(access_scope_enforced),
+        )
+        canonical_filter_expr = canonical_scope.to_filter_expr()
+        canonical_keyword_scope = canonical_scope.to_keyword_scope()
+        canonical_keyword_doc_ids = list(canonical_scope.doc_ids)
+        capture_event("R-SCOPE", {"phase": "RESULT", "query": query, "scope": canonical_scope.fingerprint_payload(),
+            "filter_expr": canonical_filter_expr}, unit_id="C01", operation_id="canonical_scope")
+        request_context = {
+            **dict(extra_metadata or {}),
+            "canonical_retrieval_scope": canonical_scope.fingerprint_payload(),
+        }
         plan = self.retrieval_planner.plan(
             query=query,
-            request_context=extra_metadata,
+            request_context=request_context,
         )
         checkpoint_current_execution()
         retrieval_plan = plan.to_dict()
@@ -295,7 +417,7 @@ class ParentChildRetrievalPipeline:
             expansion = transform(
                 query,
                 mode=plan.query_transform_mode,
-                runtime_context=dict(extra_metadata or {}),
+                runtime_context=request_context,
             )
         else:
             # Compatibility for narrow test/legacy selector ports. Production
@@ -303,6 +425,9 @@ class ParentChildRetrievalPipeline:
             expansion = transform(query, mode=plan.query_transform_mode)
         checkpoint_current_execution()
         expansion.metadata["retrieval_plan"] = retrieval_plan
+        if current_diagnostics().enabled:
+            capture_event("R-QUERY", {"phase": "RESULT", "query": query, "retrieval_plan": retrieval_plan,
+                "expansion": expansion.to_dict(), "ordered_queries": list(expansion.retrieval_queries)}, unit_id="C03", operation_id="query_expansion")
 
         query_candidate_sets: list[CandidateSet] = []
         query_execution: list[dict[str, Any]] = []
@@ -312,9 +437,9 @@ class ParentChildRetrievalPipeline:
                 retrieval_query=retrieval_query,
                 query_label=f"q{index}",
                 query_index=index,
-                filter_expr=filter_expr,
-                keyword_doc_ids=keyword_doc_ids,
-                keyword_scope=keyword_scope,
+                filter_expr=canonical_filter_expr,
+                keyword_doc_ids=canonical_keyword_doc_ids,
+                keyword_scope=canonical_keyword_scope,
                 stage="initial_retrieval",
             )
             query_candidate_sets.append(candidate_set)
@@ -334,7 +459,9 @@ class ParentChildRetrievalPipeline:
             "query_fusion_execution": query_fusion_metadata,
         }
 
+        capture_pool("R-RERANK", fused_results, unit_id="C08", operation_id="initial_rerank_input", query=query, phase="INPUT")
         reranked = self.reranker.rerank(query=query, results=fused_results)
+        capture_pool("R-RERANK", reranked, unit_id="C08", operation_id="initial_rerank_output", query=query, phase="RESULT")
         checkpoint_current_execution()
         expansion.metadata["configured_reranker"] = {
             **self._metadata(self.reranker),
@@ -347,17 +474,17 @@ class ParentChildRetrievalPipeline:
             query=query,
             results=reranked,
             correction_round=0,
-            request_context=extra_metadata,
+            request_context=request_context,
         )
         final_reranked, final_assessment, correction_trace = self._run_correction(
             query=query,
             initial_reranked=reranked,
             initial_assessment=initial_assessment,
             correction_budget=plan.correction_budget,
-            filter_expr=filter_expr,
-            keyword_doc_ids=keyword_doc_ids,
-            keyword_scope=keyword_scope,
-            request_context=extra_metadata,
+            filter_expr=canonical_filter_expr,
+            keyword_doc_ids=canonical_keyword_doc_ids,
+            keyword_scope=canonical_keyword_scope,
+            request_context=request_context,
         )
         checkpoint_current_execution()
         expansion.metadata["configured_evidence_assessor"] = {
@@ -375,18 +502,30 @@ class ParentChildRetrievalPipeline:
             **self._metadata(self.corrective_query_planner),
             **dict(self.corrective_query_planner.execution_metadata() or {}),
         }
+        (
+            annotated_final_reranked,
+            final_results,
+            crag_final_filter,
+        ) = self._apply_final_assessment(
+            results=list(final_reranked),
+            assessment=final_assessment,
+        )
+        capture_pool("R-CRAG", final_reranked, unit_id="C09", operation_id="final_filter_input", query=query, phase="INPUT")
+        capture_pool("R-CRAG", final_results, unit_id="C09", operation_id="final_filter_output", query=query, phase="RESULT", filter_report=crag_final_filter)
         quality_report = {
             **dict(final_assessment.report),
+            "canonical_retrieval_scope": canonical_scope.fingerprint_payload(),
             "initial_assessment": initial_assessment.to_dict(),
             "final_assessment": final_assessment.to_dict(),
             "corrective_retrieval": correction_trace,
+            "crag_final_filter": crag_final_filter,
         }
         return RetrievalStageResult(
             retrieval_plan=retrieval_plan,
             query_expansion=expansion,
             p2_results=fused_results,
-            reranked_results=list(final_reranked),
-            results=list(final_reranked),
+            reranked_results=annotated_final_reranked,
+            results=final_results,
             evidence_quality=quality_report,
             correction_triggered=bool(correction_trace.get("triggered")),
         )

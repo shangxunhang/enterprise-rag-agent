@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：运行数据沉淀模块，用于记录后训练与评测所需样本。
-# 主要定义：JsonlDataCaptureRecorder。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Data capture recorder."""
+"""把运行期原始交互和训练/评测候选记录写入分类 JSONL。
+
+记录器只能创建 raw、candidate 和 runtime_rejected 三种初始阶段，不能直接把数据提升为
+training_ready 或 eval_ready；正式生命周期晋级必须由 ``DataCaptureLifecycleStore``
+完成。处于受控执行尝试时，外部写入会延迟到提交阶段，并使用语义指纹保证幂等。
+"""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from core.persistence.crash_safe_jsonl import (
     CrashSafeJsonlRecordSink,
     canonical_json_sha256,
 )
+from core.persistence.safe_paths import SafeExternalIdentifier, SafePathResolver
 from core.runtime.clock import Clock, SystemClock
 from core.runtime.execution_control import current_execution_control
 from core.runtime.ids import IdGenerator, UuidIdGenerator
@@ -21,31 +23,46 @@ from schemas.data_capture import DataCaptureRecordSchema
 
 
 def data_capture_semantic_projection(record: dict[str, Any]) -> dict[str, Any]:
-    """Project fields that determine the durable capture business fact.
+    """提取决定采集业务事实的稳定字段投影。
 
-    ``created_at`` and ``metadata.execution_attempt`` describe when and by
-    which retry the adapter wrote the fact. They do not change the captured
-    business content, source lineage, model output, or lifecycle state.
+    Args:
+        record: 完整采集记录字典。
+
+    Returns:
+        删除写入时间和执行尝试元数据后的浅层独立投影。
+
+    ``created_at`` 和 ``metadata.execution_attempt`` 只描述何时、由哪个重试尝试执行了
+    写入，不改变采集内容、来源血缘、模型输出或生命周期状态，因此不参与幂等冲突判断。
     """
 
+    # 第一步：复制顶层字典，避免在计算指纹时修改调用方记录。
     projection = dict(record)
+
+    # 第二步：删除每次写入都会变化、但不属于业务事实的创建时间。
     projection.pop("created_at", None)
+
+    # 第三步：复制元数据并移除当前执行尝试信息。
     metadata = dict(projection.get("metadata") or {})
     metadata.pop("execution_attempt", None)
     projection["metadata"] = metadata
+
     return projection
 
 
-# 阅读注释（类）：封装 jsonl 数据 capture recorder，集中封装相关状态、依赖和行为。
 class JsonlDataCaptureRecorder:
-    """Record categorized captured data into JSONL files.
+    """按采集类别持久化标准数据记录。
 
-    Output example:
+    Attributes:
+        output_dir: 所有采集类别子目录的公共根目录。
+        clock: 为采集记录生成创建时间的可替换时钟。
+        id_generator: 在没有受控 side-effect ID 时生成记录标识的可替换生成器。
 
-    data/captures/sft_candidates/run_001_sft_candidates.jsonl
-    data/captures/eval_samples/run_001_eval_samples.jsonl
+    每个类别和 run 对应一个 JSONL 文件，例如
+    ``data/captures/sft_candidates/run_001_sft_candidates.jsonl``。
     """
 
+    # 运行时允许创建的持久化类别。生命周期阶段与类别是两个维度：类别说明用途，
+    # capture_stage 说明同一记录当前的数据治理状态。
     VALID_CAPTURE_TYPES = {
         "raw_interactions",
         "sft_candidates",
@@ -55,7 +72,6 @@ class JsonlDataCaptureRecorder:
         "rejected",
     }
 
-    # 阅读注释（函数）：初始化 JsonlDataCaptureRecorder，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         output_dir: str | Path = "data/captures",
@@ -63,156 +79,167 @@ class JsonlDataCaptureRecorder:
         clock: Clock | None = None,
         id_generator: IdGenerator | None = None,
     ) -> None:
-        """初始化 JsonlDataCaptureRecorder，保存运行所需的依赖、配置或状态。
+        """创建 JSONL 数据采集记录器并初始化分类目录。
 
-        参数:
-            output_dir: 输出 dir，具体约束请结合类型标注和调用方确认。
-            clock: clock，具体约束请结合类型标注和调用方确认。
-            id_generator: 标识 generator，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：Path, SystemClock, UuidIdGenerator, self.output_dir.mkdir, mkdir。
+        Args:
+            output_dir: 所有采集文件的根目录。
+            clock: 自定义时钟；未提供时使用系统 UTC 时钟。
+            id_generator: 自定义标识生成器；未提供时使用 UUID 实现。
         """
-        self.output_dir = Path(output_dir)
+
+        # 第一步：统一根目录类型并补齐可测试的时间与标识依赖。
+        self._path_resolver = SafePathResolver(output_dir)
+        self.output_dir = self._path_resolver.root
         self.clock = clock or SystemClock()
         self.id_generator = id_generator or UuidIdGenerator()
+
+        # 第二步：创建公共根目录。
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # 第三步：预先创建所有允许类别目录，使 record 只处理具体记录写入。
         for capture_type in self.VALID_CAPTURE_TYPES:
-            (self.output_dir / capture_type).mkdir(parents=True, exist_ok=True)
+            self._path_resolver.resolve(capture_type).mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
-    # 阅读注释（函数）：处理 now iso 相关逻辑。
     def _now_iso(self) -> str:
-        """处理 now iso 相关逻辑。
+        """返回统一时钟生成的当前 UTC ISO 时间。"""
 
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self.clock.now_iso。
-        """
         return self.clock.now_iso()
 
-    # 阅读注释（函数）：处理 new 标识 相关逻辑。
     def _new_id(self, prefix: str) -> str:
-        """处理 new 标识 相关逻辑。
+        """生成带业务前缀的新标识。
 
-        参数:
-            prefix: prefix，具体约束请结合类型标注和调用方确认。
+        Args:
+            prefix: 标识用途前缀。
 
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self.id_generator.new_id。
+        Returns:
+            注入生成器创建的标识字符串。
         """
+
         return self.id_generator.new_id(prefix)
 
-    # 阅读注释（函数）：记录并沉淀 路径。
     def _capture_path(self, capture_type: str, run_id: str) -> Path:
-        """记录并沉淀 路径。
+        """返回指定类别和运行的标准采集文件路径。
 
-        参数:
-            capture_type: capture 类型，具体约束请结合类型标注和调用方确认。
-            run_id: 本次运行唯一标识。
+        Args:
+            capture_type: 已登记的数据采集类别。
+            run_id: 单次运行标识。
 
-        返回:
-            Path
+        Returns:
+            ``<output_dir>/<type>/<run_id>_<type>.jsonl``。
 
-        阅读提示:
-            主要直接调用：ValueError。
+        Raises:
+            ValueError: 类别不在允许集合中时抛出，防止任意路径或目录写入。
         """
+
+        # 第一步：以固定白名单校验类别，目录名称不能由任意外部字符串决定。
         if capture_type not in self.VALID_CAPTURE_TYPES:
             raise ValueError(f"Unsupported capture_type: {capture_type}")
 
-        return self.output_dir / capture_type / f"{run_id}_{capture_type}.jsonl"
+        # 第二步：按类别隔离不同用途数据，并按 run 隔离执行来源。
+        return self._path_resolver.path_for_identifier(
+            run_id,
+            field_name="run_id",
+            directory=(capture_type,),
+            suffix=f"_{capture_type}.jsonl",
+        )
 
-    # 阅读注释（函数）：记录 JsonlDataCaptureRecorder。
     def record(
-            self,
-            capture_type: str,
-            task_id: str,
-            run_id: str,
-            capture_stage: Literal["raw", "candidate", "runtime_rejected"] = "candidate",
-            user_input: Optional[str] = None,
-            rewritten_query: Optional[str] = None,
-            rag_context: Optional[Dict[str, Any]] = None,
-            structured_facts: Optional[Dict[str, Any]] = None,
-            prompt: Optional[str] = None,
-            model_output: Optional[str] = None,
-            generated_draft_output: Optional[str] = None,
-            deliverable_output: Optional[str] = None,
-            human_feedback: Optional[Dict[str, Any]] = None,
-            label: Optional[Dict[str, Any]] = None,
-            quality_score: Optional[float] = None,
-            quality_flags: Optional[List[str]] = None,
-            need_human_review: bool = True,
-            trace_id: Optional[str] = None,
-            source_component_type: Optional[str] = None,
-            source_component_name: Optional[str] = None,
-            source_event_type: Optional[str] = None,
-            related_trace_event_ids: Optional[List[str]] = None,
-            related_file_ids: Optional[List[str]] = None,
-            lineage_refs: Optional[Dict[str, Any]] = None,
-            metadata: Optional[Dict[str, Any]] = None,
-            extra: Optional[Dict[str, Any]] = None,
-            retrieved_chunks: Optional[List[Dict[str, Any]]] = None,
-            citations: Optional[List[Dict[str, Any]]] = None,
-            rag_trace: Optional[Dict[str, Any]] = None,
-            prompt_info: Optional[Dict[str, Any]] = None,
-            model_info: Optional[Dict[str, Any]] = None,
-            eval_sample: Optional[Dict[str, Any]] = None,
+        self,
+        capture_type: str,
+        task_id: str,
+        run_id: str,
+        capture_stage: Literal[
+            "raw", "candidate", "runtime_rejected"
+        ] = "candidate",
+        user_input: Optional[str] = None,
+        rewritten_query: Optional[str] = None,
+        rag_context: Optional[Dict[str, Any]] = None,
+        structured_facts: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
+        model_output: Optional[str] = None,
+        generated_draft_output: Optional[str] = None,
+        deliverable_output: Optional[str] = None,
+        human_feedback: Optional[Dict[str, Any]] = None,
+        label: Optional[Dict[str, Any]] = None,
+        quality_score: Optional[float] = None,
+        quality_flags: Optional[List[str]] = None,
+        need_human_review: bool = True,
+        trace_id: Optional[str] = None,
+        source_component_type: Optional[str] = None,
+        source_component_name: Optional[str] = None,
+        source_event_type: Optional[str] = None,
+        related_trace_event_ids: Optional[List[str]] = None,
+        related_file_ids: Optional[List[str]] = None,
+        lineage_refs: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+        retrieved_chunks: Optional[List[Dict[str, Any]]] = None,
+        citations: Optional[List[Dict[str, Any]]] = None,
+        rag_trace: Optional[Dict[str, Any]] = None,
+        prompt_info: Optional[Dict[str, Any]] = None,
+        model_info: Optional[Dict[str, Any]] = None,
+        eval_sample: Optional[Dict[str, Any]] = None,
     ) -> DataCaptureRecordSchema:
-        """记录 JsonlDataCaptureRecorder。
+        """构造并按当前执行提交策略持久化一条采集记录。
 
-        参数:
-            capture_type: capture 类型，具体约束请结合类型标注和调用方确认。
-            task_id: 任务唯一标识。
-            run_id: 本次运行唯一标识。
-            user_input: user 输入，具体约束请结合类型标注和调用方确认。
-            rewritten_query: rewritten 查询，具体约束请结合类型标注和调用方确认。
-            rag_context: RAG 上下文，具体约束请结合类型标注和调用方确认。
-            structured_facts: structured facts，具体约束请结合类型标注和调用方确认。
-            prompt: 提示词，具体约束请结合类型标注和调用方确认。
-            model_output: 模型 输出，具体约束请结合类型标注和调用方确认。
-            human_feedback: human 反馈，具体约束请结合类型标注和调用方确认。
-            label: label，具体约束请结合类型标注和调用方确认。
-            quality_score: 质量 score，具体约束请结合类型标注和调用方确认。
-            quality_flags: 质量 flags，具体约束请结合类型标注和调用方确认。
-            need_human_review: need human review，具体约束请结合类型标注和调用方确认。
-            is_usable_for_training: is usable for training，具体约束请结合类型标注和调用方确认。
-            is_usable_for_eval: is usable for 评测，具体约束请结合类型标注和调用方确认。
-            trace_id: Trace 标识，具体约束请结合类型标注和调用方确认。
-            source_component_type: source component 类型，具体约束请结合类型标注和调用方确认。
-            source_component_name: source component 名称，具体约束请结合类型标注和调用方确认。
-            source_event_type: source 事件 类型，具体约束请结合类型标注和调用方确认。
-            related_trace_event_ids: related Trace 事件 标识集合，具体约束请结合类型标注和调用方确认。
-            related_file_ids: related 文件 标识集合，具体约束请结合类型标注和调用方确认。
-            metadata: 随对象传递的元数据。
-            extra: extra，具体约束请结合类型标注和调用方确认。
-            retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            rag_trace: RAG Trace，具体约束请结合类型标注和调用方确认。
-            prompt_info: 提示词 info，具体约束请结合类型标注和调用方确认。
-            model_info: 模型 info，具体约束请结合类型标注和调用方确认。
-            eval_sample: 评测 sample，具体约束请结合类型标注和调用方确认。
+        Args:
+            capture_type: 数据用途类别，例如 raw_interactions 或 sft_candidates。
+            task_id: 产生数据的业务任务标识。
+            run_id: 产生数据的单次运行标识。
+            capture_stage: 运行时允许创建的初始治理阶段。
+            user_input: 原始用户输入。
+            rewritten_query: 改写后的检索查询。
+            rag_context: RAG 上下文兼容快照。
+            structured_facts: 从输入和证据确认的结构化事实。
+            prompt: 实际发送给模型的提示词文本。
+            model_output: 模型原始或规范化输出。
+            generated_draft_output: 未通过最终门禁的草稿文本。
+            deliverable_output: 已通过业务门禁的交付文本。
+            human_feedback: 人工评分、意见和编辑信息。
+            label: 监督标签或偏好标签。
+            quality_score: 当前质量综合分数。
+            quality_flags: 质量规则标记集合。
+            need_human_review: 当前记录是否仍需人工判断。
+            trace_id: 与运行轨迹关联的 trace 标识。
+            source_component_type: 产生数据的组件类别。
+            source_component_name: 产生数据的具体组件名称。
+            source_event_type: 触发采集的事件类别。
+            related_trace_event_ids: 与记录直接关联的轨迹事件标识。
+            related_file_ids: 与记录关联的原始文件标识。
+            lineage_refs: 原始输入、证据、调用和产物血缘。
+            metadata: 数据集批次、规则版本等稳定元数据。
+            extra: 尚未进入稳定契约的扩展字段。
+            retrieved_chunks: 结构化召回和重排片段。
+            citations: 证据来源和引用绑定信息。
+            rag_trace: RAG 查询、召回、重排和质量轨迹。
+            prompt_info: 模板 ID、版本和渲染信息。
+            model_info: 模型角色、供应商、参数和用量信息。
+            eval_sample: 面向离线评测器的标准样本结构。
 
-        返回:
-            DataCaptureRecordSchema
+        Returns:
+            已立即写入或登记为延迟提交的 ``DataCaptureRecordSchema``。
 
-        阅读提示:
-            主要直接调用：DataCaptureRecordSchema, self._new_id, self._now_iso, self._capture_path, path.open, f.write, json.dumps, record.model_dump。
+        Raises:
+            ValueError: 调用方尝试由运行时记录器直接创建晋级阶段时抛出。
         """
+
+        # 第一步：运行时只允许创建初始或拒绝记录；晋级必须经过生命周期仓库校验。
         if capture_stage not in {"raw", "candidate", "runtime_rejected"}:
             raise ValueError(
                 "runtime recorder cannot create promoted lifecycle state; "
                 "use DataCaptureLifecycleStore.transition"
             )
 
+        SafeExternalIdentifier.validate(task_id, field_name="task_id")
+        SafeExternalIdentifier.validate(run_id, field_name="run_id")
+
+        # 第二步：读取当前节点尝试的执行控制上下文；普通调用可能没有该上下文。
         execution_control = current_execution_control()
+
+        # 第三步：受控执行中为本次外部副作用预留确定性标识，支持重试幂等。
         side_effect_id = (
             execution_control.reserve_side_effect_id(
                 f"data_capture:{capture_type}:{capture_stage}"
@@ -220,6 +247,8 @@ class JsonlDataCaptureRecorder:
             if execution_control is not None
             else None
         )
+
+        # 第四步：复制调用方元数据，并在受控执行中写入尝试与提交策略说明。
         effective_metadata = dict(metadata or {})
         if execution_control is not None:
             effective_metadata["execution_attempt"] = {
@@ -227,9 +256,11 @@ class JsonlDataCaptureRecorder:
                 "commit_scope_id": execution_control.commit_scope_id,
                 "side_effect_id": side_effect_id,
                 "external_commit_policy": "attempt_scoped_deferred_v1",
+                # candidate 只有当前尝试成功才可提交，防止失败尝试污染训练候选。
                 "requires_attempt_success": capture_stage == "candidate",
             }
 
+        # 第五步：构造严格采集 Schema。运行时新记录始终不可直接用于训练或评测。
         record = DataCaptureRecordSchema(
             record_id=(
                 f"capture_{side_effect_id.removeprefix('side_effect_')}"
@@ -273,8 +304,11 @@ class JsonlDataCaptureRecorder:
             eval_sample=eval_sample or {},
         )
 
+        # 第六步：定位分类文件并创建具备崩溃恢复和重复身份检查能力的 JSONL sink。
         path = self._capture_path(capture_type, run_id)
         sink = CrashSafeJsonlRecordSink(path)
+
+        # 第七步：生成紧凑稳定 JSON 文本和只覆盖业务事实的语义指纹。
         record_data = record.model_dump()
         serialized = json.dumps(
             record_data,
@@ -286,6 +320,9 @@ class JsonlDataCaptureRecorder:
         )
 
         def append_record() -> None:
+            """以记录身份和语义指纹执行一次幂等追加写入。"""
+
+            # 同一 record_id 已存在且语义一致时不重复追加；语义冲突由 sink 拒绝。
             sink.append_record_once(
                 serialized,
                 id_field="record_id",
@@ -294,9 +331,11 @@ class JsonlDataCaptureRecorder:
                 semantic_fingerprint=semantic_fingerprint,
             )
 
+        # 第八步：没有受控执行上下文时立即持久化。
         if execution_control is None:
             append_record()
         else:
+            # 第九步：有执行上下文时登记延迟外部提交，由尝试终态决定是否真正落盘。
             execution_control.defer_external_commit(
                 append_record,
                 description=f"data_capture:{capture_type}:{record.record_id}",
@@ -305,4 +344,5 @@ class JsonlDataCaptureRecorder:
                 semantic_fingerprint=semantic_fingerprint,
             )
 
+        # 第十步：返回规范记录；受控执行中此时可能尚未实际写入文件。
         return record

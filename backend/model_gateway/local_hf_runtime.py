@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：LocalHuggingFaceRuntime。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Lazy HuggingFace model loading and tensor generation."""
+"""本地 HuggingFace 模型的延迟加载、独占调用和显存释放运行时。
+
+一个实例只管理一组 tokenizer/model。生命周期锁覆盖加载、格式化、生成和卸载，避免
+按需释放线程在一次完整调用中途清空模型。业务响应组装由上层客户端负责。
+"""
 
 from __future__ import annotations
 
@@ -14,10 +14,8 @@ from typing import Any, Dict, Iterator
 from core.runtime.execution_control import current_execution_control
 
 
-# 阅读注释（类）：封装 本地 hugging face 运行时，负责驱动实际运行流程并维护执行状态。
 class LocalHuggingFaceRuntime:
-    """封装 本地 hugging face 运行时，负责驱动实际运行流程并维护执行状态。"""
-    # 阅读注释（函数）：初始化 LocalHuggingFaceRuntime，保存运行所需的依赖、配置或状态。
+    """持有本地模型可变资源，并为一次客户端调用提供排他的驻留会话。"""
     def __init__(
         self,
         model_path: str | Path,
@@ -25,18 +23,7 @@ class LocalHuggingFaceRuntime:
         *,
         registered_model: str | None = None,
     ) -> None:
-        """初始化 LocalHuggingFaceRuntime，保存运行所需的依赖、配置或状态。
-
-        参数:
-            model_path: 模型 路径，具体约束请结合类型标注和调用方确认。
-            device: device，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：Path。
-        """
+        """保存模型路径和期望设备；真正的重量级加载推迟到首次调用。"""
         self.model_path = Path(model_path)
         self.device = device
         self.registered_model = str(
@@ -81,16 +68,8 @@ class LocalHuggingFaceRuntime:
                 # Lifecycle cleanup must not hide the original model-call result.
                 pass
 
-    # 阅读注释（函数）：确保 loaded 满足运行约束。
     def ensure_loaded(self) -> None:
-        """确保 loaded 满足运行约束。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.model_path.exists, FileNotFoundError, AutoTokenizer.from_pretrained, str, torch.cuda.is_available, AutoModelForCausalLM.from_pretrained, self.model.to, self.model.eval。
-        """
+        """在生命周期锁内完成一次幂等加载，并在前后检查工作流取消信号。"""
         self._checkpoint_execution()
         with self._lifecycle_lock:
             self._ensure_loaded_unlocked()
@@ -149,19 +128,11 @@ class LocalHuggingFaceRuntime:
             self._checkpoint_execution()
             yield
 
-    # 阅读注释（函数）：生成 LocalHuggingFaceRuntime。
     def generate(self, prompt_text: str, generation_kwargs: Dict[str, Any]):
-        """生成 LocalHuggingFaceRuntime。
+        """在独占会话中编码输入、移动张量并执行 ``model.generate``。
 
-        参数:
-            prompt_text: 提示词 文本，具体约束请结合类型标注和调用方确认。
-            generation_kwargs: 生成 kwargs，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：self.ensure_loaded, self.tokenizer, next, self.model.parameters, value.to, inputs.items, torch.no_grad, self.model.generate。
+        返回移动后的输入张量、完整输出 token 和实际模型设备。上层客户端需要用输入长度
+        切出新增 token、解码文本并计算实际用量；运行时不自行构造业务协议响应。
         """
         with self.call_session():
             import torch

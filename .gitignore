@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyd
@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -43,6 +44,9 @@ data/runtime/
 data/raw/
 data/processed/
 data/chunks/
+/raw_data/
+/data/parsed/
+/document_ingestion/contracts/*.mineru.parsed.jsonl
 
 # Vector indexes and databases
 data/vector_index/
@@ -88,3 +92,83 @@ data/**/cache/
 *_back.py
 *.bak
 *.tmp
+
+# Generated audit/test workspaces
+docs/post_r13_business_improvements_audits/**/tmp*/
+docs/post_r13_business_improvements_audits/**/*_TMP_*/
+docs/post_r13_business_improvements_audits/**/pytest-*/
+docs/post_r13_business_improvements_audits/**/fixture-smoke*/
+
+# Externalized audit source mirrors / isolated fixtures
+docs/post_r13_business_improvements_audits/**/source_bytes_before*/
+docs/post_r13_business_improvements_audits/**/source_bytes_after*/
+docs/post_r13_business_improvements_audits/**/*SOURCE_OVERLAY*/
+docs/post_r13_business_improvements_audits/**/isolated_*/
+docs/post_r13_business_improvements_audits/**/readonly_counterexample_copy/
+
+# Externalized large/raw audit evidence
+docs/post_r13_business_improvements_audits/**/*.functional_metrics.json
+docs/post_r13_business_improvements_audits/**/*.durable_diagnostics.json
+docs/post_r13_business_improvements_audits/**/*.pytest.json
+docs/post_r13_business_improvements_audits/**/*.jsonl.txt
+docs/post_r13_business_improvements_audits/**/*.sqlite3-wal
+docs/post_r13_business_improvements_audits/**/*.sqlite3-shm
+
+# Externalized raw per-run audit execution evidence
+docs/post_r13_business_improvements_audits/**/*.started.json
+docs/post_r13_business_improvements_audits/**/*.checkpoint_diagnostics.json
+docs/post_r13_business_improvements_audits/**/*.task_diagnostics.json
+docs/post_r13_business_improvements_audits/**/*.execution.json
+docs/post_r13_business_improvements_audits/**/*.functional_metrics*.json
+docs/post_r13_business_improvements_audits/BCA014_I*_TEST_*_20261002.json
+docs/post_r13_business_improvements_audits/BCA014_I*_TEST_*_20261002.txt
+docs/post_r13_business_improvements_audits/BCA014_I10_COLLECT_*.txt
+
+# Proposed additions to the existing .gitignore; no local deletion.
+# SQLite sidecars and profiler output
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+*.pstats
+*.prof
+/NUL
+
+# Raw audit/runtime output; public fixtures need an explicit reviewed exception.
+docs/**/*.jsonl
+docs/**/diagnostics/
+docs/**/runs/
+docs/**/tasks/
+docs/**/captures/
+docs/**/checkpoints/
+docs/**/budget_inputs/
+docs/**/historical_budget_source/
+docs/**/live_execution_*/
+docs/**/source_bytes_before*/
+docs/**/source_bytes_after*/
+docs/**/owned_sandbox_archive/
+
+# Operational inventories and large checkpoint exports
+docs/**/preservation_before*.json
+docs/**/preservation_after*.json
+docs/**/PRESERVATION_BEFORE*.json
+docs/**/PRESERVATION_AFTER*.json
+docs/**/top_checkpoint_*.json
+docs/**/EXACT_VALIDATE_DOCUMENT_ASSEMBLY_PREDECESSOR.json
+
+# Historical enterprise catalog metadata: local until disclosure decision.
+/data/catalog/document_profile_seeds_v1.jsonl
+/data/catalog/document_profiles_v1.jsonl
+/data/catalog/
+
+# Historical private audit inputs remain outside the public snapshot.
+docs/**/evidence/
+docs/**/test_tmp*/
+docs/**/tmp*/
+docs/**/frozen_inputs/
+docs/**/historical_budget_source/
+
+# IMPORTANT: ignore rules do not untrack files or remove ancestor history.
+# Existing tracked versions must be excluded by the reviewed snapshot manifest.

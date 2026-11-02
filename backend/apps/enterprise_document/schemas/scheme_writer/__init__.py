@@ -1,10 +1,18 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Focused scheme-writer schema modules."""
+"""方案生成链使用的规划、执行、评测、草稿和交付物 Schema 汇总。"""
+
 from .generation import SchemeGenerationOptionsSchema, SchemeWriterInputSchema
-from .planning import DocumentPlanSchema, SectionPlanSchema
+from .planning import (
+    DocumentPlanSchema,
+    EvidenceRequirementsSourceRefSchema,
+    PlannedFactRequirementSchema,
+    PlanningConsistencyRefSchema,
+    PlanningRiskHintSchema,
+    SectionPlanBindingSchema,
+    SectionPlanContentSchema,
+    SectionPlanEntrySchema,
+    SectionPlanSchema,
+    SectionStrategyCode,
+)
 from .evaluation import (
     HardGateResultSchema,
     SectionEvalSchema,
@@ -19,17 +27,48 @@ from .output import (
     SchemeWriterOutputSchema,
 )
 from .evidence import SectionEvidenceBundleSchema
-from .section_execution import SectionExecutionRequestSchema, SectionExecutionResultSchema
+from .section_execution import (
+    ParallelSectionExecutionEnvelopeSchema,
+    ParallelSectionStateDeltaSchema,
+    SectionExecutionRequestSchema,
+    SectionExecutionResultSchema,
+)
 from .document_assembly import (
     DocumentAssemblyRequestSchema,
     DocumentAssemblyResultSchema,
     SectionEvidenceRequirementSchema,
 )
+from .state_projection import (
+    AttemptStateSchema,
+    AttemptStatus,
+    ClaimProjectionStatus,
+    ClaimStateSchema,
+    DocumentValidationStateSchema,
+    DocumentValidationStatus,
+    PlanProjectionStatus,
+    PlanStateSchema,
+    ResearchProjectionStatus,
+    ResearchStateSchema,
+    SectionLifecycleStatus,
+    SectionStateSchema,
+    VerificationProjectionStatus,
+    VerificationStateSchema,
+    WritingProjectionStatus,
+    WritingStateSchema,
+)
 
 __all__ = [
     "SchemeGenerationOptionsSchema",
     "SchemeWriterInputSchema",
+    "EvidenceRequirementsSourceRefSchema",
+    "PlannedFactRequirementSchema",
+    "PlanningConsistencyRefSchema",
+    "PlanningRiskHintSchema",
+    "SectionPlanBindingSchema",
+    "SectionPlanContentSchema",
+    "SectionPlanEntrySchema",
     "SectionPlanSchema",
+    "SectionStrategyCode",
     "DocumentPlanSchema",
     "TruncationCheckSchema",
     "SemanticGateIssueSchema",
@@ -44,7 +83,25 @@ __all__ = [
     "SectionEvidenceBundleSchema",
     "SectionExecutionRequestSchema",
     "SectionExecutionResultSchema",
+    "ParallelSectionStateDeltaSchema",
+    "ParallelSectionExecutionEnvelopeSchema",
     "DocumentAssemblyRequestSchema",
     "DocumentAssemblyResultSchema",
     "SectionEvidenceRequirementSchema",
+    "PlanProjectionStatus",
+    "PlanStateSchema",
+    "AttemptStatus",
+    "AttemptStateSchema",
+    "ResearchProjectionStatus",
+    "ResearchStateSchema",
+    "WritingProjectionStatus",
+    "WritingStateSchema",
+    "ClaimProjectionStatus",
+    "ClaimStateSchema",
+    "VerificationProjectionStatus",
+    "VerificationStateSchema",
+    "SectionLifecycleStatus",
+    "SectionStateSchema",
+    "DocumentValidationStatus",
+    "DocumentValidationStateSchema",
 ]

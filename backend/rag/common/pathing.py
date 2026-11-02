@@ -1,48 +1,53 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：resolve_path、require_path。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Path resolution for local RAG resources."""
+"""解析和校验本地 RAG 资源路径。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 
-# 阅读注释（函数）：解析并确定 路径。
-def resolve_path(path: str | Path, project_root: str | Path | None = None) -> str:
-    """解析并确定 路径。
+def resolve_path(
+    path: str | Path,
+    project_root: str | Path | None = None,
+) -> str:
+    """把绝对或项目相对路径转换为绝对字符串路径。
 
-    参数:
-        path: 目标文件或目录路径。
-        project_root: 项目 root，具体约束请结合类型标注和调用方确认。
+    Args:
+        path: 待解析路径。
+        project_root: 相对路径的可选基准目录；省略时使用当前工作目录。
 
-    返回:
-        str
+    Returns:
+        绝对路径的字符串表示。
 
-    阅读提示:
-        主要直接调用：Path, candidate.is_absolute, str, Path.cwd, resolve。
+    绝对路径保持原样，不额外调用 ``resolve``；相对路径会与基准目录拼接并解析
+    ``..``、``.`` 等路径段。
     """
+
+    # 第一步：统一转换为 Path，保留调用方传入的绝对路径语义。
     candidate = Path(path)
     if candidate.is_absolute():
         return str(candidate)
+
+    # 第二步：选择显式项目根目录或当前工作目录作为相对路径基准。
     root = Path(project_root) if project_root else Path.cwd()
+
+    # 第三步：拼接并解析为规范化绝对路径。
     return str((root / candidate).resolve())
 
 
-# 阅读注释（函数）：处理 require 路径 相关逻辑。
 def require_path(path: str | Path, name: str) -> None:
-    """处理 require 路径 相关逻辑。
+    """要求路径在文件系统中存在。
 
-    参数:
-        path: 目标文件或目录路径。
-        name: 名称，具体约束请结合类型标注和调用方确认。
+    Args:
+        path: 待检查的文件或目录路径。
+        name: 错误消息中使用的资源名称。
 
-    返回:
-        None
+    Raises:
+        FileNotFoundError: 路径不存在时抛出。
 
-    阅读提示:
-        主要直接调用：exists, Path, FileNotFoundError。
+    本函数只检查存在性，不限制资源必须是文件还是目录；具体类型应由调用方按业务
+    契约继续验证。
     """
+
+    # 统一通过 Path.exists 检查，并在异常中同时保留逻辑名称和实际路径。
     if not Path(path).exists():
         raise FileNotFoundError(f"{name} not found: {path}")

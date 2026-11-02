@@ -27,6 +27,112 @@ class SideEffectIdentityConflict(ValueError):
 
 
 @dataclass(frozen=True)
+class LogicalOperationRef:
+    """SIF-02 replay-stable logical operation identity."""
+
+    logical_operation_id: str
+    operation_kind: str
+    run_id: str
+    operation_scope_ref: str
+    attempt_scope_ref: str | None = None
+    attempt_id: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "logical_operation_id",
+            "operation_kind",
+            "run_id",
+            "operation_scope_ref",
+        ):
+            if not str(getattr(self, field_name) or "").strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        attempt_scope = str(self.attempt_scope_ref or "").strip()
+        attempt_id = str(self.attempt_id or "").strip()
+        if bool(attempt_scope) != bool(attempt_id):
+            raise ValueError(
+                "attempt_scope_ref and attempt_id must be supplied together"
+            )
+
+
+class CommittedResultResolutionStatus(str, Enum):
+    ABSENT = "absent"
+    IN_PROGRESS = "in_progress"
+    COMMITTED_SAME = "committed_same"
+    COMMITTED_CONFLICT = "committed_conflict"
+    INTEGRITY_INVALID = "integrity_invalid"
+
+
+@dataclass(frozen=True)
+class CommittedResultResolution:
+    """SIF-02 result of resolving one logical operation against canonical truth."""
+
+    logical_operation_id: str
+    semantic_fingerprint: str
+    resolution: CommittedResultResolutionStatus
+    committed_result_refs: tuple[str, ...] = ()
+
+
+class CanonicalCommittedResultResolver(Protocol):
+    """Source-specific canonical result resolver; never backed by checkpoint."""
+
+    def resolve_committed_result(
+        self,
+        operation_ref: LogicalOperationRef,
+        semantic_fingerprint: str,
+    ) -> CommittedResultResolution: ...
+
+
+def resolve_canonical_committed_result(
+    resolver: CanonicalCommittedResultResolver,
+    operation_ref: LogicalOperationRef,
+    semantic_fingerprint: str,
+) -> CommittedResultResolution:
+    """Resolve canonical truth before retrying one recovery-sensitive operation."""
+
+    fingerprint = validate_sif02_semantic_fingerprint(semantic_fingerprint)
+    resolution = resolver.resolve_committed_result(operation_ref, fingerprint)
+    if resolution.logical_operation_id != operation_ref.logical_operation_id:
+        raise ValueError("canonical committed-result resolver returned wrong operation")
+    if resolution.semantic_fingerprint != fingerprint:
+        raise ValueError("canonical committed-result resolver returned wrong fingerprint")
+    refs = _normalize_result_refs(resolution.committed_result_refs)
+    if (
+        resolution.resolution is CommittedResultResolutionStatus.COMMITTED_SAME
+        and not refs
+    ):
+        raise ValueError("COMMITTED_SAME requires canonical committed_result_refs")
+    if (
+        resolution.resolution
+        in {
+            CommittedResultResolutionStatus.ABSENT,
+            CommittedResultResolutionStatus.IN_PROGRESS,
+        }
+        and refs
+    ):
+        raise ValueError("uncommitted resolution cannot expose committed_result_refs")
+    return CommittedResultResolution(
+        logical_operation_id=resolution.logical_operation_id,
+        semantic_fingerprint=fingerprint,
+        resolution=resolution.resolution,
+        committed_result_refs=refs,
+    )
+
+
+class SideEffectCoordinationStatus(str, Enum):
+    ABSENT = "absent"
+    IN_PROGRESS = "in_progress"
+    COMMITTED = "committed"
+
+
+@dataclass(frozen=True)
+class SideEffectCoordinationResolution:
+    status: SideEffectCoordinationStatus
+    side_effect_id: str
+    semantic_fingerprint: str | None
+    committed_result_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SideEffectClaim:
     """Execution authority for one logical side effect."""
 
@@ -36,6 +142,7 @@ class SideEffectClaim:
     description: str
     claim_token: str | None = None
     semantic_fingerprint: str | None = None
+    committed_result_refs: tuple[str, ...] = ()
 
     @property
     def acquired(self) -> bool:
@@ -54,7 +161,19 @@ class SideEffectCommitStore(Protocol):
         semantic_fingerprint: str | None = None,
     ) -> SideEffectClaim: ...
 
-    def mark_committed(self, claim: SideEffectClaim) -> bool: ...
+    def resolve(
+        self,
+        side_effect_id: str,
+        *,
+        semantic_fingerprint: str | None = None,
+    ) -> SideEffectCoordinationResolution: ...
+
+    def mark_committed(
+        self,
+        claim: SideEffectClaim,
+        *,
+        committed_result_refs: tuple[str, ...] = (),
+    ) -> bool: ...
 
     def release(self, claim: SideEffectClaim, *, reason: str) -> bool: ...
 
@@ -75,6 +194,7 @@ class _SideEffectState:
     execution_id: str | None
     lease_expires_at: float | None
     semantic_fingerprint: str | None
+    committed_result_refs: tuple[str, ...] = ()
 
 
 @dataclass
@@ -109,6 +229,30 @@ def _validate_identity(
 def _normalize_semantic_fingerprint(value: str | None) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def validate_sif02_semantic_fingerprint(value: str) -> str:
+    """Validate the frozen SIF-02 SHA-256 fingerprint shape for Target adapters."""
+
+    normalized = str(value or "").strip()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(
+            "SIF-02 semantic_fingerprint must be 64 lowercase SHA-256 hex characters"
+        )
+    return normalized
+
+
+def _normalize_result_refs(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for value in values
+            if str(value or "").strip()
+        )
+    )
+    return normalized
 
 
 def _assert_semantic_identity(
@@ -164,6 +308,7 @@ class InMemorySideEffectCommitStore:
                     execution_id,
                     description,
                     semantic_fingerprint=semantic_fingerprint,
+                    committed_result_refs=current.committed_result_refs,
                 )
             if current is not None and current.state == "in_progress":
                 return SideEffectClaim(
@@ -190,7 +335,47 @@ class InMemorySideEffectCommitStore:
                 semantic_fingerprint,
             )
 
-    def mark_committed(self, claim: SideEffectClaim) -> bool:
+    def resolve(
+        self,
+        side_effect_id: str,
+        *,
+        semantic_fingerprint: str | None = None,
+    ) -> SideEffectCoordinationResolution:
+        normalized_id = str(side_effect_id or "").strip()
+        if not normalized_id:
+            raise ValueError("side_effect_id must be non-empty")
+        incoming = _normalize_semantic_fingerprint(semantic_fingerprint)
+        with self._lock:
+            current = self._states.get(normalized_id)
+            if current is None:
+                return SideEffectCoordinationResolution(
+                    SideEffectCoordinationStatus.ABSENT,
+                    normalized_id,
+                    incoming,
+                )
+            _assert_semantic_identity(
+                side_effect_id=normalized_id,
+                existing=current.semantic_fingerprint,
+                incoming=incoming,
+            )
+            status = (
+                SideEffectCoordinationStatus.COMMITTED
+                if current.state == "committed"
+                else SideEffectCoordinationStatus.IN_PROGRESS
+            )
+            return SideEffectCoordinationResolution(
+                status,
+                normalized_id,
+                current.semantic_fingerprint,
+                current.committed_result_refs,
+            )
+
+    def mark_committed(
+        self,
+        claim: SideEffectClaim,
+        *,
+        committed_result_refs: tuple[str, ...] = (),
+    ) -> bool:
         if not claim.acquired or not claim.claim_token:
             raise ValueError("only an acquired claim can be committed")
         with self._lock:
@@ -204,12 +389,14 @@ class InMemorySideEffectCommitStore:
                 or current.semantic_fingerprint != claim.semantic_fingerprint
             ):
                 raise ValueError("side-effect claim is not the active owner")
+            refs = _normalize_result_refs(committed_result_refs)
             self._states[claim.side_effect_id] = _SideEffectState(
                 state="committed",
                 claim_token=claim.claim_token,
                 execution_id=claim.execution_id,
                 lease_expires_at=None,
                 semantic_fingerprint=claim.semantic_fingerprint,
+                committed_result_refs=refs,
             )
             self._condition.notify_all()
             return True
@@ -378,12 +565,19 @@ class JsonlSideEffectCommitStore:
                         payload.get("semantic_fingerprint")
                     ),
                 )
+                raw_refs = payload.get("committed_result_refs") or []
+                if not isinstance(raw_refs, list):
+                    raise ValueError(
+                        "side-effect committed_result_refs must be a list"
+                    )
+                refs = _normalize_result_refs(tuple(raw_refs))
                 states[side_effect_id] = _SideEffectState(
                     state="committed",
                     claim_token=token,
                     execution_id=current.execution_id,
                     lease_expires_at=None,
                     semantic_fingerprint=current.semantic_fingerprint,
+                    committed_result_refs=refs,
                 )
             else:
                 raise ValueError("unknown side-effect ledger event_type")
@@ -459,6 +653,7 @@ class JsonlSideEffectCommitStore:
                     execution_id,
                     description,
                     semantic_fingerprint=semantic_fingerprint,
+                    committed_result_refs=current.committed_result_refs,
                 )
             now = time.time()
             if current is not None and current.state == "in_progress":
@@ -514,7 +709,48 @@ class JsonlSideEffectCommitStore:
                 semantic_fingerprint,
             )
 
-    def mark_committed(self, claim: SideEffectClaim) -> bool:
+    def resolve(
+        self,
+        side_effect_id: str,
+        *,
+        semantic_fingerprint: str | None = None,
+    ) -> SideEffectCoordinationResolution:
+        normalized_id = str(side_effect_id or "").strip()
+        if not normalized_id:
+            raise ValueError("side_effect_id must be non-empty")
+        incoming = _normalize_semantic_fingerprint(semantic_fingerprint)
+        with self._lock:
+            self._reload_unlocked()
+            current = self._states.get(normalized_id)
+            if current is None:
+                return SideEffectCoordinationResolution(
+                    SideEffectCoordinationStatus.ABSENT,
+                    normalized_id,
+                    incoming,
+                )
+            _assert_semantic_identity(
+                side_effect_id=normalized_id,
+                existing=current.semantic_fingerprint,
+                incoming=incoming,
+            )
+            status = (
+                SideEffectCoordinationStatus.COMMITTED
+                if current.state == "committed"
+                else SideEffectCoordinationStatus.IN_PROGRESS
+            )
+            return SideEffectCoordinationResolution(
+                status,
+                normalized_id,
+                current.semantic_fingerprint,
+                current.committed_result_refs,
+            )
+
+    def mark_committed(
+        self,
+        claim: SideEffectClaim,
+        *,
+        committed_result_refs: tuple[str, ...] = (),
+    ) -> bool:
         if not claim.acquired or not claim.claim_token:
             raise ValueError("only an acquired claim can be committed")
         with self._lock:
@@ -529,6 +765,7 @@ class JsonlSideEffectCommitStore:
                 or current.semantic_fingerprint != claim.semantic_fingerprint
             ):
                 raise ValueError("side-effect claim is not the active owner")
+            refs = _normalize_result_refs(committed_result_refs)
             self._append_unlocked(
                 {
                     "schema_version": "side_effect_ledger_event_v2",
@@ -538,6 +775,7 @@ class JsonlSideEffectCommitStore:
                     "execution_id": claim.execution_id,
                     "description": claim.description,
                     "semantic_fingerprint": claim.semantic_fingerprint,
+                    "committed_result_refs": list(refs),
                     "timestamp_epoch": time.time(),
                 }
             )
@@ -547,6 +785,7 @@ class JsonlSideEffectCommitStore:
                 execution_id=claim.execution_id,
                 lease_expires_at=None,
                 semantic_fingerprint=claim.semantic_fingerprint,
+                committed_result_refs=refs,
             )
             self._local_execution_owners.pop(claim.claim_token, None)
             self._condition.notify_all()

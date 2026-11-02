@@ -1,13 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：TokenCounter、get_token_counter、get_default_token_counter。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-# src/rag_template/util/token_utils.py
-"""
-Token 级长度计算工具。
+"""为 Chunker 提供 Hugging Face 优先、正则回退的 Token 计数。
 
-优先使用 HuggingFace tokenizer；如果本地 tokenizer 不可用，则回退到轻量规则 tokenizer。
-这样 RecursiveChunker / HeadingChunker 可以按 token 控制 chunk_size，而不是按字符数。
+可用本地 Tokenizer 时使用 ``encode(add_special_tokens=False)``，否则中文按单字、
+英文/数字按连续词、标点按单字符计数。回退实现只保证稳定近似，不等于目标模型的
+真实 Token 用量；模型调用阶段仍应记录实际 usage。
 """
 
 from __future__ import annotations
@@ -18,64 +13,79 @@ from pathlib import Path
 from typing import List, Optional
 
 
-# 阅读注释（类）：封装 Token counter，集中封装相关状态、依赖和行为。
 class TokenCounter:
+    """封装可选 Hugging Face Tokenizer 和确定性正则回退。
+
+    Attributes:
+        tokenizer_name: 本地模型路径或 Hugging Face 模型标识。
+        local_files_only: 是否禁止 ``from_pretrained`` 联网下载。
+        tokenizer: 成功加载的 Tokenizer；失败或未配置时为 ``None``。
     """
-    Token 计数器。
 
-    - 有可用 HuggingFace tokenizer 时：使用 tokenizer.encode(..., add_special_tokens=False)
-    - 没有 tokenizer 时：使用规则回退，中文按单字，英文/数字按连续词，标点单独计数
-    """
+    # 中文字符、英文/数字连续词和非空白标点分别视为一个回退 Token。
+    _FALLBACK_PATTERN = re.compile(
+        r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]",
+        re.UNICODE,
+    )
 
-    _FALLBACK_PATTERN = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", re.UNICODE)
+    def __init__(
+        self,
+        tokenizer_name: Optional[str] = None,
+        local_files_only: bool = True,
+    ) -> None:
+        """保存配置并尽力加载 Tokenizer。
 
-    # 阅读注释（函数）：初始化 TokenCounter，保存运行所需的依赖、配置或状态。
-    def __init__(self, tokenizer_name: Optional[str] = None, local_files_only: bool = True):
-        """初始化 TokenCounter，保存运行所需的依赖、配置或状态。
+        Args:
+            tokenizer_name: 可选本地路径或模型标识。
+            local_files_only: 是否只允许读取本地缓存/文件。
 
-        参数:
-            tokenizer_name: tokenizer 名称，具体约束请结合类型标注和调用方确认。
-            local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：self._load_tokenizer。
+        加载失败不会使构造失败，而是退化为正则计数；调用方可通过 ``backend`` 属性
+        判断本次实际计数实现。
         """
+
         self.tokenizer_name = tokenizer_name
         self.local_files_only = local_files_only
-        self.tokenizer = self._load_tokenizer(tokenizer_name, local_files_only)
+        self.tokenizer = self._load_tokenizer(
+            tokenizer_name,
+            local_files_only,
+        )
 
-    # 阅读注释（函数）：加载 tokenizer。
     @staticmethod
-    def _load_tokenizer(tokenizer_name: Optional[str], local_files_only: bool):
-        """加载 tokenizer。
+    def _load_tokenizer(
+        tokenizer_name: Optional[str],
+        local_files_only: bool,
+    ):
+        """尽力加载 Hugging Face AutoTokenizer。
 
-        参数:
-            tokenizer_name: tokenizer 名称，具体约束请结合类型标注和调用方确认。
-            local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
+        Returns:
+            Tokenizer 实例；未配置名称、依赖缺失、路径不存在或加载异常时返回
+            ``None``。
 
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：Path, str, startswith, maybe_path.exists, AutoTokenizer.from_pretrained。
+        本方法刻意吞掉加载异常以保证离线 Chunker 仍可运行，但生产索引 Manifest
+        应记录 ``backend``，避免不同环境混用两种计数口径。
         """
+
+        # 第一步：没有模型名称时直接选择回退实现。
         if not tokenizer_name:
             return None
 
+        # 第二步：Transformers 是可选依赖，导入失败不阻断项目。
         try:
             from transformers import AutoTokenizer
         except Exception:
             return None
 
         try:
-            # 如果是本地路径但不存在，直接回退，避免 transformers 抛 repo_id 错误。
-            maybe_path = Path(str(tokenizer_name))
-            if (":" in str(tokenizer_name) or str(tokenizer_name).startswith("/")) and not maybe_path.exists():
+            # 第三步：看起来像本地绝对路径但不存在时直接回退，避免被解释为 repo_id。
+            name_text = str(tokenizer_name)
+            maybe_path = Path(name_text)
+            if (
+                (":" in name_text or name_text.startswith("/"))
+                and not maybe_path.exists()
+            ):
                 return None
 
+            # 第四步：按配置加载 Tokenizer；trust_remote_code 保留历史模型兼容行为。
             return AutoTokenizer.from_pretrained(
                 tokenizer_name,
                 local_files_only=local_files_only,
@@ -84,95 +94,96 @@ class TokenCounter:
         except Exception:
             return None
 
-    # 阅读注释（函数）：处理 tokenize 相关逻辑。
     def tokenize(self, text: str) -> List:
-        """处理 tokenize 相关逻辑。
+        """把文本转换为 Token ID 或正则 Token 列表。
 
-        参数:
-            text: 待处理文本。
+        Args:
+            text: 待切分文本。
 
-        返回:
-            List
-
-        阅读提示:
-            主要直接调用：self.tokenizer.encode, self._FALLBACK_PATTERN.findall。
+        Returns:
+            Hugging Face 后端返回整数 ID 列表；回退后端返回字符串 Token 列表。
+            空文本返回空列表。
         """
+
         if not text:
             return []
+
+        # 优先使用真实 Tokenizer，并排除模型自动添加的 BOS/EOS 等特殊 Token。
         if self.tokenizer is not None:
-            return self.tokenizer.encode(text, add_special_tokens=False)
+            return self.tokenizer.encode(
+                text,
+                add_special_tokens=False,
+            )
+
+        # 依赖或模型不可用时使用稳定正则近似。
         return self._FALLBACK_PATTERN.findall(text)
 
-    # 阅读注释（函数）：处理 count 相关逻辑。
     def count(self, text: str) -> int:
-        """处理 count 相关逻辑。
+        """返回 ``tokenize`` 结果长度。"""
 
-        参数:
-            text: 待处理文本。
-
-        返回:
-            int
-
-        阅读提示:
-            主要直接调用：len, self.tokenize。
-        """
         return len(self.tokenize(text))
 
-    # 阅读注释（函数）：处理 后端实现 相关逻辑。
     @property
     def backend(self) -> str:
-        """处理 后端实现 相关逻辑。
+        """返回当前实际计数后端名称。"""
 
-        返回:
-            str
-        """
         if self.tokenizer is not None:
             return "huggingface"
         return "fallback_regex"
 
 
-# 阅读注释（函数）：获取 Token counter。
 @lru_cache(maxsize=8)
 def get_token_counter(
     tokenizer_name: Optional[str] = None,
     local_files_only: bool = True,
 ) -> TokenCounter:
-    """获取 Token counter。
+    """按 Tokenizer 名称和离线标记缓存计数器实例。
 
-    参数:
-        tokenizer_name: tokenizer 名称，具体约束请结合类型标注和调用方确认。
-        local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        TokenCounter
-
-    阅读提示:
-        主要直接调用：TokenCounter, lru_cache。
+    最多缓存八种配置，避免多个 Chunker 重复加载同一本地 Tokenizer。缓存键由函数
+    参数决定，因此参数应使用稳定字符串而不是可变对象。
     """
-    return TokenCounter(tokenizer_name=tokenizer_name, local_files_only=local_files_only)
+
+    return TokenCounter(
+        tokenizer_name=tokenizer_name,
+        local_files_only=local_files_only,
+    )
 
 
-# 阅读注释（函数）：获取 default Token counter。
 def get_default_token_counter() -> TokenCounter:
-    """
-    从 RAGConfig 读取默认 tokenizer。
+    """从旧版 RAGConfig 解析默认 Tokenizer 并返回缓存计数器。
 
-    优先级：
-    1. CHUNK_TOKENIZER_MODEL_NAME
-    2. EMBEDDING_MODEL_NAME
-    3. fallback_regex
+    优先使用 ``CHUNK_TOKENIZER_MODEL_NAME``，其次 ``EMBEDDING_MODEL_NAME``；配置
+    导入失败或两者都为空时使用正则回退。
     """
+
     tokenizer_name = None
     local_files_only = True
 
+    # 第一步：延迟导入配置，避免工具模块与配置模块形成导入时循环。
     try:
         from rag.configs import RAGConfig
 
-        tokenizer_name = getattr(RAGConfig, "CHUNK_TOKENIZER_MODEL_NAME", None)
+        tokenizer_name = getattr(
+            RAGConfig,
+            "CHUNK_TOKENIZER_MODEL_NAME",
+            None,
+        )
         if tokenizer_name is None:
-            tokenizer_name = getattr(RAGConfig, "EMBEDDING_MODEL_NAME", None)
-        local_files_only = getattr(RAGConfig, "CHUNK_TOKENIZER_LOCAL_FILES_ONLY", True)
+            tokenizer_name = getattr(
+                RAGConfig,
+                "EMBEDDING_MODEL_NAME",
+                None,
+            )
+        local_files_only = getattr(
+            RAGConfig,
+            "CHUNK_TOKENIZER_LOCAL_FILES_ONLY",
+            True,
+        )
     except Exception:
         tokenizer_name = None
 
-    return get_token_counter(str(tokenizer_name) if tokenizer_name else None, local_files_only)
+    # 第二步：统一名称为字符串，并复用缓存实例。
+    return get_token_counter(
+        str(tokenizer_name) if tokenizer_name else None,
+        local_files_only,
+    )

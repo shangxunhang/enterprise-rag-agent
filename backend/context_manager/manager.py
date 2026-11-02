@@ -1,13 +1,19 @@
-# =============================================================================
-# 中文阅读说明：上下文管理模块，用于组织证据、历史状态和 Token 预算。
-# 主要定义：ContextBudgetExceededError、LLMContextManager。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Deterministic bounded context manager."""
+"""为单次模型调用构造确定、可审计且不超预算的上下文包。
+
+阅读主线：
+1. ``build`` 按必需性和优先级选择候选上下文；
+2. ``_fit_item_content`` 决定普通文本或结构化行块如何压缩；
+3. ``_fit_rendered_projection`` 把标题等渲染开销重新计入预算；
+4. 最终输出带哈希、预算快照和每个候选块的取舍记录。
+
+本模块只做纯计算：不检索、不调用模型，也不修改工作流状态。同一请求应产生
+同一上下文包，便于复现模型输入和定位预算问题。
+"""
 
 from __future__ import annotations
 
 import hashlib
-from typing import Iterable, List
+from typing import Callable, Iterable, List
 
 from schemas.context import (
     ContextBudgetSchema,
@@ -17,38 +23,24 @@ from schemas.context import (
     LLMContextPackageSchema,
 )
 
-from .token_estimator import DeterministicTokenEstimator
+from core.token_estimator import DeterministicTokenEstimator
 
 
-# 阅读注释（类）：封装 上下文 预算 exceeded 错误，集中封装相关状态、依赖和行为。
 class ContextBudgetExceededError(RuntimeError):
-    """Raised when required blocks alone cannot fit the configured budget."""
+    """必需上下文无法在字符或估算 Token 预算内完整表达时抛出。"""
 
 
-# 阅读注释（类）：封装 llmcontext 管理器，集中封装相关状态、依赖和行为。
 class LLMContextManager:
-    """Select, truncate and render one model-call context package.
+    """选择、压缩并渲染一次模型调用所需的上下文。
 
-    The manager is deliberately pure: it does not retrieve data, call an LLM,
-    or mutate workflow state. The same request produces the same package.
+    ``ContextItemSchema`` 是候选事实块，``ContextDecisionSchema`` 记录每个块被保留、
+    截断或丢弃的原因；``LLMContextPackageSchema`` 是最终交给提示词层的确定性投影。
     """
 
-    # 阅读注释（函数）：初始化 LLMContextManager，保存运行所需的依赖、配置或状态。
     def __init__(self, estimator: DeterministicTokenEstimator | None = None) -> None:
-        """初始化 LLMContextManager，保存运行所需的依赖、配置或状态。
-
-        参数:
-            estimator: estimator，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：DeterministicTokenEstimator。
-        """
+        """注入稳定的 Token 规划估算器；未提供时使用项目默认实现。"""
         self.estimator = estimator or DeterministicTokenEstimator()
 
-    # 阅读注释（函数）：构建 passthrough。
     def build_passthrough(
         self,
         *,
@@ -63,12 +55,10 @@ class LLMContextManager:
         reserved_output_tokens: int = 1024,
         lineage: dict | None = None,
     ) -> LLMContextPackageSchema:
-        """Wrap an existing auxiliary prompt without changing its behavior.
+        """把既有辅助提示词包装成统一上下文包，但不改变其文本。
 
-        Step 14 v1 fully decomposes normal section generation. Existing repair
-        and recovery prompts are represented by this compatibility policy so
-        every model call is traceable through the same package contract while
-        their proven behavior remains unchanged.
+        修复、恢复等旧调用尚未拆成多个候选块，因此采用兼容直通策略。字符超限只记录
+        警告，估算 Token 超过模型可用容量则立即失败，避免提交必然无法执行的请求。
         """
 
         normalized = str(content or "")
@@ -138,18 +128,21 @@ class LLMContextManager:
             },
         )
 
-    # 阅读注释（函数）：构建 LLMContextManager。
-    def build(self, request: ContextBuildRequestSchema) -> LLMContextPackageSchema:
-        """构建 LLMContextManager。
+    def build(
+        self, request: ContextBuildRequestSchema, *,
+        ordering_key: Callable[[ContextItemSchema], tuple] | None = None,
+    ) -> LLMContextPackageSchema:
+        """按声明预算构造一次可复现的模型上下文包。
 
-        参数:
-            request: 当前请求对象。
+        处理顺序：
+        1. 计算扣除输出预留量和安全余量后的可用输入 Token；
+        2. 必需块优先，再按优先级、来源类型和 ``item_id`` 稳定排序；
+        3. 能完整放入则保留，不能放入则按块策略截断或丢弃；
+        4. 渲染标题后再次校验真实投影，必要时从末尾低优先级块继续收缩；
+        5. 返回内容哈希、预算使用量以及完整取舍记录。
 
-        返回:
-            LLMContextPackageSchema
-
-        阅读提示:
-            主要直接调用：max, int, sorted, strip, str, len, self.estimator.estimate, decisions.append。
+        必需且不可截断的内容无法容纳时抛出 ``ContextBudgetExceededError``，而不是静默
+        删除关键约束。
         """
         max_chars = max(256, int(request.max_context_chars))
         usable_tokens = max(
@@ -161,12 +154,12 @@ class LLMContextManager:
 
         ordered = sorted(
             request.items,
-            key=lambda item: (
+            key=ordering_key or (lambda item: (
                 0 if item.required else 1,
                 -int(item.priority),
                 item.source_type,
                 item.item_id,
-            ),
+            )),
         )
 
         selected: List[ContextItemSchema] = []
@@ -350,7 +343,6 @@ class LLMContextManager:
             },
         )
 
-    # 阅读注释（函数）：处理 fit rendered projection 相关逻辑。
     def _fit_rendered_projection(
         self,
         selected: List[ContextItemSchema],
@@ -359,19 +351,11 @@ class LLMContextManager:
         max_chars: int,
         max_tokens: int,
     ) -> tuple[List[ContextItemSchema], List[ContextDecisionSchema], str, int]:
-        """处理 fit rendered projection 相关逻辑。
+        """把标题和块间空行的渲染开销纳入预算，并迭代收缩最终投影。
 
-        参数:
-            selected: selected，具体约束请结合类型标注和调用方确认。
-            decisions: decisions，具体约束请结合类型标注和调用方确认。
-            max_chars: max chars，具体约束请结合类型标注和调用方确认。
-            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            tuple[List[ContextItemSchema], List[ContextDecisionSchema], str, int]
-
-        阅读提示:
-            主要直接调用：list, max, len, range, self._render, self.estimator.estimate, decision_by_id.values, next。
+        初次选择阶段只累计块正文；真正渲染时还会增加 Markdown 标题和分隔符。若因此
+        超限，本方法优先处理列表尾部的非必需块：能截断则缩短，不能截断则丢弃。
+        只有全部候选均为必需块时才处理最后一个必需块，仍无法容纳便明确失败。
         """
         current = list(selected)
         decision_by_id = {item.item_id: item for item in decisions}
@@ -468,7 +452,6 @@ class LLMContextManager:
             raise ContextBudgetExceededError("rendered context cannot fit configured budget")
         return current, list(decision_by_id.values()), rendered, rendered_tokens
 
-    # 阅读注释（函数）：处理 fit 数据项 content 相关逻辑。
     def _fit_item_content(
         self,
         item: ContextItemSchema,
@@ -476,12 +459,10 @@ class LLMContextManager:
         max_chars: int,
         max_tokens: int,
     ) -> tuple[str, dict, str]:
-        """Fit one item while preserving the semantics of structured blocks.
+        """在剩余预算内压缩单个上下文块，同时保留其结构语义。
 
-        Ordinary prose uses deterministic sentence-boundary prefix fitting. Items
-        such as ``citation_catalog`` may opt into ``line_blocks`` compaction so a
-        required catalog remains syntactically usable instead of being cut in the
-        middle of one citation entry.
+        普通段落使用稳定的句界前缀截断；引用目录等结构化内容可声明 ``line_blocks``，
+        以完整行作为最小保留单位，避免把一条 citation 记录从中间切断。
         """
 
         strategy = str((item.metadata or {}).get("compaction_strategy") or "").strip()
@@ -511,7 +492,6 @@ class LLMContextManager:
             "fit_remaining_budget",
         )
 
-    # 阅读注释（函数）：处理 fit line blocks 相关逻辑。
     def _fit_line_blocks(
         self,
         text: str,
@@ -520,19 +500,10 @@ class LLMContextManager:
         max_tokens: int,
         min_blocks: int = 0,
     ) -> tuple[str, int, int]:
-        """处理 fit line blocks 相关逻辑。
+        """按完整非空行从前向后装入预算，返回文本、保留行数和原始行数。
 
-        参数:
-            text: 待处理文本。
-            max_chars: max chars，具体约束请结合类型标注和调用方确认。
-            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
-            min_blocks: min blocks，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            tuple[str, int, int]
-
-        阅读提示:
-            主要直接调用：len, text.splitlines, line.strip, splitlines, str, join, self.estimator.estimate, selected.append。
+        ``min_blocks`` 用于必需目录：若完整首行仍放不下，则对首行执行句界前缀拟合，
+        尽量留下至少一条可识别记录，而不是返回半条随机文本。
         """
         if max_chars <= 0 or max_tokens <= 0:
             return "", 0, len([line for line in text.splitlines() if line.strip()])
@@ -564,21 +535,8 @@ class LLMContextManager:
 
         return "\n".join(selected), len(selected), len(blocks)
 
-    # 阅读注释（函数）：处理 fit prefix 相关逻辑。
     def _fit_prefix(self, text: str, *, max_chars: int, max_tokens: int) -> str:
-        """处理 fit prefix 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-            max_chars: max chars，具体约束请结合类型标注和调用方确认。
-            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：min, len, rstrip, self.estimator.estimate, best.rfind, max。
-        """
+        """二分查找同时满足字符和 Token 预算的最长前缀，再回退到最近句界。"""
         if max_chars <= 0 or max_tokens <= 0:
             return ""
         upper = min(len(text), max_chars)
@@ -603,37 +561,17 @@ class LLMContextManager:
             best = best[: cut + 1].rstrip()
         return best
 
-    # 阅读注释（函数）：处理 heading 相关逻辑。
     @staticmethod
     def _heading(item: ContextItemSchema) -> str:
-        """处理 heading 相关逻辑。
-
-        参数:
-            item: 数据项，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-        """
+        """生成带来源类型和稳定标识的 Markdown 块标题。"""
         return f"## {item.title} [{item.source_type}:{item.item_id}]"
 
-    # 阅读注释（函数）：渲染 LLMContextManager。
     @classmethod
     def _render(cls, items: Iterable[ContextItemSchema]) -> str:
-        """渲染 LLMContextManager。
-
-        参数:
-            items: 待处理的数据项集合。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：cls._heading, item.content.strip, join。
-        """
+        """按当前稳定顺序把上下文块渲染为最终模型输入文本。"""
         blocks = [f"{cls._heading(item)}\n{item.content.strip()}" for item in items]
         return "\n\n".join(blocks)
 
-    # 阅读注释（函数）：处理 decision 相关逻辑。
     @staticmethod
     def _decision(
         item: ContextItemSchema,
@@ -645,23 +583,7 @@ class LLMContextManager:
         tokens_before: int,
         tokens_after: int,
     ) -> ContextDecisionSchema:
-        """处理 decision 相关逻辑。
-
-        参数:
-            item: 数据项，具体约束请结合类型标注和调用方确认。
-            action: action，具体约束请结合类型标注和调用方确认。
-            reason: reason，具体约束请结合类型标注和调用方确认。
-            chars_before: chars before，具体约束请结合类型标注和调用方确认。
-            chars_after: chars after，具体约束请结合类型标注和调用方确认。
-            tokens_before: tokens before，具体约束请结合类型标注和调用方确认。
-            tokens_after: tokens after，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ContextDecisionSchema
-
-        阅读提示:
-            主要直接调用：ContextDecisionSchema。
-        """
+        """把一次选取决策标准化为可审计记录，不在此处修改候选块。"""
         return ContextDecisionSchema(
             item_id=item.item_id,
             source_type=item.source_type,

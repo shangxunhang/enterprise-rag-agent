@@ -1,43 +1,43 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：build_chunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-# chunker/chunk_factory.py
+"""根据旧版字符串配置创建内置 Chunker。
+
+当前主链已有 ``rag.chunker.chunk_factory`` 和插件注册表；本模块保留历史工厂行为，
+只支持 fixed_size、paragraph、heading 和 recursive 四种实现。
+"""
+
 from rag.chunker.FixedSizeChunker import FixedSizeChunker
 from rag.chunker.HeadingChunker import HeadingChunker
 from rag.chunker.ParagraphChunker import ParagraphChunker
 from rag.chunker.RecursiveChunker import RecursiveChunker
 
 
-# 阅读注释（函数）：构建 chunker。
 def build_chunker(
     chunker_type: str,
     chunk_size: int,
     chunk_overlap: int,
 ):
-    """构建 chunker。
+    """按类型名创建一个旧版 Chunker 实例。
 
-    参数:
-        chunker_type: chunker 类型，具体约束请结合类型标注和调用方确认。
-        chunk_size: 文本块 size，具体约束请结合类型标注和调用方确认。
-        chunk_overlap: 文本块 overlap，具体约束请结合类型标注和调用方确认。
+    Args:
+        chunker_type: ``fixed_size``、``paragraph``、``heading`` 或 ``recursive``。
+        chunk_size: 目标块大小，具体单位由对应实现决定。
+        chunk_overlap: 相邻块重叠大小。
 
-    返回:
-        未显式标注；请结合调用方和实际返回语句理解。
+    Returns:
+        与类型名对应的 Chunker 实例。
 
-    阅读提示:
-        主要直接调用：FixedSizeChunker, ParagraphChunker, HeadingChunker, RecursiveChunker, ValueError。
+    Raises:
+        ValueError: 类型名不在支持集合中时抛出。
     """
+
+    # 逐类型显式构造，保持每个实现接收相同位置参数的旧接口。
     if chunker_type == "fixed_size":
         return FixedSizeChunker(chunk_size, chunk_overlap)
-
     if chunker_type == "paragraph":
         return ParagraphChunker(chunk_size, chunk_overlap)
-
     if chunker_type == "heading":
         return HeadingChunker(chunk_size, chunk_overlap)
-
     if chunker_type == "recursive":
         return RecursiveChunker(chunk_size, chunk_overlap)
 
+    # 未知类型不静默回退固定分块，防止索引版本在配置错误时悄然改变。
     raise ValueError(f"Unsupported chunker_type: {chunker_type}")

@@ -1,82 +1,64 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：clean_text、clean_documents。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/cleaner.py
-==============
+"""对 Reader 输出执行确定性的基础文本清洗。
 
-文本清洗模块。
-
-职责：
-1. 清洗单篇文档文本
-2. 批量清洗 documents
-
-第一版只做基础规则清洗：
-- 去掉首尾空白
-- 统一换行符
-- 合并多余空格
-- 合并多余空行
+清洗范围刻意保持保守：统一换行、去除行首尾空白、压缩行内空格和过多空行。
+本模块不删除标点、不做语言纠错，也不改变文档元数据，避免清洗阶段破坏后续引用
+定位和语义结构。
 """
 
 import re
-from typing import List, Dict
+from typing import Dict, List
 
 
-# 阅读注释（函数）：处理 clean 文本 相关逻辑。
 def clean_text(text: str) -> str:
-    """
-    清洗单段文本。
+    """清洗一段文本并保留段落边界。
 
     Args:
-        text: 原始文本
+        text: 原始文本；兼容调用方传入 ``None``。
 
     Returns:
-        清洗后的文本
+        统一换行和空白后的文本。空输入返回空字符串。
     """
+
+    # 第一步：None 视为空文本，避免后续字符串方法报错。
     if text is None:
         return ""
 
-    # 统一 Windows / Linux 换行
+    # 第二步：把 Windows 和旧 Mac 换行统一为 LF。
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # 去除每一行首尾空白
+    # 第三步：逐行去除首尾空白，不合并不同文本行。
     lines = [line.strip() for line in text.split("\n")]
-
-    # 重新拼接
     text = "\n".join(lines)
 
-    # 多个空格合并成一个空格
+    # 第四步：把同一行中的连续空格或制表符压缩为一个普通空格。
     text = re.sub(r"[ \t]+", " ", text)
 
-    # 多个空行合并成两个换行
+    # 第五步：三个及以上连续换行压缩为一个空段落，即两个换行。
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    # 去掉整体首尾空白
-    text = text.strip()
-
-    return text
+    # 第六步：去除整段文本首尾残留空白。
+    return text.strip()
 
 
-# 阅读注释（函数）：处理 clean documents 相关逻辑。
 def clean_documents(documents: List[Dict]) -> List[Dict]:
-    """
-    批量清洗 documents。
+    """批量清洗文档列表中的 ``text`` 字段。
 
     Args:
-        documents: reader 输出的 documents 列表
+        documents: Reader 输出的文档字典列表。
 
     Returns:
-        清洗后的 documents
+        新文档列表。每个字典通过展开复制，除 ``text`` 外的身份和 metadata 保持
+        原值；输入字典本身不会被修改。
     """
-    cleaned_documents = []
 
-    for doc in documents:
-        cleaned_doc = {
-            **doc,
-            "text": clean_text(doc.get("text", "")),
+    cleaned_documents: List[Dict] = []
+
+    # 逐文档创建新字典，防止清洗副作用污染 Reader 缓存或调用方原始数据。
+    for document in documents:
+        cleaned_document = {
+            **document,
+            "text": clean_text(document.get("text", "")),
         }
-
-        cleaned_documents.append(cleaned_doc)
+        cleaned_documents.append(cleaned_document)
 
     return cleaned_documents
