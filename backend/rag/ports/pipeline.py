@@ -1,17 +1,16 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：RetrieverPort、RerankerPort、ContextPackerPort、PromptBuilderPort、FlatRetrieverPort。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Structural ports for retrieval pipeline components."""
+"""旧字典型 RAG Pipeline 组件协议。
+
+这些端口服务现有父子检索链和兼容调用方，输入输出主要是 ``dict``。新配置驱动组合优先
+使用 ``retrieval_components.py`` 的 ``CandidateSet`` 协议；迁移期间两套对象不可直接
+混用，必须经过显式适配。
+"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
-# 阅读注释（类）：封装 retriever port，定义模块间调用契约，具体实现由适配器或插件提供。
 class RetrieverPort(Protocol):
-    """封装 retriever port，定义模块间调用契约，具体实现由适配器或插件提供。"""
-    # 阅读注释（函数）：检索 RetrieverPort。
+    """执行 dense/keyword/融合检索并返回兼容字典结果。"""
     def retrieve(
         self,
         *,
@@ -24,11 +23,9 @@ class RetrieverPort(Protocol):
     ) -> List[Dict[str, Any]]: ...
 
 
-# 阅读注释（类）：封装 reranker port，定义模块间调用契约，具体实现由适配器或插件提供。
 @runtime_checkable
 class RerankerPort(Protocol):
-    """封装 reranker port，定义模块间调用契约，具体实现由适配器或插件提供。"""
-    # 阅读注释（函数）：对 RerankerPort 重新排序。
+    """按当前 Query 重排兼容检索结果，并暴露实际执行元数据。"""
     def rerank(
         self,
         *,
@@ -36,15 +33,12 @@ class RerankerPort(Protocol):
         results: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]: ...
 
-    # 阅读注释（函数）：处理 execution 元数据 相关逻辑。
     def execution_metadata(self) -> Dict[str, Any]: ...
 
 
-# 阅读注释（类）：封装 上下文 packer port，定义模块间调用契约，具体实现由适配器或插件提供。
 @runtime_checkable
 class ContextPackerPort(Protocol):
-    """封装 上下文 packer port，定义模块间调用契约，具体实现由适配器或插件提供。"""
-    # 阅读注释（函数）：压缩并组装 ContextPackerPort。
+    """在 Token 与条目预算内选择结果并组装生成上下文。"""
     def pack(
         self,
         results: List[Dict[str, Any]],
@@ -54,17 +48,13 @@ class ContextPackerPort(Protocol):
     ) -> Any: ...
 
 
-# 阅读注释（类）：封装 提示词 builder port，定义模块间调用契约，具体实现由适配器或插件提供。
 class PromptBuilderPort(Protocol):
-    """封装 提示词 builder port，定义模块间调用契约，具体实现由适配器或插件提供。"""
-    # 阅读注释（函数）：构建 PromptBuilderPort。
+    """把 Query、已打包上下文和引用目录渲染为下游 Prompt 对象。"""
     def build(self, *, query: str, packed_context: str, citations: Any) -> Any: ...
 
 
-# 阅读注释（类）：封装 flat retriever port，定义模块间调用契约，具体实现由适配器或插件提供。
 class FlatRetrieverPort(Protocol):
-    """封装 flat retriever port，定义模块间调用契约，具体实现由适配器或插件提供。"""
-    # 阅读注释（函数）：搜索 FlatRetrieverPort。
+    """最小平面向量检索接口，供早期 Mini-RAG 与兼容适配器使用。"""
     def search(
         self,
         query: str,

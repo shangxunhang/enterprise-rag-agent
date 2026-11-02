@@ -1,7 +1,4 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# Document record builder used by the configured readers.
-# =============================================================================
+"""Configured Reader 共用的统一文档记录构造器。"""
 from pathlib import Path
 from typing import Dict, Any
 
@@ -9,7 +6,6 @@ import copy
 from datetime import date
 
 
-# 阅读注释（函数）：构建 文档。
 def build_document(
     file_path: Path,
     text: str,
@@ -21,22 +17,10 @@ def build_document(
     updated_at: Optional[str] = None,
     **metadata_kwargs,
 ) -> Dict[str, Any]:
-    """
-    构造统一 Document Schema。
+    """构造兼容 ``Document`` 字典，并隔离模板中的可变 metadata。
 
-    Args:
-        file_path: 原始文件路径
-        text: 文档正文
-        doc_id: 文档 ID，不传则使用 file_path.stem
-        doc_type: 文档类型，不传则使用后缀名
-        title: 文档标题
-        source: 来源名称，不传则使用 file_path.name
-        created_at: 创建时间
-        updated_at: 更新时间
-        metadata_kwargs: 额外 metadata 字段
-
-    Returns:
-        标准 Document Schema
+    已知 metadata 字段覆盖模板默认值；未知字段统一进入 ``metadata.extra``，避免 Reader
+    随意扩展顶层结构。未提供的文档 ID、类型和来源分别由文件名与后缀派生。
     """
     metadata = copy.deepcopy(DOCUMENT_METADATA_TEMPLATE)
 

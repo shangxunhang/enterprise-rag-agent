@@ -1,0 +1,103 @@
+{
+  "record_type": "SRCREV_02_PAIRED_BUSINESS_DIFF_V1",
+  "fixture_class": "SIMULATED_ACCEPTANCE_FIXTURE",
+  "normal_input": "normal_project_input.json",
+  "missing_input": "missing_project_input.json",
+  "source_policy": {
+    "source_materials_allowlist": [],
+    "retrieval_index": "NONE",
+    "evidence_path": "NOT_APPLICABLE_FOR_THIS_DETERMINISTIC_FIXTURE",
+    "expected_files_are_model_sources": false
+  },
+  "business_differences": [
+    {
+      "field_path": "/hardware_resources/0/access_mode",
+      "normal_value": "双链路政务专网接入",
+      "missing_value_state": "ABSENT_SOURCE_FIELD; normalized optional value is null",
+      "normal_source_presence": "STRUCTURED_PROJECT_INPUT_PRESENT",
+      "missing_source_presence": "ABSENT_IN_ALL_MODEL_ALLOWED_SOURCES",
+      "expected_impact": "The normal hardware Fact summary contains the access mode; the missing Fact summary retains server count and model but contains no access mode. The missing Writer context must not contain the removed answer.",
+      "identity_fields_necessarily_changed": [
+        "/task_id",
+        "/tenant_id",
+        "/current_project_id",
+        "/metadata/fixture_variant"
+      ]
+    },
+    {
+      "field_path": "/missing_information",
+      "normal_value": [],
+      "missing_value_state": ["计算资源访问方式"],
+      "normal_source_presence": "NO_DECLARED_MISSING_ACCESS_MODE",
+      "missing_source_presence": "DECLARED_AS_MISSING_WITHOUT_ANSWER",
+      "expected_impact": "The missing-information Fact and Writer task material identify only the access-mode gap; all still-known organization and hardware values remain usable.",
+      "identity_fields_necessarily_changed": [
+        "/task_id",
+        "/tenant_id",
+        "/current_project_id",
+        "/metadata/fixture_variant"
+      ]
+    }
+  ],
+  "identity_differences": [
+    {
+      "field_path": "/task_id",
+      "normal_value": "task_sr02_sim_normal",
+      "missing_value_state": "task_sr02_sim_missing",
+      "source_presence": "BOTH_PRESENT",
+      "expected_impact": "Distinct Task identity and hashes for isolated runs",
+      "identity_fields_necessarily_changed": ["/task_id"]
+    },
+    {
+      "field_path": "/tenant_id",
+      "normal_value": "sr02_simulated_normal",
+      "missing_value_state": "sr02_simulated_missing",
+      "source_presence": "BOTH_PRESENT",
+      "expected_impact": "Separate tenant-scoped simulation identities",
+      "identity_fields_necessarily_changed": ["/tenant_id"]
+    },
+    {
+      "field_path": "/current_project_id",
+      "normal_value": "sr02_simulated_normal",
+      "missing_value_state": "sr02_simulated_missing",
+      "source_presence": "BOTH_PRESENT",
+      "expected_impact": "Separate project and any future retrieval namespace",
+      "identity_fields_necessarily_changed": ["/current_project_id"]
+    },
+    {
+      "field_path": "/metadata/fixture_variant",
+      "normal_value": "normal",
+      "missing_value_state": "missing",
+      "source_presence": "BOTH_PRESENT",
+      "expected_impact": "Audit-only variant label; not a business Fact",
+      "identity_fields_necessarily_changed": ["/metadata/fixture_variant"]
+    }
+  ],
+  "invariants": [
+    "/schema_version",
+    "/project_name",
+    "/task_type",
+    "/user_query",
+    "/business_goal",
+    "/source_materials",
+    "/generation_requirements",
+    "/output_schema",
+    "/project_type",
+    "/customer_type",
+    "/target_documents",
+    "/total_staff",
+    "/functional_department_count",
+    "/business_department_count",
+    "/department_groups",
+    "/hardware_resources/0/resource_type",
+    "/hardware_resources/0/device_model",
+    "/hardware_resources/0/server_count",
+    "/target_templates",
+    "/policy_requirements",
+    "/manual_boundaries",
+    "/conflicting_information",
+    "/extra"
+  ],
+  "business_soft_target": 3000,
+  "technical_output_token_budget": 1024
+}

@@ -201,7 +201,9 @@ def main() -> int:
         {"section_count": len(sections), "bundle_count": len(bundles)},
     )
     required_scopes = {
-        title: (bundle_by_title.get(title) or {}).get("retrieval_scope")
+        title: ((section_by_title.get(title) or {}).get("extra") or {}).get(
+            "evidence_scope"
+        )
         for title in required
     }
     check(
@@ -228,17 +230,16 @@ def main() -> int:
     )
     lineage_matches = {}
     for title in required:
-        bundle = bundle_by_title.get(title) or {}
         section = section_by_title.get(title) or {}
+        section_query = (section.get("extra") or {}).get("evidence_query")
         package = (section.get("input") or {}).get("llm_context_package") or {}
         lineage_query = (package.get("lineage") or {}).get(
             "evidence_contract_query"
         )
         lineage_matches[title] = {
-            "bundle_query": bundle.get("query"),
+            "section_query": section_query,
             "lineage_query": lineage_query,
-            "matched": bool(bundle.get("query"))
-            and bundle.get("query") == lineage_query,
+            "matched": bool(section_query) and section_query == lineage_query,
         }
     check(
         "context_package_uses_section_evidence_lineage",

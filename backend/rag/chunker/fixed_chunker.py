@@ -1,31 +1,15 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：FixedSizeChunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Canonical fixed-size chunker."""
+"""当前推荐的固定字符窗 Chunker，输出字段式兼容 Chunk Schema。"""
 from typing import Dict, List
 
 from rag.chunker.base_chunker import BaseChunker
 from rag.chunker.fixed_size_core import chunk_fixed_size
 
 
-# 阅读注释（类）：封装 fixed size chunker，集中封装相关状态、依赖和行为。
 class FixedSizeChunker(BaseChunker):
-    """Fixed-size chunking with offset-aware metadata."""
+    """固定字符窗切分，并尽力记录每块在原文中的字符偏移。"""
 
-    # 阅读注释（函数）：处理 文本块 文档 相关逻辑。
     def chunk_document(self, document: Dict) -> List[Dict]:
-        """处理 文本块 文档 相关逻辑。
-
-        参数:
-            document: 文档，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict]
-
-        阅读提示:
-            主要直接调用：chunk_fixed_size。
-        """
+        """委托共享算法，并选择 ``fields`` Schema 风格。"""
         return chunk_fixed_size(
             document,
             chunk_size=self.chunk_size,

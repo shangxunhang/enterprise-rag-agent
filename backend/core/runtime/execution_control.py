@@ -1,9 +1,9 @@
 """Cooperative cancellation contract for workflow node execution.
 
 Python threads cannot safely interrupt an in-flight native/CUDA call.  This
-module therefore exposes the strongest safe in-process contract: every node
-attempt owns one deadline and cancellation signal, and code running below the
-node can observe the same signal through a ``ContextVar``.
+module exposes cooperative cancellation for each node attempt through a
+``ContextVar``. Aggregate elapsed time is diagnostic; only explicit
+cancellation revokes execution and pending commit authority.
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from core.runtime.side_effects import (
 
 
 class WorkflowExecutionCancelled(BaseException):
-    """Control-flow signal raised after cancellation or deadline.
+    """Control-flow signal raised after explicit cancellation.
 
     Like ``asyncio.CancelledError``, this deliberately does not inherit from
     ``Exception``. RAG/model layers contain deterministic ``except Exception``
     fallbacks for ordinary provider failures; cancellation must bypass those
-    fallbacks or a timed-out workflow would continue doing expensive work.
+    fallbacks or a canceled workflow would continue doing expensive work.
     """
 
 
@@ -46,7 +46,7 @@ class DeferredExternalCommit:
 
 @dataclass
 class WorkflowExecutionControl:
-    """Deadline and cooperative cancellation state for one node attempt."""
+    """Elapsed-time observation and explicit cancellation for one node attempt."""
 
     execution_id: str
     deadline_monotonic: float
@@ -115,14 +115,16 @@ class WorkflowExecutionControl:
 
     @property
     def deadline_exceeded(self) -> bool:
+        """Observe the aggregate threshold without granting terminal authority."""
+
         return time.monotonic() >= self.deadline_monotonic
 
     @property
     def should_stop(self) -> bool:
-        return self.is_cancelled or self.deadline_exceeded
+        return self.is_cancelled
 
     def remaining_seconds(self) -> float:
-        """Return the remaining provider-call budget for this attempt."""
+        """Return time to the diagnostic aggregate threshold, never admission authority."""
 
         return max(0.0, self.deadline_monotonic - time.monotonic())
 
@@ -151,11 +153,6 @@ class WorkflowExecutionControl:
         """Register a side effect that may commit only when this attempt is authorized."""
 
         with self._lock:
-            if time.monotonic() >= self.deadline_monotonic and not self._cancel_event.is_set():
-                self._reason = "deadline_exceeded"
-                self._cancel_event.set()
-                self._deferred_commits.clear()
-                self._external_commit_state = "aborted"
             if self._cancel_event.is_set() or self._external_commit_state != "open":
                 raise WorkflowExecutionCancelled(
                     f"workflow execution {self.execution_id} has no external commit authority: "
@@ -229,12 +226,11 @@ class WorkflowExecutionControl:
                         already_committed += 1
                         break
                     if claim.status == SideEffectClaimStatus.ALREADY_IN_PROGRESS:
-                        remaining_seconds = self.remaining_seconds()
-                        if remaining_seconds <= 0:
-                            self.checkpoint()
+                        # The native store owns wakeup/lease behavior. Periodic
+                        # cancellation checks are independent of aggregate time.
                         self.side_effect_store.wait_for_resolution(
                             item.side_effect_id,
-                            timeout_seconds=remaining_seconds,
+                            timeout_seconds=0.05,
                         )
                         continue
                     break
@@ -290,10 +286,8 @@ class WorkflowExecutionControl:
         return pending
 
     def checkpoint(self) -> None:
-        """Fail fast when the attempt has been cancelled or exceeded deadline."""
+        """Fail fast only when the attempt has been explicitly canceled."""
 
-        if self.deadline_exceeded and not self.is_cancelled:
-            self.cancel("deadline_exceeded")
         if self.is_cancelled:
             raise WorkflowExecutionCancelled(
                 f"workflow execution {self.execution_id} cancelled: "
@@ -314,6 +308,8 @@ class WorkflowExecutionControl:
             "cancel_requested": cancel_requested,
             "cancel_reason": cancel_reason,
             "remaining_seconds": self.remaining_seconds(),
+            "deadline_exceeded": self.deadline_exceeded,
+            "wall_clock_authority": "observability_only",
             "pending_external_commits": pending_external_commits,
             "external_commit_state": external_commit_state,
         }

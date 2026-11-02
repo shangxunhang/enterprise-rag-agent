@@ -27,6 +27,7 @@ class RAGInvocation:
     request_data: dict[str, Any]
     max_context_chars: int
     max_context_items: int
+    max_context_tokens: int | None
 
 
 class RAGRequestMapper:
@@ -51,6 +52,11 @@ class RAGRequestMapper:
         request_data = request.model_dump()
         max_context_chars = as_int(request_data.get("max_context_chars"), 6000)
         max_context_items = as_int(request_data.get("max_context_items"), 3)
+        max_context_tokens = (
+            int(request.max_context_tokens)
+            if request.max_context_tokens is not None
+            else None
+        )
 
         filters = request.filters
         legacy_doc_ids = as_str_list(filters.doc_ids)
@@ -131,35 +137,42 @@ class RAGRequestMapper:
             )
             keyword_scope = {"doc_ids": allowed_doc_ids}
 
-        # Consume the one explicit metadata sub-channel without flattening it
-        # into authorization or retrieval-control fields.
-        planner_context = dict(request.extra.get("extra_metadata") or {})
-        # Keep workflow/model-call lineage inside RAG's existing extra-metadata
-        # channel; no public RAG schema fields are added. These identity fields
-        # are canonical and must never be overridden by caller metadata.
-        planner_context["task_id"] = request.task_id
-        planner_context["run_id"] = request.run_id
-        planner_context["workflow_run_id"] = request.run_id
-        planner_context["caller_agent"] = request.agent_name
-        planner_context.setdefault(
-            "retrieval_trace_id",
-            request.extra.get("retrieval_trace_id"),
-        )
-        planner_context.setdefault(
-            "retrieval_scope",
-            request.extra.get("retrieval_scope"),
-        )
-        planner_context.setdefault("need_citation", bool(request.need_citation))
-        context_requirements = dict(
-            planner_context.get("context_requirements") or {}
-        )
-        context_requirements.setdefault("max_context_chars", max_context_chars)
-        context_requirements.setdefault("max_evidence_items", max_context_items)
+        # Public typed request -> RAG internal runtime projection. ``extra`` is
+        # retained only under a diagnostic namespace and cannot override these
+        # canonical values.
+        planner_context: dict[str, Any] = {
+            "task_id": request.task_id,
+            "run_id": request.run_id,
+            "workflow_run_id": request.run_id,
+            "caller_agent": request.agent_name,
+            "retrieval_trace_id": request.retrieval_trace_id,
+            "retrieval_scope": request.retrieval_scope,
+            "task_type": request.task_type,
+            "need_citation": bool(request.need_citation),
+        }
+        if request.evidence_requirements is not None:
+            planner_context["evidence_requirements"] = (
+                request.evidence_requirements.model_dump(mode="json")
+            )
+        if request.document_context is not None:
+            planner_context["document_context"] = request.document_context.model_dump(
+                mode="json"
+            )
+        if request.extra:
+            planner_context["request_metadata"] = dict(request.extra)
+
+        context_requirements = {
+            "max_context_chars": max_context_chars,
+            "max_context_items": max_context_items,
+        }
+        if max_context_tokens is not None:
+            context_requirements["max_context_tokens"] = max_context_tokens
         planner_context["context_requirements"] = context_requirements
         payload = {
             "query": query,
             "max_context_chars": max_context_chars,
             "max_context_items": max_context_items,
+            "max_context_tokens": max_context_tokens,
             "extra_metadata": planner_context,
             "filter_expr": filter_expr or None,
             "keyword_doc_ids": allowed_doc_ids,
@@ -173,4 +186,5 @@ class RAGRequestMapper:
             request_data=request_data,
             max_context_chars=max_context_chars,
             max_context_items=max_context_items,
+            max_context_tokens=max_context_tokens,
         )

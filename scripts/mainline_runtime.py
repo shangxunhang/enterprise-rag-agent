@@ -16,15 +16,46 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_ROOT = PROJECT_ROOT / "backend"
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+BACKEND_ROOT = PROJECT_ROOT / 'backend'
+
+import importlib.util as _source_util
+import sys as _source_sys
+from pathlib import Path as _SourcePath
+
+_source_file = PROJECT_ROOT / 'source_bootstrap.py'
+_source_name = 'source_bootstrap'
+if _source_name in _source_sys.modules:
+    _source_module = _source_sys.modules[_source_name]
+    try:
+        _source_values = vars(_source_module)
+        _source_spec = _source_values.get('__spec__')
+        if (
+            _source_spec is None
+            or _source_values.get('__path__') is not None
+            or _source_spec.submodule_search_locations is not None
+            or _SourcePath(_source_values['__file__']).resolve() != _source_file
+            or _SourcePath(_source_spec.origin).resolve() != _source_file
+            or not callable(_source_values.get('bootstrap_source_root'))
+        ):
+            raise ImportError('SOURCE_ROOT_REJECTED: cached trusted helper')
+    except (KeyError, TypeError, ValueError, AttributeError, OSError) as _source_error:
+        raise ImportError('SOURCE_ROOT_REJECTED: malformed cached trusted helper') from _source_error
+else:
+    _source_spec = _source_util.spec_from_file_location(_source_name, _source_file)
+    if _source_spec is None or _source_spec.loader is None:
+        raise ImportError('SOURCE_ROOT_REJECTED: unavailable trusted helper')
+    _source_module = _source_util.module_from_spec(_source_spec)
+    _source_sys.modules[_source_name] = _source_module
+    # Preserve the cached module if execution/initialization fails; never evict.
+    _source_spec.loader.exec_module(_source_module)
+_source_contract = _source_module.bootstrap_source_root(PROJECT_ROOT)
 
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema
 from agent.supervisor_agent import SupervisorAgent
 from application.mainline_service import MainlineApplicationService
 from application.project_input_factory import ProjectInputFactory
 from application.task_factory import TaskFactory
+from bootstrap.document_catalog_adapter import DocumentProfileCatalogAdapter
 from bootstrap.runtime_options import RuntimeOptions
 from bootstrap.supervisor_factory import SupervisorFactory
 from core.config import AppSettings, get_settings
@@ -32,6 +63,9 @@ from core.runtime.clock import SystemClock
 from schemas.task import TaskSchema
 from schemas.rag import RetrievalAccessScopeSchema
 from task.task_manager import JsonlTaskManager
+
+_source_module.assert_loaded_project_origins()
+
 
 MAINLINE_RUNTIME_VERSION = "stage1-mainline-stability-v7.9.0-20260718"
 
@@ -52,9 +86,11 @@ def resolve_project_path(
 _project_input_factory = ProjectInputFactory()
 _task_factory = TaskFactory(_project_input_factory)
 _supervisor_factory = SupervisorFactory()
+_document_catalog = DocumentProfileCatalogAdapter()
 _mainline_service = MainlineApplicationService(
     task_factory=_task_factory,
     supervisor_factory=_supervisor_factory,
+    document_catalog=_document_catalog,
 )
 
 

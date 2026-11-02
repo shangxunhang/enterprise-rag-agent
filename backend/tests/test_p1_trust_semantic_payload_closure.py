@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from application.mainline_service import MainlineApplicationService
+from bootstrap.document_catalog_adapter import DocumentProfileCatalogAdapter
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.services.scheme_writer.evidence_service import (
     SchemeEvidenceService,
@@ -120,12 +121,13 @@ def test_production_mainline_rejects_business_scope_without_trusted_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("USE_REAL_RAG_TOOL", "true")
-    project_input = _project_input(
+    from test_multi_agent_v3_workflow_recovery import _w13_current_new_task_project_input
+    project_input = _w13_current_new_task_project_input(_project_input(
         tenant_id="tenantB",
         kb_ids=["kbB"],
         doc_ids=["docB"],
         file_ids=["fileB"],
-    ).model_dump()
+    )).model_dump()
 
     with pytest.raises(ValueError, match="trusted retrieval_access_scope"):
         MainlineApplicationService().run(
@@ -137,6 +139,85 @@ def test_production_mainline_rejects_business_scope_without_trusted_context(
             settings=get_settings(),
             project_input=project_input,
             allow_demo_defaults=False,
+        )
+
+
+def test_production_mainline_requires_current_project_id_for_project_fact_kb(
+    tmp_path: Path,
+) -> None:
+    from test_multi_agent_v3_workflow_recovery import _w13_current_new_task_project_input
+    project_input = _w13_current_new_task_project_input(_project_input(
+        tenant_id="default",
+        kb_ids=["project_fact_kb"],
+    )).model_dump()
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=["project_fact_kb"],
+    )
+
+    with pytest.raises(ValueError, match="current_project_id is required"):
+        MainlineApplicationService().run(
+            project_root=Path(__file__).resolve().parents[2],
+            user_input=project_input["user_query"],
+            task_id="task-auth",
+            run_id="run-current-project-required",
+            output_root=tmp_path,
+            project_input=project_input,
+            allow_demo_defaults=False,
+            retrieval_access_scope=scope,
+        )
+
+
+def test_mainline_current_project_scope_intersects_existing_doc_authority() -> None:
+    root = Path(__file__).resolve().parents[2]
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=[
+            "project_fact_kb",
+            "historical_case_kb",
+            "policy_standard_kb",
+            "technical_reference_kb",
+            "template_style_kb",
+        ],
+        allowed_doc_ids=[
+            "doc_5bd4faa071c0d2cb316c1add",
+            "doc_dc9385d9cce409724dabdd8b",
+        ],
+    )
+
+    narrowed = MainlineApplicationService(
+        document_catalog=DocumentProfileCatalogAdapter(),
+    )._bind_current_project_retrieval_scope(
+        project_root=root,
+        current_project_id="gov_cloud_framework",
+        retrieval_access_scope=scope,
+    )
+
+    assert narrowed.allowed_doc_ids == [
+        "doc_5bd4faa071c0d2cb316c1add",
+        "doc_dc9385d9cce409724dabdd8b",
+    ]
+    assert scope.allowed_doc_ids == [
+        "doc_5bd4faa071c0d2cb316c1add",
+        "doc_dc9385d9cce409724dabdd8b",
+    ]
+
+
+def test_mainline_current_project_scope_fails_closed_on_empty_intersection() -> None:
+    root = Path(__file__).resolve().parents[2]
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="default",
+        authorized_kb_ids=["project_fact_kb"],
+        allowed_doc_ids=["doc_5bd4faa071c0d2cb316c1add"],
+    )
+
+    with pytest.raises(ValueError, match="resolved to no authorized documents"):
+        MainlineApplicationService(
+            document_catalog=DocumentProfileCatalogAdapter(),
+        )._bind_current_project_retrieval_scope(
+            project_root=root,
+            current_project_id="gov_cloud_framework",
+            retrieval_access_scope=scope,
         )
 
 
@@ -476,6 +557,67 @@ def _project_fact_input(
     return ProjectInputSchema.model_validate(payload)
 
 
+def _stage_e_project_fact_binding(section_id: str, section_title: str):
+    from apps.enterprise_document.schemas.gate_decision import (
+        ClaimRiskLevel,
+        DeliveryMode,
+        GateDecisionSchema,
+    )
+    from apps.enterprise_document.schemas.writer_governance import (
+        WriterGateBindingSchema,
+    )
+    from rag.catalog.document_profile import ClaimType
+    from rag.schema.evidence_assessment_v2 import EvidenceStatus
+
+    return WriterGateBindingSchema(
+        section_id=section_id,
+        section_title=section_title,
+        section_order=1,
+        document_id="document-project-fact",
+        run_id="run-project-fact",
+        gate_decision=GateDecisionSchema(
+            policy_id="p1_trust_stage_e_fixture_v1",
+            evidence_status=EvidenceStatus.SUFFICIENT,
+            delivery_mode=DeliveryMode.GROUNDED,
+            claim_risk_level=ClaimRiskLevel.HIGH,
+            allowed_claim_types=list(ClaimType),
+            forbidden_claim_types=[],
+            covered_topics=[section_title],
+            missing_topics=[],
+            human_review_required=False,
+            reason_codes=["explicit_stage_e_test_fixture"],
+        ),
+        generation_allowed=True,
+        evidence_contract_sha256="e" * 64,
+        prompt_evidence_contract_sha256="f" * 64,
+    )
+
+
+def _ensure_stage_e_project_fact_contract(section):
+    from apps.enterprise_document.services.scheme_writer.writer_governance import (
+        WriterClaimAuditor,
+    )
+
+    extra = dict(section.extra or {})
+    if isinstance(extra.get("writer_gate_binding"), dict):
+        return section
+    binding = _stage_e_project_fact_binding(
+        section.section_id,
+        section.section_title,
+    )
+    audit = WriterClaimAuditor().audit(section.content, binding=binding)
+    section.extra = {
+        **extra,
+        "writer_gate_binding": binding.model_dump(mode="json", exclude_none=True),
+        "writer_execution_status": binding.execution_status.value,
+        "claim_audit": audit.model_dump(mode="json", exclude_none=True),
+        "required_qualifiers_applied": [],
+        "formal_deliverable_eligible": audit.passed,
+        "need_human_review": False,
+    }
+    return section
+
+
 def _generate_project_fact_section(
     *,
     project_input: ProjectInputSchema,
@@ -518,6 +660,10 @@ def _generate_project_fact_section(
         citations=citations,
         structured_facts=[],
         previous_sections=[],
+        writer_gate_binding=_stage_e_project_fact_binding(
+            "section_run-project-fact_001",
+            "资源配置",
+        ),
     )
 
 
@@ -529,6 +675,7 @@ def _evaluate_project_fact_section(section, *, citations: list):
         evaluate_scheme_draft,
     )
 
+    section = _ensure_stage_e_project_fact_contract(section)
     draft = SchemeDraftSchema(
         draft_id="draft-project-fact",
         document_id="document-project-fact",
@@ -852,7 +999,7 @@ def test_minor_semantic_advisory_remains_deliverable() -> None:
         section_id="section-advisory",
         section_title="资源配置",
         section_order=1,
-        content="本章节存在轻微范围偏移，但没有高风险项目事实。",
+        content="采用分阶段实施方法，形成闭环治理流程。",
         status=ExecutionStatus.PARTIAL_SUCCESS,
         truncation=TruncationCheckSchema(truncated=False),
         eval_result=SectionEvalSchema(

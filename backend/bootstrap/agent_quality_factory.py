@@ -94,5 +94,8 @@ class AgentQualityFactory:
                 "max_total_tokens": policy.max_total_tokens,
                 "human_review_on_exhaustion": policy.human_review_on_exhaustion,
                 "budget_scope": policy.budget_scope,
+                "canonical_budget": policy.canonical_budget.model_dump(
+                    mode="json"
+                ),
             },
         )

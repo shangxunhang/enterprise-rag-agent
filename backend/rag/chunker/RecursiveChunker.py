@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：RecursiveChunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-# src/rag_template/chunker/RecursiveChunker.py
+"""按 Token 预算递归选择自然边界的通用 Chunker。
+
+分隔优先级为段落、换行、句号、分号、逗号、空格，最后在原字符串上二分搜索 Token
+窗口。切分后会重新合并过碎片段并加入 Token 级 overlap；可用 HuggingFace tokenizer
+时使用真实计数，否则由 TokenCounter 使用稳定正则近似。
+"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
@@ -12,7 +13,6 @@ from rag.schema.Chunk_Schema import build_chunk
 from rag.util.token_utils import TokenCounter, get_default_token_counter
 
 
-# 阅读注释（类）：封装 recursive chunker，集中封装相关状态、依赖和行为。
 class RecursiveChunker(BaseChunker):
     """
     Token 级递归切分器。
@@ -30,7 +30,6 @@ class RecursiveChunker(BaseChunker):
 
     DEFAULT_SEPARATORS = ["\n\n", "\n", "。", "；", ";", "，", ",", " ", ""]
 
-    # 阅读注释（函数）：初始化 RecursiveChunker，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         chunk_size: int = 500,
@@ -38,52 +37,17 @@ class RecursiveChunker(BaseChunker):
         separators: Optional[List[str]] = None,
         token_counter: Optional[TokenCounter] = None,
     ):
-        """初始化 RecursiveChunker，保存运行所需的依赖、配置或状态。
-
-        参数:
-            chunk_size: 文本块 size，具体约束请结合类型标注和调用方确认。
-            chunk_overlap: 文本块 overlap，具体约束请结合类型标注和调用方确认。
-            separators: separators，具体约束请结合类型标注和调用方确认。
-            token_counter: Token counter，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：__init__, super, get_default_token_counter。
-        """
+        """保存 Token 窗口、分隔优先级和可注入计数器。"""
         super().__init__(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         self.separators = separators or self.DEFAULT_SEPARATORS
         self.token_counter = token_counter or get_default_token_counter()
 
-    # 阅读注释（函数）：处理 Token count 相关逻辑。
     def token_count(self, text: str) -> int:
-        """处理 Token count 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-
-        返回:
-            int
-
-        阅读提示:
-            主要直接调用：self.token_counter.count。
-        """
+        """通过统一 TokenCounter 计算文本长度。"""
         return self.token_counter.count(text or "")
 
-    # 阅读注释（函数）：处理 文本块 文档 相关逻辑。
     def chunk_document(self, document: Dict) -> List[Dict]:
-        """处理 文本块 文档 相关逻辑。
-
-        参数:
-            document: 文档，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict]
-
-        阅读提示:
-            主要直接调用：document.get, self.split_text_with_offsets, enumerate, chunks.append, build_chunk, self.token_count。
-        """
+        """切分一个标准 Document，并记录 Token 计数、Backend 和原文偏移。"""
         doc_id = document["doc_id"]
         text = document.get("text", "")
         doc_metadata = document.get("metadata", {})
@@ -108,14 +72,12 @@ class RecursiveChunker(BaseChunker):
 
         return chunks
 
-    # 阅读注释（函数）：处理 split 文本 相关逻辑。
     def split_text(self, text: str) -> List[str]:
-        """只返回文本片段，供其他 Chunker 复用。"""
+        """只返回正文片段的便捷接口，供 HeadingChunker 等复用。"""
         return [piece for piece, _, _ in self.split_text_with_offsets(text)]
 
-    # 阅读注释（函数）：处理 split 文本 with offsets 相关逻辑。
     def split_text_with_offsets(self, text: str) -> List[Tuple[str, Optional[int], Optional[int]]]:
-        """返回：[(chunk_text, start_char, end_char), ...]。"""
+        """递归切分、重新合并并尽力定位每块在原文中的字符区间。"""
         if not text or not text.strip():
             return []
 
@@ -124,19 +86,10 @@ class RecursiveChunker(BaseChunker):
         merged = self._merge_pieces(raw_pieces)
         return self._add_offsets(text, merged)
 
-    # 阅读注释（函数）：处理 recursive split 相关逻辑。
     def _recursive_split(self, text: str, separators: List[str]) -> List[str]:
-        """处理 recursive split 相关逻辑。
+        """按当前最高优先级分隔符拆分，超长子段继续递归到更细边界。
 
-        参数:
-            text: 待处理文本。
-            separators: separators，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：text.strip, self.token_count, self._split_by_token_length, self._recursive_split, text.split, enumerate, part.strip, len。
+        句号、分号和逗号会保留在前一片段末尾；所有自然边界耗尽后转入 Token 窗口兜底。
         """
         text = text.strip()
         if not text:
@@ -176,9 +129,8 @@ class RecursiveChunker(BaseChunker):
 
         return pieces
 
-    # 阅读注释（函数）：合并 pieces。
     def _merge_pieces(self, pieces: List[str]) -> List[str]:
-        """把过碎 piece 合并成接近 chunk_size token 的 chunk。"""
+        """贪心合并细粒度片段，并从前一块尾部加入不超过预算的 Token overlap。"""
         chunks: List[str] = []
         buffer = ""
 
@@ -222,13 +174,10 @@ class RecursiveChunker(BaseChunker):
 
         return overlapped
 
-    # 阅读注释（函数）：处理 split by Token length 相关逻辑。
     def _split_by_token_length(self, text: str) -> List[str]:
-        """
-        token 级兜底切分。
+        """在原字符串上二分查找最大 Token 合规窗口，并按 Token 数回退 overlap。
 
-        不直接 decode token，而是在原始字符串上用二分搜索找到不超过 chunk_size token 的最大字符窗口。
-        这样可以尽量保留原文，offset 也更容易追踪。
+        不直接 decode Token，因而尽量保持原文字符与偏移可追踪。
         """
         text = text.strip()
         if not text:
@@ -260,21 +209,8 @@ class RecursiveChunker(BaseChunker):
 
         return chunks
 
-    # 阅读注释（函数）：处理 max end within Token limit 相关逻辑。
     def _max_end_within_token_limit(self, text: str, start: int, token_limit: int) -> int:
-        """处理 max end within Token limit 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-            start: start，具体约束请结合类型标注和调用方确认。
-            token_limit: Token limit，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            int
-
-        阅读提示:
-            主要直接调用：len, self.token_count。
-        """
+        """二分查找从 ``start`` 起不超过 Token 上限的最远字符位置。"""
         low = start + 1
         high = len(text)
         best = start
@@ -289,9 +225,8 @@ class RecursiveChunker(BaseChunker):
 
         return best
 
-    # 阅读注释（函数）：处理 overlap start 相关逻辑。
     def _overlap_start(self, text: str, chunk_start: int, chunk_end: int, overlap_tokens: int) -> int:
-        """返回一个字符位置，使 text[pos:chunk_end] 尽量接近但不超过 overlap_tokens。"""
+        """二分查找尾部 Token 数最接近且不超过 overlap 上限的起点。"""
         if overlap_tokens <= 0:
             return chunk_end
 
@@ -310,38 +245,17 @@ class RecursiveChunker(BaseChunker):
 
         return best
 
-    # 阅读注释（函数）：处理 Token suffix 相关逻辑。
     def _token_suffix(self, text: str, max_tokens: int) -> str:
-        """处理 Token suffix 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-            max_tokens: max tokens，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self._overlap_start, len, strip。
-        """
+        """提取不超过指定 Token 数的文本尾部。"""
         if max_tokens <= 0 or not text:
             return ""
         start = self._overlap_start(text, 0, len(text), max_tokens)
         return text[start:].strip()
 
-    # 阅读注释（函数）：处理 add offsets 相关逻辑。
     def _add_offsets(self, original_text: str, chunks: List[str]) -> List[Tuple[str, Optional[int], Optional[int]]]:
-        """处理 add offsets 相关逻辑。
+        """从游标后顺序定位 Chunk；无法无歧义匹配时保留空偏移。
 
-        参数:
-            original_text: original 文本，具体约束请结合类型标注和调用方确认。
-            chunks: chunks，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Tuple[str, Optional[int], Optional[int]]]
-
-        阅读提示:
-            主要直接调用：original_text.find, strip, chunk.replace, result.append, len, max, min。
+        游标会考虑 overlap 向前回退，允许下一块在前一块尾部开始。
         """
         result: List[Tuple[str, Optional[int], Optional[int]]] = []
         cursor = 0

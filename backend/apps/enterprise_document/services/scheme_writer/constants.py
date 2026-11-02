@@ -1,11 +1,7 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Policies shared by SchemeWriter services.
+"""SchemeWriter 各服务共享的确定性文本检查策略。
 
-These values are moved unchanged from the former God Agent.  They remain
-implementation policy, not domain schemas.
+这些正则与阈值从原先的巨型 Agent 原样拆出，属于实现策略而非领域 Schema。它们用于
+识别引用标记、事实限定语、资源承诺和高风险量化陈述，修改时应同步运行门禁与引用测试。
 """
 
 

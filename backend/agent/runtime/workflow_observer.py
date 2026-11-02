@@ -1,8 +1,9 @@
-# =============================================================================
-# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
-# 主要定义：WorkflowObserver。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Node-level workflow Trace v2 observer."""
+"""记录工作流节点级 Agent Trace v2 事件。
+
+``WorkflowObserver`` 在节点每次尝试开始和结束时创建、闭合 Agent span，并把节点
+输入哈希、声明读取键、状态增量哈希、提交决定和重试信息写入轨迹。它只观察执行，
+不修改 GraphState、不选择路由，也不决定是否重试或提交增量。
+"""
 
 from __future__ import annotations
 
@@ -17,22 +18,22 @@ from schemas.graph import GraphNodeInputSchema, GraphNodeOutputSchema
 from schemas.status import ExecutionStatus
 
 
-# 阅读注释（类）：封装 工作流 observer，集中封装相关状态、依赖和行为。
 class WorkflowObserver:
-    """封装 工作流 observer，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 WorkflowObserver，保存运行所需的依赖、配置或状态。
+    """把节点尝试生命周期转换为结构化 Agent 轨迹事件。
+
+    Attributes:
+        sink: 可选结构化轨迹接收器；为空时仍创建 span handle，但不写出事件。
+    """
+
     def __init__(self, sink: Optional[TraceSink] = None) -> None:
-        """初始化 WorkflowObserver，保存运行所需的依赖、配置或状态。
+        """创建节点观察器。
 
-        参数:
-            sink: sink，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
+        Args:
+            sink: Trace 输出端口或 ``None``。
         """
+
         self.sink = sink
 
-    # 阅读注释（函数）：处理 step started 相关逻辑。
     def step_started(
         self,
         state: SharedStateSchema,
@@ -43,29 +44,31 @@ class WorkflowObserver:
         attempt: int = 1,
         max_attempts: int = 1,
     ) -> TraceSpanHandle:
-        """处理 step started 相关逻辑。
+        """为一次节点尝试创建 Agent span 并记录开始摘要。
 
-        参数:
-            state: 工作流共享状态。
-            workflow: 工作流，具体约束请结合类型标注和调用方确认。
-            step: step，具体约束请结合类型标注和调用方确认。
-            node_input: node 输入，具体约束请结合类型标注和调用方确认。
-            attempt: attempt，具体约束请结合类型标注和调用方确认。
-            max_attempts: max attempts，具体约束请结合类型标注和调用方确认。
+        Args:
+            state: 节点执行前的共享状态。
+            workflow: 当前业务工作流定义。
+            step: 当前步骤定义。
+            node_input: 由状态投影器生成的受控节点输入；旧路径可为空。
+            attempt: 当前尝试序号，从 1 开始。
+            max_attempts: 包含首次执行在内的最大尝试次数。
 
-        返回:
-            TraceSpanHandle
-
-        阅读提示:
-            主要直接调用：new_span, current_span, self.sink.record, getattr, bool, list。
+        Returns:
+            结束该次尝试时必须传回 ``step_finished`` 的 span handle。
         """
+
+        # 第一步：在当前活动工作流 span 下创建当前 Agent 的 internal 子 span。
         handle = new_span(
             run_id=state.run_id,
             span_name=f"agent:{step.target_name}",
             span_kind="internal",
             parent=current_span(),
         )
+
+        # 第二步：没有 sink 时仅返回关联 handle，保持执行路径和有轨迹模式一致。
         if self.sink is not None:
+            # 第三步：记录节点身份、状态修订和受控输入摘要，不复制完整 GraphState。
             self.sink.record(
                 task_id=state.task_id,
                 run_id=state.run_id,
@@ -99,16 +102,16 @@ class WorkflowObserver:
                     "step_order": step.order,
                     "target_name": step.target_name,
                     "current_state_status": getattr(state.status, "value", state.status),
-                    "has_evidence_contract": bool(
-                        getattr(getattr(state.context_bundle, "evidence", None), "contract", None)
-                    ),
                     "graph_state_schema": getattr(state, "schema_version", None),
                     "graph_revision": getattr(state, "graph_revision", None),
+                    # 输入哈希允许重放时确认节点看到的投影是否一致。
                     "node_input_sha256": (
                         node_input.input_sha256 if node_input is not None else None
                     ),
                     "declared_read_keys": (
-                        list(node_input.declared_read_keys) if node_input is not None else []
+                        list(node_input.declared_read_keys)
+                        if node_input is not None
+                        else []
                     ),
                     "missing_read_keys": (
                         list(node_input.missing_keys) if node_input is not None else []
@@ -118,9 +121,9 @@ class WorkflowObserver:
                 },
                 tags=["trace_v2", "agent", "workflow_step"],
             )
+
         return handle
 
-    # 阅读注释（函数）：处理 step finished 相关逻辑。
     def step_finished(
         self,
         state: SharedStateSchema,
@@ -134,28 +137,45 @@ class WorkflowObserver:
         max_attempts: int = 1,
         will_retry: bool = False,
     ) -> None:
-        """处理 step finished 相关逻辑。
+        """记录一次节点尝试的结果、状态增量和后续重试决定。
 
-        参数:
-            state: 工作流共享状态。
-            workflow: 工作流，具体约束请结合类型标注和调用方确认。
-            step: step，具体约束请结合类型标注和调用方确认。
-            result: 待处理的结果对象。
-            handle: handle，具体约束请结合类型标注和调用方确认。
-            node_output: node 输出，具体约束请结合类型标注和调用方确认。
-            attempt: attempt，具体约束请结合类型标注和调用方确认。
-            max_attempts: max attempts，具体约束请结合类型标注和调用方确认。
-            will_retry: will retry，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.sink.record, handle.latency_ms, result.model_dump, len, getattr, get。
+        Args:
+            state: 当前真实共享状态；若增量已提交，其修订号已经更新。
+            workflow: 当前业务工作流定义。
+            step: 当前步骤定义。
+            result: Agent 返回的标准结果。
+            handle: ``step_started`` 为本次尝试创建的 span handle。
+            node_output: 节点执行器生成的标准输出和状态增量；旧路径可为空。
+            attempt: 当前尝试序号。
+            max_attempts: 包含首次执行在内的最大尝试次数。
+            will_retry: 当前失败后执行器是否还会再次尝试该节点。
         """
+
+        # 第一步：无 sink 模式不产生轨迹副作用。
         if self.sink is None:
             return
+
+        # 第二步：优先使用结果中的结构化错误，供 phase 和错误摘要共同判断。
         error = result.error
+
+        # 第三步：从节点输出提取状态 delta 和提交元数据；不存在时使用兼容空值。
+        delta_sha256 = (
+            node_output.state_delta.delta_sha256
+            if node_output is not None
+            else None
+        )
+        changed_path_count = (
+            len(node_output.state_delta.changed_paths)
+            if node_output is not None
+            else 0
+        )
+        commit_decision = (
+            (node_output.metadata or {}).get("commit_decision")
+            if node_output is not None
+            else None
+        )
+
+        # 第四步：记录与开始事件相同 span 的结束事件及有限结果摘要。
         self.sink.record(
             task_id=state.task_id,
             run_id=state.run_id,
@@ -189,25 +209,14 @@ class WorkflowObserver:
                 "citation_count": len(result.citations or []),
                 "error_code": error.error_code if error else None,
                 "error_type": error.error_type if error else None,
+                # 这里记录结束时真实状态修订，而不是节点副本中的预期修订。
                 "graph_revision": getattr(state, "graph_revision", None),
-                "state_delta_sha256": (
-                    node_output.state_delta.delta_sha256
-                    if node_output is not None
-                    else None
-                ),
-                "changed_path_count": (
-                    len(node_output.state_delta.changed_paths)
-                    if node_output is not None
-                    else 0
-                ),
+                "state_delta_sha256": delta_sha256,
+                "changed_path_count": changed_path_count,
                 "attempt": attempt,
                 "max_attempts": max_attempts,
                 "will_retry": will_retry,
-                "commit_decision": (
-                    (node_output.metadata or {}).get("commit_decision")
-                    if node_output is not None
-                    else None
-                ),
+                "commit_decision": commit_decision,
             },
             tags=["trace_v2", "agent", "workflow_step"],
         )

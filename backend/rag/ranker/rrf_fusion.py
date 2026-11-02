@@ -1,19 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_safe_float、_safe_int、get_child_key、_ensure_source_fields、rrf_fuse。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/ranker/rrf_fusion.py
-=================================
+"""融合 dense 与 keyword 子块命中的 Reciprocal Rank Fusion 实现。
 
-P2 RRF fusion:
-- Merge dense child hits and keyword child hits.
-- Score by Reciprocal Rank Fusion instead of directly adding Milvus/BM25 scores.
-- Preserve evidence fields for later parent backfill / rerank.
-
-RRF formula:
-    fusion_score = sum(1 / (rrf_k + rank_i))
+Milvus 距离和 BM25 分数不可直接相加，因此按每个来源的排名计算
+``sum(1 / (rrf_k + rank_i))``。输出仍保留子块正文、父块标识、各来源原始排名/分数和
+单次贡献，供后续父级回填、重排和审计使用。
 """
 
 from __future__ import annotations
@@ -22,20 +12,8 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 
-# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """处理 safe float 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float。
-    """
+    """安全转换来源分数；非法值不贡献融合排序。"""
     try:
         if value is None:
             return default
@@ -44,20 +22,8 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-# 阅读注释（函数）：处理 safe int 相关逻辑。
 def _safe_int(value: Any, default: int = 10**9) -> int:
-    """处理 safe int 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        int
-
-    阅读提示:
-        主要直接调用：int。
-    """
+    """安全转换来源排名；非法值按极低优先级处理。"""
     try:
         if value is None:
             return default
@@ -66,9 +32,8 @@ def _safe_int(value: Any, default: int = 10**9) -> int:
         return default
 
 
-# 阅读注释（函数）：获取 子块 key。
 def get_child_key(hit: Mapping[str, Any]) -> str:
-    """Return stable child candidate key."""
+    """从顶层或嵌套 ``child_chunk`` 中提取稳定子块身份。"""
     key = hit.get("child_chunk_id") or hit.get("chunk_id")
     if key:
         return str(key)
@@ -77,19 +42,8 @@ def get_child_key(hit: Mapping[str, Any]) -> str:
     return str(key or "")
 
 
-# 阅读注释（函数）：确保 source fields 满足运行约束。
 def _ensure_source_fields(candidate: Dict[str, Any]) -> None:
-    """确保 source fields 满足运行约束。
-
-    参数:
-        candidate: candidate，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        None
-
-    阅读提示:
-        主要直接调用：candidate.setdefault。
-    """
+    """为候选初始化多来源排名、分数、贡献和融合分数容器。"""
     candidate.setdefault("retrieval_sources", [])
     candidate.setdefault("source_ranks", {})
     candidate.setdefault("source_scores", {})
@@ -97,23 +51,17 @@ def _ensure_source_fields(candidate: Dict[str, Any]) -> None:
     candidate.setdefault("rrf_contributions", {})
 
 
-# 阅读注释（函数）：处理 rrf fuse 相关逻辑。
 def rrf_fuse(
     ranked_lists: Mapping[str, Sequence[Dict[str, Any]]],
     *,
     rrf_k: int = 60,
     top_k: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Fuse multiple ranked child-hit lists using RRF.
+    """按子块身份融合多个有序来源列表，并按 RRF 分数降序返回。
 
-    Args:
-        ranked_lists: mapping from source name to ranked hits, for example
-            {"dense": dense_hits, "keyword": keyword_hits}.
-        rrf_k: RRF constant. Common default is 60.
-        top_k: optional final cutoff.
-
-    Returns:
-        List of fused child candidates sorted by fusion_score desc.
+    第一次出现的候选提供基础 payload；后续来源只补齐缺失的子块、父块或文档信息，不能
+    覆盖更完整的已有内容。排序先看融合分数，再偏向任一来源中最好排名。``top_k`` 只在
+    完成全量融合和重编号后截断。
     """
     if rrf_k < 1:
         raise ValueError("rrf_k must be >= 1")

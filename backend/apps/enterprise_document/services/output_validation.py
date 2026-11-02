@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：_json_closed、detect_truncation。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Output validation utilities for section generation."""
+"""章节模型输出的确定性截断与完整性检查工具。"""
 
 from __future__ import annotations
 
@@ -16,19 +12,8 @@ from apps.enterprise_document.schemas.scheme_writer_schema import TruncationChec
 _TERMINAL_PUNCTUATION = ("。", "！", "？", ".", "!", "?", "；", ";", "：", ":", ")", "）", "]", "】", "}")
 
 
-# 阅读注释（函数）：处理 JSON closed 相关逻辑。
 def _json_closed(text: str) -> Optional[bool]:
-    """处理 JSON closed 相关逻辑。
-
-    参数:
-        text: 待处理文本。
-
-    返回:
-        Optional[bool]
-
-    阅读提示:
-        主要直接调用：text.strip, json.loads。
-    """
+    """仅对看起来像 JSON 的输出检查能否完整解析；普通正文返回 ``None``。"""
     stripped = text.strip()
     if not stripped or stripped[0] not in "[{":
         return None
@@ -39,24 +24,15 @@ def _json_closed(text: str) -> Optional[bool]:
         return False
 
 
-# 阅读注释（函数）：处理 detect truncation 相关逻辑。
 def detect_truncation(
     text: str,
     finish_reason: Optional[str],
     min_chars: int = 0,
 ) -> TruncationCheckSchema:
-    """处理 detect truncation 相关逻辑。
+    """综合模型 finish_reason、JSON 闭合、句尾和最小长度判断疑似截断。
 
-    参数:
-        text: 待处理文本。
-        finish_reason: finish reason，具体约束请结合类型标注和调用方确认。
-        min_chars: min chars，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        TruncationCheckSchema
-
-    阅读提示:
-        主要直接调用：strip, lower, reasons.append, _json_closed, stripped.endswith, re.search, len, TruncationCheckSchema。
+    任一风险都会进入 ``reasons``；返回的是保守完整性信号，不尝试自动修改正文。调用方
+    可据此选择安全前缀恢复、紧凑重试或直接失败。
     """
     reasons: list[str] = []
     stripped = (text or "").strip()

@@ -131,7 +131,8 @@ def test_rag_request_caller_metadata_cannot_forge_canonical_lineage() -> None:
     assert lineage["run_id"] == "real-run"
     assert lineage["workflow_run_id"] == "real-run"
     assert lineage["caller_agent"] == "SchemeWriterAgent"
-    assert lineage["section_id"] == "section-1"
+    assert "section_id" not in lineage
+    assert lineage["request_metadata"]["extra_metadata"]["section_id"] == "section-1"
 
 
 def test_rag_run_metadata_records_concrete_model_lineage_not_adapter_name() -> None:

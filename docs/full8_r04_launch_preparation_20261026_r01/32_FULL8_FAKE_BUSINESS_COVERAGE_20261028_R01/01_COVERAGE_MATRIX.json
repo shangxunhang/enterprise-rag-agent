@@ -1,0 +1,546 @@
+{
+  "schema": "full8_fake_business_coverage_matrix_v1",
+  "generated_at_local": "2026-10-28",
+  "authority": "TEST_ONLY_NOT_PRODUCTION_AUTHORITY",
+  "status": "MATRIX_VERIFIED_NEW_TESTS_21_PASS_EXISTING_SMOKE_3_PASS",
+  "sources": {
+    "gold_metrics": "E:/rag-agent-evaluation/MULTI_AGENT_V3_RC1_20261013/gold_dataset_v1/GOLD_DATASET_METRICS.json",
+    "gold_case_ids": "E:/rag-agent-evaluation/MULTI_AGENT_V3_RC1_20261013/gold_dataset_v1/02_COVERAGE_MATRIX.md",
+    "native_edge_matrix": "docs/full_chain_evaluation_design_20261004/independent_implementation_audit_20261005_a7ee40db_042841/02_DOMAIN_EDGE_MATRIX.md",
+    "pwa004": "backend/tests/test_pwa004_native_full8_fake_e2e.py"
+  },
+  "dataset_summary": {
+    "business_candidates": 120,
+    "verified_scoped_gold": 53,
+    "review_required": 67,
+    "full_native_hydrated_gold": 0,
+    "prior_native_pwa004_scenarios": 4
+  },
+  "scope_rule": "Only deterministic structural handling and actual authority-owner paths; model natural-language quality excluded",
+  "statuses_explained": {
+    "NATIVE_FAKE_FULL8_PASS": "previous completed production Full8 Fake test evidence applies only to precisely named fault",
+    "LOCAL_TEST_CODE_EXISTS": "test source exists; this matrix alone has not rerun or upgraded it to Full8",
+    "GOLD_AND_LOCAL_RULE": "Gold boundary exists plus a related local test; linkage to same native Run unproven",
+    "GOLD_DATA_ONLY": "only candidate data and/or semantic Gold; no complete owner fixture",
+    "NEW_SYNTHETIC_FIXTURE_READY": "deterministic Fake reply fixture prepared, not yet passed; do not claim test success"
+  },
+  "scenarios": [
+    {
+      "id": "BC-01",
+      "title": "正常多章节交付",
+      "scenario": "NORMAL_RUN_RELEASE",
+      "priority": 1,
+      "gold_refs": [],
+      "test_references": [
+        "test_phase7_document_closure_mainline.py::test_round7_success_closure_is_checkpointed_without_new_authority",
+        "test_stage_f_mainline_release.py::test_success_mainline_publishes_verified_release_manifest"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "无八章非空且全 VERIFIED Claims 的完整真实验证闭环"
+    },
+    {
+      "id": "BC-02",
+      "title": "未提供值与已确认零",
+      "scenario": "INPUT_MISSING_ZERO",
+      "priority": 2,
+      "gold_refs": [
+        "RC1-GOLD-W-002",
+        "RC1-GOLD-W-003",
+        "RC1-GOLD-F-003",
+        "RC1-GOLD-F-004",
+        "RC1-GOLD-C-031"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_claim_binding_mainline.py::test_empty_evidence_has_scope_records_not_fabricated_evidence"
+      ],
+      "evidence_level": "GOLD_AND_LOCAL_RULE",
+      "remaining_gap": "八章同 Run 中跨章节传播与 Gate 未贯通"
+    },
+    {
+      "id": "BC-03",
+      "title": "规划、采购、部署、审批状态",
+      "scenario": "BUSINESS_LIFECYCLE_SEMANTICS",
+      "priority": 2,
+      "gold_refs": [
+        "RC1-GOLD-W-009",
+        "RC1-GOLD-W-010",
+        "RC1-GOLD-W-011",
+        "RC1-GOLD-W-012",
+        "RC1-GOLD-F-005",
+        "RC1-GOLD-F-006",
+        "RC1-GOLD-F-018"
+      ],
+      "test_references": [],
+      "evidence_level": "GOLD_DATA_ONLY",
+      "remaining_gap": "需要有权威来源的状态变化与章节消费"
+    },
+    {
+      "id": "BC-04",
+      "title": "事实数值、单位、精度",
+      "scenario": "QUANTITY_UNIT_PRECISION",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-018",
+        "RC1-GOLD-W-027",
+        "RC1-GOLD-F-011",
+        "RC1-GOLD-F-012",
+        "RC1-GOLD-F-013",
+        "RC1-GOLD-F-014",
+        "RC1-GOLD-C-013",
+        "RC1-GOLD-C-014",
+        "RC1-GOLD-C-055"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_consistency_mainline.py::test_material_relation_projects_real_consistency_fact"
+      ],
+      "evidence_level": "GOLD_AND_LOCAL_RULE",
+      "remaining_gap": "未形成真实单位与复合章节消费闭环"
+    },
+    {
+      "id": "BC-05",
+      "title": "项目和来源权限越界",
+      "scenario": "SOURCE_AUTHORITY",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-014",
+        "RC1-GOLD-W-021",
+        "RC1-GOLD-W-022",
+        "RC1-GOLD-W-023",
+        "RC1-GOLD-F-024",
+        "RC1-GOLD-F-025",
+        "RC1-GOLD-F-026"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_claim_binding_mainline.py::test_binding_sources_are_exact_and_claim_eligible"
+      ],
+      "evidence_level": "GOLD_AND_LOCAL_RULE",
+      "remaining_gap": "跨错误 Project 的 Owner/Input/Support 端到端负例"
+    },
+    {
+      "id": "BC-06",
+      "title": "引用标识与证据匹配",
+      "scenario": "CITATION_GROUNDING",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-020",
+        "RC1-GOLD-W-021",
+        "RC1-GOLD-W-022",
+        "RC1-GOLD-W-023"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_citation_grounding_mainline.py::test_actual_factory_canonical_claim_citation_grounding"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "不同章节对同一证据的引用、删除或污染应由真实 Postwrite 执行"
+    },
+    {
+      "id": "BC-07",
+      "title": "证据不足与有限检索恢复",
+      "scenario": "EVIDENCE_RECOVERY",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-002",
+        "RC1-GOLD-W-016",
+        "RC1-GOLD-F-029"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_mainline_e2e.py::test_e2e_02_evidence_insufficient_uses_frozen_safe_route_without_writer",
+        "test_gate_v2_pre_write_recovery.py::test_recovery_limits_lock_and_round_reservation_is_replay_stable"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "真实八章 Gate/admission/research 的多轮证据输入仍需接线"
+    },
+    {
+      "id": "BC-08",
+      "title": "原生 Claim 提取完整性",
+      "scenario": "CLAIM_COVERAGE",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-005",
+        "RC1-GOLD-W-029",
+        "RC1-GOLD-F-019"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_claim_materialization_mainline.py::test_default_claim_extractor_is_actually_called_with_exact_text"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "混合事实/编辑语义时全 Claim coverage 的高风险遗漏"
+    },
+    {
+      "id": "BC-09",
+      "title": "VERIFIED 禁令下局部执行继续",
+      "scenario": "PWA004_ILLEGAL_VERIFIED_CONTINUE",
+      "priority": 0,
+      "gold_refs": [
+        "RC1-GOLD-F-023",
+        "RC1-GOLD-F-025"
+      ],
+      "test_references": [
+        "test_pwa004_native_full8_fake_e2e.py::test_native_m6_refusal_continues_full8_and_returns_unreleased_review_draft"
+      ],
+      "evidence_level": "NATIVE_FAKE_FULL8_PASS",
+      "remaining_gap": "已证实 INDETERMINATE+VERIFIED 同 Run 8/8 或硬依赖 7/8"
+    },
+    {
+      "id": "BC-10",
+      "title": "同章合法负面+非法候选混合",
+      "scenario": "MIXED_CLAIM_OUTCOMES",
+      "priority": 0,
+      "gold_refs": [
+        "RC1-GOLD-F-019",
+        "RC1-GOLD-F-023",
+        "RC1-GOLD-F-025"
+      ],
+      "test_references": [
+        "test_full8_fake_business_synth_matrix_20261028.py::test_synthetic_business_outcomes_through_original_full8"
+      ],
+      "evidence_level": "NATIVE_FAKE_FULL8_PASS_NEW",
+      "remaining_gap": "两条合法负面与两条 M6 拒绝同 Run 正确保留；无硬依赖 8/8，硬依赖 7/8；复杂跨章节传递仍待扩展"
+    },
+    {
+      "id": "BC-11",
+      "title": "目标拒绝与非目标模型格式失败分权",
+      "scenario": "NON_TARGET_VERIFIER_FAILURE",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_multi_agent_v3_verifier_mainline.py::test_real_verifier_commits_exact_verdict_and_preserves_failures",
+        "test_full8_fake_business_synth_matrix_20261028.py::test_synthetic_business_outcomes_through_original_full8"
+      ],
+      "evidence_level": "NATIVE_FAKE_FULL8_PASS_NEW",
+      "remaining_gap": "非法 Verifier JSON 按非目标错误失败且未继续第八章；多错误叠加未覆盖"
+    },
+    {
+      "id": "BC-12",
+      "title": "合法负面全部完成",
+      "scenario": "ALL_LEGAL_NEGATIVE_CLAIMS",
+      "priority": 0,
+      "gold_refs": [
+        "RC1-GOLD-F-003",
+        "RC1-GOLD-F-006"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_verifier_mainline.py::test_real_verifier_commits_exact_verdict_and_preserves_failures",
+        "test_full8_fake_business_synth_matrix_20261028.py::test_synthetic_business_outcomes_through_original_full8"
+      ],
+      "evidence_level": "NATIVE_FAKE_FULL8_PASS_NEW",
+      "remaining_gap": "四条合法 UNSUPPORTED 均有真实 Result；正常 Post-write 走 OUTPUT_BEST_EFFORT，Run 成功且 summary partial_success；非全部 VERIFIED 路径"
+    },
+    {
+      "id": "BC-13",
+      "title": "硬依赖和未验收内容隔离",
+      "scenario": "HARD_DEPENDENCY_BOUNDARY",
+      "priority": 0,
+      "gold_refs": [
+        "RC1-GOLD-W-006",
+        "RC1-GOLD-W-028",
+        "RC1-GOLD-C-048"
+      ],
+      "test_references": [
+        "test_pwa004_native_full8_fake_e2e.py::test_native_m6_refusal_continues_full8_and_returns_unreleased_review_draft"
+      ],
+      "evidence_level": "NATIVE_FAKE_FULL8_PASS",
+      "remaining_gap": "已证实真实 Plan 无/有硬依赖；复杂跨级传递仍未证实"
+    },
+    {
+      "id": "BC-14",
+      "title": "跨章节同参数冲突",
+      "scenario": "CROSS_SECTION_CONFLICT",
+      "priority": 0,
+      "gold_refs": [
+        "RC1-GOLD-W-024",
+        "RC1-GOLD-C-048",
+        "RC1-GOLD-F-027"
+      ],
+      "test_references": [
+        "test_phase7_document_closure_mainline.py::test_document_verifier_builds_cross_section_conflict_and_serial_plan",
+        "test_multi_agent_v3_consistency_mainline.py::test_document_cross_section_conflict_is_independent_of_section_pass",
+        "test_full8_business_coverage_contract_20261028.py::test_synthetic_two_section_numbers_use_actual_production_document_verifier"
+      ],
+      "evidence_level": "NATIVE_DOCUMENT_VERIFIER_PASS_NEW",
+      "remaining_gap": "两章冲突与一致正反例通过；仍非多 Owner Claim Full8 聚合"
+    },
+    {
+      "id": "BC-15",
+      "title": "复合数量与分项约束",
+      "scenario": "COMPOSITE_SUM_SCOPED",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-027",
+        "RC1-GOLD-C-041",
+        "RC1-GOLD-C-042",
+        "RC1-GOLD-C-053"
+      ],
+      "test_references": [],
+      "evidence_level": "GOLD_DATA_ONLY",
+      "remaining_gap": "总量/分量、重叠范围、跨章节来源在正式一致性判断未贯通"
+    },
+    {
+      "id": "BC-16",
+      "title": "DOCUMENT Coverage 与 Requirement",
+      "scenario": "DOCUMENT_REQUIRED_SCOPE",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-006",
+        "RC1-GOLD-W-029"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_coverage_mainline.py::test_default_factory_section_and_document_structural_coverage_are_live",
+        "test_multi_agent_v3_requirement_adherence_mainline.py::test_actual_factory_requirement_adherence_section_document"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "实际缺章/缺字段/缺证据多原因复合终态"
+    },
+    {
+      "id": "BC-17",
+      "title": "正式 Control/Release 成功及 BLOCK",
+      "scenario": "RELEASE_AUTHORITY",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_stage_f_mainline_release.py::test_success_mainline_publishes_verified_release_manifest",
+        "test_stage_f_mainline_release.py::test_rejected_mainline_does_not_publish_release_artifacts",
+        "test_stage_f_mainline_release.py::test_success_mainline_publishes_verified_release_manifest"
+      ],
+      "evidence_level": "LOCAL_MAINLINE_TEST_RERUN_PASS",
+      "remaining_gap": "正式 Release 与 Block 不发布分别通过；全 VERIFIED 八章成功仍需专用数据"
+    },
+    {
+      "id": "BC-18",
+      "title": "PARTIAL_SUCCESS 贡献条件",
+      "scenario": "PARTIAL_ACCEPTED_CONTRIBUTION",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_phase8_recovery_budget_retirement.py::test_mainline_partial_success_publishes_deliverable"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "现有已有部分成功测试；PWA004 缺 Result 不可借用，需独立来源贡献负例"
+    },
+    {
+      "id": "BC-19",
+      "title": "有限纠正/版本 Currentness",
+      "scenario": "REPAIR_VERSION_PROMOTION",
+      "priority": 1,
+      "gold_refs": [
+        "RC1-GOLD-W-017",
+        "RC1-GOLD-F-028"
+      ],
+      "test_references": [
+        "test_multi_agent_v3_mainline_e2e.py::test_e2e_06_claim_issue_authorizes_one_repair_and_rechecks_currentness",
+        "test_phase8_recovery_budget_retirement.py::test_mainline_paragraph_repair_replaces_conflicting_version"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "混合纠正后 Document/Release 是否消费旧版本需独立验证"
+    },
+    {
+      "id": "BC-20",
+      "title": "预算耗尽/Provider 不可用",
+      "scenario": "BUDGET_PROVIDER_BOUNDARIES",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_multi_agent_v3_mainline_e2e.py::test_e2e_08_provider_availability_fallback_uses_canonical_budget_admission",
+        "test_multi_agent_v3_mainline_e2e.py::test_e2e_09_budget_exhaustion_starts_no_provider_and_never_becomes_gate_fallback",
+        "test_multi_agent_v3_mainline_e2e.py::test_e2e_09_budget_exhaustion_starts_no_provider_and_never_becomes_gate_fallback"
+      ],
+      "evidence_level": "LOCAL_TEST_RERUN_PASS",
+      "remaining_gap": "独立容量拒绝通过；混合失败与共享预算未形成原生 Full8 综合验收"
+    },
+    {
+      "id": "BC-21",
+      "title": "Checkpoint/崩溃/幂等",
+      "scenario": "RECOVERY_IDEMPOTENCY",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_multi_agent_v3_workflow_recovery.py::test_w13_reopen_from_stale_checkpoint_reuses_canonical_release_without_budget_reconsume",
+        "test_pwa004_native_full8_fake_e2e.py::test_native_m6_refusal_continues_full8_and_returns_unreleased_review_draft"
+      ],
+      "evidence_level": "LOCAL_AND_WARM_REPLAY",
+      "remaining_gap": "跨进程在 Provider response/Checkpoint 窗口的 crash cut 尚未证明"
+    },
+    {
+      "id": "BC-22",
+      "title": "RAG Recall/Fusion/Rerank 准入",
+      "scenario": "RAG_EVIDENCE_MEMBERSHIP",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_production_retrieval_baseline_recovery.py::test_retrieval_result_v2_preserves_child_match_and_parent_context",
+        "test_full_chain_eval_integration.py::test_FCI01_actual_eight_section_fake_freeze_cli_observe"
+      ],
+      "evidence_level": "LOCAL_TEST_CODE_EXISTS",
+      "remaining_gap": "真实 RAG 与 Fake LLM 的边界没在该 Gold 集验收；reorder 对 selected membership 的影响"
+    },
+    {
+      "id": "BC-23",
+      "title": "Run/Task 错误归因/草稿交付",
+      "scenario": "TERMINAL_ERROR_AND_DRAFT",
+      "priority": 0,
+      "gold_refs": [],
+      "test_references": [
+        "test_pwa004_native_full8_fake_e2e.py::test_native_m6_refusal_continues_full8_and_returns_unreleased_review_draft",
+        "test_multi_agent_v3_workflow_recovery.py::test_w13_two_section_parallel_target_synchronizes_one_completion_and_release"
+      ],
+      "evidence_level": "NATIVE_FAKE_FULL8_PASS_FOR_PWA004",
+      "remaining_gap": "PWA004 分支成功；多种独立异常并发时触发 Attempt 身份需补"
+    },
+    {
+      "id": "BC-24",
+      "title": "Trace/Full-chain 30 Edge 原件接通",
+      "scenario": "OBSERVABILITY_EDGE_BINDING",
+      "priority": 1,
+      "gold_refs": [],
+      "test_references": [
+        "test_full_chain_eval_integration.py::test_FCI01_actual_eight_section_fake_freeze_cli_observe"
+      ],
+      "evidence_level": "LOCAL_OBSERVE_ONLY",
+      "remaining_gap": "历史30 Edge 存在原生端点 unknown；检验报告不能代替业务事实证明"
+    }
+  ],
+  "synthetic_fixtures": [
+    {
+      "id": "SYN-BIZ-001",
+      "scenario": "MIXED_CLAIM_OUTCOMES",
+      "target_section_ordinal": 7,
+      "body": "当前项目已配置2台服务器，计划于2027年启动资源扩容。",
+      "copies": 4,
+      "claim_type": "current_project_quantity",
+      "support_relation_expected": "INDETERMINATE",
+      "verdict_sequence": [
+        "UNSUPPORTED",
+        "VERIFIED",
+        "UNSUPPORTED",
+        "VERIFIED"
+      ],
+      "expected": {
+        "native_m6_rejection_count": 2,
+        "legal_negative_result_count": 2,
+        "review_sections": 1,
+        "continue_independent_eighth": true,
+        "terminal_error": "VERIFIER_ADMISSION_INCOMPLETE",
+        "full_source_for_rejected_section": false
+      },
+      "input_fact_provenance": "TEST_SYNTHETIC_NOT_REAL_PROJECT",
+      "gold_refs": [
+        "RC1-GOLD-F-019",
+        "RC1-GOLD-F-023"
+      ],
+      "oracle": "STRUCTURAL_CLAIM_ADMISSION_ONLY",
+      "test_status": "NATIVE_FAKE_FULL8_PASS_THIS_TURN",
+      "actual_production_owner_dispatch": true,
+      "real_provider_calls": 0
+    },
+    {
+      "id": "SYN-BIZ-002",
+      "scenario": "NON_TARGET_VERIFIER_FAILURE",
+      "target_section_ordinal": 7,
+      "body": "当前项目已配置2台服务器，计划于2027年启动资源扩容。",
+      "copies": 4,
+      "claim_type": "current_project_quantity",
+      "support_relation_expected": "INDETERMINATE",
+      "verdict_sequence": [
+        "MALFORMED_JSON"
+      ],
+      "expected": {
+        "native_m6_rejection_count": 0,
+        "continue_independent_eighth": false,
+        "terminal_error_must_not_be": "VERIFIER_ADMISSION_INCOMPLETE",
+        "no_release": true
+      },
+      "input_fact_provenance": "TEST_SYNTHETIC_NOT_REAL_PROJECT",
+      "gold_refs": [],
+      "oracle": "TECHNICAL_FAILURE_ROUTING_ONLY",
+      "test_status": "NATIVE_FAKE_FULL8_PASS_THIS_TURN",
+      "actual_production_owner_dispatch": true,
+      "real_provider_calls": 0
+    },
+    {
+      "id": "SYN-BIZ-003",
+      "scenario": "ALL_LEGAL_NEGATIVE_CLAIMS",
+      "target_section_ordinal": 7,
+      "body": "当前项目已配置2台服务器，计划于2027年启动资源扩容。",
+      "copies": 4,
+      "claim_type": "current_project_quantity",
+      "support_relation_expected": "INDETERMINATE",
+      "verdict_sequence": [
+        "UNSUPPORTED",
+        "UNSUPPORTED",
+        "UNSUPPORTED",
+        "UNSUPPORTED"
+      ],
+      "expected": {
+        "native_m6_rejection_count": 0,
+        "legal_negative_result_count": 4,
+        "verified_result_count": 0,
+        "technical_failure_not_from_m6": true
+      },
+      "input_fact_provenance": "TEST_SYNTHETIC_NOT_REAL_PROJECT",
+      "gold_refs": [
+        "RC1-GOLD-F-003",
+        "RC1-GOLD-F-006"
+      ],
+      "oracle": "STRUCTURAL_ADMISSION_NOT_SEMANTIC_VALIDITY",
+      "test_status": "NATIVE_FAKE_FULL8_PASS_THIS_TURN",
+      "actual_production_owner_dispatch": true,
+      "real_provider_calls": 0
+    },
+    {
+      "id": "SYN-BIZ-004",
+      "scenario": "PWA004_ILLEGAL_VERIFIED_CONTINUE",
+      "target_section_ordinal": 7,
+      "body": "当前项目已配置2台服务器，计划于2027年启动资源扩容。",
+      "copies": 4,
+      "claim_type": "current_project_quantity",
+      "support_relation_expected": "INDETERMINATE",
+      "verdict_sequence": [
+        "VERIFIED",
+        "VERIFIED",
+        "VERIFIED",
+        "VERIFIED"
+      ],
+      "expected": {
+        "native_m6_rejection_count": 4,
+        "legal_negative_result_count": 0,
+        "continue_independent_eighth": true,
+        "terminal_error": "VERIFIER_ADMISSION_INCOMPLETE"
+      },
+      "input_fact_provenance": "TEST_SYNTHETIC_NOT_REAL_PROJECT",
+      "gold_refs": [
+        "RC1-GOLD-F-023"
+      ],
+      "oracle": "M6_REAL_PRODUCTION_BOUNDARY",
+      "test_status": "PRIOR_NATIVE_FULL8_PASS_REUSED_NOT_RERUN",
+      "actual_production_owner_dispatch": true,
+      "real_provider_calls": 0
+    }
+  ],
+  "guardrails": {
+    "real_provider_calls": 0,
+    "real_rag_provider_calls": 0,
+    "semantic_answer_scoring": false,
+    "manual_gold_promotion": false,
+    "production_code_edits": false,
+    "formal_e2e_authorization": false
+  },
+  "current_test_receipt": {
+    "new_native_full8_scenarios": 4,
+    "new_native_full8_passed": 4,
+    "business_matrix_and_native_document_verifier_tests": 17,
+    "business_matrix_and_native_document_verifier_passed": 17,
+    "selected_existing_regressions": 3,
+    "selected_existing_regressions_passed": 3,
+    "reported_final_pytest_outputs": [
+      "21 passed in 156.56s",
+      "3 passed in 93.63s"
+    ],
+    "initial_invalid_project_input_fixture_detected_and_replaced": true,
+    "all_legal_negative_final_status": "partial_success",
+    "all_legal_negative_canonical_run_status": "success",
+    "all_legal_negative_control_action": "OUTPUT_BEST_EFFORT",
+    "provider_calls": 0,
+    "formal_paid_e2e_calls": 0,
+    "gold_promotions": 0
+  }
+}

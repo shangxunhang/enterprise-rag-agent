@@ -1,11 +1,12 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SchemeCaptureService。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Generated from the stable v7.5.1 SchemeWriter behavior."""
+"""把一次方案生成运行沉淀为原始交互、评测候选、SFT 候选或拒绝样本。
+
+本服务只组织捕获内容和生命周期分类；幂等写入、尝试级延迟提交与训练可用性晋级由底层
+DataCapture 实现负责。成功运行形成 candidate，失败运行只能形成 runtime_rejected。
+"""
 
 
-from typing import Any, Dict
+import logging
+from typing import Any, Callable, Dict
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import SchemeWriterInputSchema, SchemeWriterOutputSchema
@@ -13,8 +14,12 @@ from schemas.status import ExecutionStatus
 from contracts.observability import DataCaptureSink
 
 
-# 阅读注释（类）：封装 scheme capture 服务，封装一组可复用的业务能力。
+LOGGER = logging.getLogger(__name__)
+
+
 class SchemeCaptureService:
+    """汇总生成、证据、模型和门禁血缘，并交给统一数据采集端口。"""
+
     def __init__(
         self,
         *,
@@ -23,31 +28,55 @@ class SchemeCaptureService:
     ) -> None:
         self.data_capture_recorder = data_capture_recorder
         self.agent_name = agent_name
-    """封装 scheme capture 服务，封装一组可复用的业务能力。"""
-    # 阅读注释（函数）：记录并沉淀 SchemeCaptureService。
+        self._storage_pressure_policy_resolver: Callable[[str], Any] | None = None
+        self.last_storage_pressure_policy: Any | None = None
+
+    def attach_storage_pressure_policy(
+        self,
+        resolver: Callable[[str], Any],
+    ) -> None:
+        """Attach one Wave-14 optional-capture suppression policy resolver."""
+
+        if not callable(resolver):
+            raise TypeError("storage pressure policy resolver must be callable")
+        current = self._storage_pressure_policy_resolver
+        if current is resolver:
+            return
+        if current is not None:
+            raise RuntimeError("storage pressure policy resolver is already attached")
+        self._storage_pressure_policy_resolver = resolver
+
     def capture(
         self,
         shared_state: SharedStateSchema,
         scheme_input: SchemeWriterInputSchema,
         output: SchemeWriterOutputSchema,
         rag_output: Dict[str, Any],
-    ) -> None:
-        """记录并沉淀 SchemeCaptureService。
+    ) -> bool:
+        """记录一次方案生成的运行快照和候选样本。
 
-        参数:
-            shared_state: shared 状态，具体约束请结合类型标注和调用方确认。
-            scheme_input: scheme 输入，具体约束请结合类型标注和调用方确认。
-            output: 输出，具体约束请结合类型标注和调用方确认。
-            rag_output: RAG 输出，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：draft.model_dump, dict, output.rag_context.model_dump, item.model_dump, rag_output.get, scheme_input.model_dump, join, output.hard_gate.model_dump。
+        正常存储状态下记录 ``raw_interactions``；只有最终状态成功时才创建 eval/SFT
+        candidate。SIF-13 HARD/CRITICAL 本地磁盘压力可在 payload 构造前抑制整次
+        optional capture，并显式暴露 observability degradation。失败草稿进入 eval 与
+        rejected 的 ``runtime_rejected`` 阶段。Capture 中的 RAG 与 Trace 字段是兼容
+        快照，canonical 运行、检索和模型用量仍由各自账本负责。
         """
         if self.data_capture_recorder is None:
-            return
+            return False
+        if self._storage_pressure_policy_resolver is not None:
+            policy = self._storage_pressure_policy_resolver(
+                f"run:{shared_state.run_id}"
+            )
+            self.last_storage_pressure_policy = policy
+            if bool(getattr(policy, "suppress_optional_capture", False)):
+                LOGGER.warning(
+                    "optional data capture suppressed by local-storage pressure: "
+                    "run_id=%s state=%s observability=%s",
+                    shared_state.run_id,
+                    getattr(getattr(policy, "state", None), "value", None),
+                    getattr(policy, "observability_status", None),
+                )
+                return False
         draft = output.generated_draft
         deliverable = output.deliverable_final_result
         payload = draft.model_dump() if draft else {}
@@ -137,3 +166,4 @@ class SchemeCaptureService:
                 capture_type="rejected",
                 **rejected_common,
             )
+        return True

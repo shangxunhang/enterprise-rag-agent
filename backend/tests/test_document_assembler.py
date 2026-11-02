@@ -7,8 +7,25 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
 from apps.enterprise_document.services.scheme_writer.document_assembler import (
     DocumentAssembler,
 )
+from contracts.evidence import build_evidence_bundle
+from rag.evidence.eligibility_policy import (
+    EVIDENCE_USE_ELIGIBILITY_POLICY_ID,
+    EVIDENCE_USE_ELIGIBILITY_POLICY_VERSION,
+)
 from schemas.citation import CitationBindingSchema, CitationSchema
-from schemas.rag import RAGContextSchema, RetrievedChunkSchema
+from schemas.claim import ClaimType
+from schemas.evidence_assessment import EvidenceAssessmentV2Schema, EvidenceRelevance
+from schemas.evidence_source import (
+    AuthorityLevel,
+    DocumentType,
+    EvidenceRole,
+    ProjectRelation,
+)
+from schemas.rag import (
+    EvidenceStatus,
+    RAGEvidenceAssessmentSchema,
+    RetrievedChunkSchema,
+)
 from schemas.status import ExecutionStatus
 
 
@@ -78,6 +95,73 @@ def _section(
     )
 
 
+def _bundle(
+    *,
+    status: str,
+    citations: list[CitationSchema] | None = None,
+    details: dict | None = None,
+    with_evidence: bool = True,
+):
+    chunks = [_chunk("c1", 1, parent_id="parent_1")] if with_evidence else []
+    bundle = build_evidence_bundle(
+        query="evidence query",
+        rewritten_queries=[],
+        selected_chunks=chunks,
+        dropped_chunks=[],
+        citations=list(citations or []),
+        trace=None,
+        max_context_chars=6000,
+    )
+    normalized = status.strip().lower()
+    if normalized == "not_assessed":
+        assessment = RAGEvidenceAssessmentSchema(
+            assessment_state="pending",
+            status=None,
+            evidence_available=bool(chunks),
+            selected_evidence_count=len(chunks),
+            citation_count=len(citations or []),
+            details=dict(details or {}),
+        )
+    else:
+        evidence_status = EvidenceStatus(normalized)
+        assessment = RAGEvidenceAssessmentSchema(
+            assessment_state="completed",
+            status=evidence_status,
+            evidence_available=bool(chunks),
+            selected_evidence_count=len(chunks),
+            citation_count=len(citations or []),
+            coverage_ratio=1.0 if evidence_status is EvidenceStatus.SUFFICIENT else 0.0,
+            details=dict(details or {}),
+        )
+    item_assessments = []
+    if chunks and assessment.assessment_state == "completed":
+        item_assessments = [
+            EvidenceAssessmentV2Schema(
+                evidence_id=bundle.selected_evidence_ids[0],
+                document_id=chunks[0].doc_id,
+                document_type=DocumentType.CURRENT_PROJECT_REQUIREMENT,
+                evidence_role=EvidenceRole.PROJECT_FACT,
+                project_relation=ProjectRelation.CURRENT_PROJECT,
+                authority_level=AuthorityLevel.AUTHORITATIVE,
+                eligibility_semantic_policy_id=EVIDENCE_USE_ELIGIBILITY_POLICY_ID,
+                eligibility_semantic_policy_version=EVIDENCE_USE_ELIGIBILITY_POLICY_VERSION,
+                semantic_relevance=1.0,
+                eligibility=True,
+                relevance=EvidenceRelevance.RELEVANT,
+                supported_topics=["document assembler fixture"],
+                supported_claim_types=[ClaimType.GENERAL_METHOD],
+                reason_codes=["DOCUMENT_ASSEMBLER_FIXTURE_ELIGIBLE"],
+            )
+        ]
+    return bundle.model_copy(
+        update={
+            "assessment": assessment,
+            "item_assessments": item_assessments,
+        },
+        deep=True,
+    )
+
+
 def _evidence(
     title: str,
     *,
@@ -87,19 +171,7 @@ def _evidence(
     return SectionEvidenceBundleSchema(
         section_id=f"section_{title}",
         section_title=title,
-        retrieval_scope="section",
-        query=f"{title} query",
-        rag_context=RAGContextSchema(
-            context_text="context",
-            used_context_chunk_ids=["parent_1"],
-            matched_chunk_ids=["c1"],
-            used_doc_ids=["doc_1"],
-            used_context_chars=7,
-            context_item_count=1,
-        ),
-        retrieved_chunks=[_chunk("c1", 1, parent_id="parent_1")],
-        citations=citations or [],
-        metadata={"evidence_assessment_status": status},
+        evidence_bundle=_bundle(status=status, citations=citations),
     )
 
 
@@ -136,8 +208,9 @@ def test_document_assembler_builds_deterministic_document_aggregate() -> None:
             section_evidence=[
                 _evidence("技术方案", status="sufficient", citations=[_citation()])
             ],
-            document_evidence_available=True,
-            document_assessment_status="sufficient",
+            document_evidence_bundle=_bundle(
+                status="sufficient", citations=[_citation()]
+            ),
             citation_required_sections=["技术方案"],
             created_at="2026-07-22T00:00:00+00:00",
             updated_at="2026-07-22T00:01:00+00:00",
@@ -173,8 +246,7 @@ def test_required_section_insufficient_evidence_overrides_document_sufficient() 
             required_sections=["技术方案"],
             sections=[_section("section_001", "技术方案", 1, "内容")],
             section_evidence=[_evidence("技术方案", status="insufficient")],
-            document_evidence_available=True,
-            document_assessment_status="sufficient",
+            document_evidence_bundle=_bundle(status="sufficient"),
             citation_required_sections=["技术方案"],
             created_at="2026-07-22T00:00:00+00:00",
             updated_at="2026-07-22T00:01:00+00:00",
@@ -201,8 +273,7 @@ def test_final_required_section_assessments_override_coarse_document_insufficien
                 _evidence("技术方案", status="sufficient"),
                 _evidence("安全设计", status="sufficient"),
             ],
-            document_evidence_available=True,
-            document_assessment_status="insufficient",
+            document_evidence_bundle=_bundle(status="insufficient"),
             citation_required_sections=["技术方案", "安全设计"],
             created_at="2026-07-22T00:00:00+00:00",
             updated_at="2026-07-22T00:01:00+00:00",
@@ -227,8 +298,7 @@ def test_missing_required_section_assessment_falls_back_to_document_status() -> 
             section_evidence=[
                 _evidence("技术方案", status="sufficient"),
             ],
-            document_evidence_available=True,
-            document_assessment_status="insufficient",
+            document_evidence_bundle=_bundle(status="insufficient"),
             citation_required_sections=["技术方案", "安全设计"],
             created_at="2026-07-22T00:00:00+00:00",
             updated_at="2026-07-22T00:01:00+00:00",
@@ -250,8 +320,9 @@ def test_not_assessed_evidence_does_not_fall_back_to_availability() -> None:
             section_evidence=[
                 _evidence("项目概述", status="not_assessed", citations=[_citation()])
             ],
-            document_evidence_available=False,
-            document_assessment_status="not_assessed",
+            document_evidence_bundle=_bundle(
+                status="not_assessed", with_evidence=False
+            ),
             citation_required_sections=["项目概述"],
             created_at="2026-07-22T00:00:00+00:00",
             updated_at="2026-07-22T00:01:00+00:00",

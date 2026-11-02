@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from context_manager.token_estimator import DeterministicTokenEstimator
-from rag.context.context_packer import ContextPack, ContextPacker
+from rag.context.context_packer import ContextPack, ContextPacker, PreparedPromptProjection
 
 
 @dataclass(frozen=True)
@@ -32,27 +31,43 @@ class ContextRequirements:
         *,
         defaults: "ContextRequirements",
     ) -> "ContextRequirements":
+        """Apply caller constraints without allowing internal limits to expand."""
+
         raw = dict(value or {})
+
+        def constrained_int(
+            public_name: str,
+            *,
+            internal_default: int,
+            legacy_name: str | None = None,
+        ) -> int:
+            requested = raw.get(public_name)
+            if requested is None and legacy_name is not None:
+                # TODO(Interface V2 post-Phase 2): retire this RAG-internal
+                # compatibility key after all direct engine tests migrate.
+                # It may only narrow the limit and never become public authority.
+                requested = raw.get(legacy_name)
+            if requested is None:
+                return int(internal_default)
+            return min(int(internal_default), max(1, int(requested)))
+
         return cls(
-            model_context_window=max(
-                512,
-                int(raw.get("model_context_window", defaults.model_context_window)),
+            # These two values are RAG internal config and are never caller-controlled.
+            model_context_window=defaults.model_context_window,
+            prompt_reserved_tokens=defaults.prompt_reserved_tokens,
+            section_token_budget=constrained_int(
+                "max_context_tokens",
+                internal_default=defaults.section_token_budget,
+                legacy_name="section_token_budget",
             ),
-            prompt_reserved_tokens=max(
-                0,
-                int(raw.get("prompt_reserved_tokens", defaults.prompt_reserved_tokens)),
+            max_evidence_items=constrained_int(
+                "max_context_items",
+                internal_default=defaults.max_evidence_items,
+                legacy_name="max_evidence_items",
             ),
-            section_token_budget=max(
-                256,
-                int(raw.get("section_token_budget", defaults.section_token_budget)),
-            ),
-            max_evidence_items=max(
-                1,
-                int(raw.get("max_evidence_items", defaults.max_evidence_items)),
-            ),
-            max_context_chars=max(
-                256,
-                int(raw.get("max_context_chars", defaults.max_context_chars)),
+            max_context_chars=constrained_int(
+                "max_context_chars",
+                internal_default=defaults.max_context_chars,
             ),
         )
 
@@ -94,34 +109,32 @@ class ContextGate:
             or ""
         )
 
-    def pack(
-        self,
-        results: Iterable[dict[str, Any]],
-        *,
-        requirements: ContextRequirements | None = None,
-    ) -> ContextPack:
+    def pack(self, results: Iterable[dict[str, Any]], *,
+             requirements: ContextRequirements | None = None,
+             prepared_projection: PreparedPromptProjection | None = None) -> ContextPack:
         resolved = requirements or self.default_requirements
-        materialized = list(results)
-        estimated_tokens = sum(
-            DeterministicTokenEstimator.estimate(self._candidate_text(item))
-            for item in materialized[: resolved.max_evidence_items]
-        )
-        threshold = max(
-            1,
-            int(resolved.evidence_token_budget * self.long_context_threshold_ratio),
-        )
-        packer = (
-            self.lost_in_middle_packer
-            if estimated_tokens > threshold
-            else self.default_packer
-        )
-        pack = packer.pack(
-            materialized,
+        owner = self.default_packer
+        projection = (prepared_projection if prepared_projection is not None
+                      else owner.prepare_projection(results, max_items=resolved.max_evidence_items))
+        owner._assert_prepared_representation(projection, max_items=resolved.max_evidence_items)
+        self.lost_in_middle_packer._assert_prepared_representation(
+            projection, max_items=resolved.max_evidence_items)
+        # Explicit common cap is resolved before admission. Both actors render
+        # the same effective budget; a smaller actor default cannot silently
+        # evict members after presentation selection or trigger readmission.
+        char_budget = max(1, min(resolved.max_context_chars,
+                                 owner.max_context_chars,
+                                 self.lost_in_middle_packer.max_context_chars))
+        admission = owner.admit_projection(projection,
             token_budget=resolved.evidence_token_budget,
-            max_items=resolved.max_evidence_items,
-            char_budget=resolved.max_context_chars,
-        )
-        return pack
+            max_items=resolved.max_evidence_items, char_budget=char_budget)
+        threshold = max(1, int(resolved.evidence_token_budget * self.long_context_threshold_ratio))
+        packer = (self.lost_in_middle_packer
+                  if admission.max_render_cost.tokens > threshold
+                  else owner)
+        return packer.pack((), token_budget=admission.token_budget,
+            max_items=resolved.max_evidence_items, char_budget=admission.char_budget,
+            prepared_projection=projection, prepared_admission=admission)
 
     def execution_metadata(self) -> dict[str, Any]:
         return {

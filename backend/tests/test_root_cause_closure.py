@@ -55,6 +55,7 @@ from schemas.rag import RAGContextSchema
 from schemas.status import ExecutionStatus
 from schemas.task import TaskSchema
 from task.task_manager import JsonlTaskManager
+from test_document_assembler import _bundle as _canonical_document_bundle
 
 
 NOW = "2026-07-24T00:00:00+00:00"
@@ -106,7 +107,10 @@ def test_canonical_project_input_rejects_same_adversarial_inputs_everywhere(
 ) -> None:
     with pytest.raises(ValidationError):
         ProjectInputSchema.model_validate(invalid, strict=True)
-    with pytest.raises(ValidationError):
+    # The current new-ingress boundary rejects a nonmapping before Pydantic.
+    expected_error = TypeError if isinstance(invalid, list) else ValidationError
+    expected_message = "^ProjectInput must be a schema or mapping$" if isinstance(invalid, list) else None
+    with pytest.raises(expected_error, match=expected_message):
         ProjectInputFactory().build(
             "task_root",
             "生成方案",
@@ -116,7 +120,8 @@ def test_canonical_project_input_rejects_same_adversarial_inputs_everywhere(
 
 
 def test_legal_project_input_matches_direct_and_production_validation() -> None:
-    payload = _project_input_payload()
+    # Explicit current new-task caller; retain the original historical helper.
+    payload = {**_project_input_payload(), "schema_version": "project_input_v3", "business_goal": "生成方案"}
     direct = ProjectInputSchema.model_validate(payload, strict=True)
     production = ProjectInputFactory().build(
         "task_root",
@@ -649,9 +654,7 @@ def _bundle(section: SchemeSectionSchema, status: str) -> SectionEvidenceBundleS
     return SectionEvidenceBundleSchema(
         section_id=section.section_id,
         section_title=section.section_title,
-        query=section.section_title,
-        rag_context=RAGContextSchema(context_text=""),
-        metadata={"evidence_assessment_status": status},
+        evidence_bundle=_canonical_document_bundle(status=status),
     )
 
 
@@ -673,8 +676,6 @@ def _assemble(
                 _bundle(section, status)
                 for section, status in zip(sections, statuses)
             ],
-            document_evidence_available=True,
-            document_assessment_status="sufficient",
             citation_required_sections=citation_required_sections,
             created_at=NOW,
             updated_at=NOW,

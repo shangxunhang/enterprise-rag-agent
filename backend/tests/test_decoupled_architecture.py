@@ -96,21 +96,13 @@ def test_shared_state_writer_keeps_runtime_mutation_centralized() -> None:
         None
 
     阅读提示:
-        主要直接调用：_state, SharedStateWriter, writer.set_evidence_context, writer.set_final_result。
+        Phase 4C 后 Evidence 不再写入 SharedState；这里只验证其他运行时 mutation 仍集中由 writer 完成。
     """
     state = _state()
     writer = SharedStateWriter()
-    writer.set_evidence_context(
-        state,
-        query="q",
-        context_text="ctx",
-        retrieved_chunks=[{"chunk_id": "c1"}],
-        citations=[{"citation_id": "C1"}],
-        used_doc_ids=["d1"],
-        evidence_sufficient=True,
-    )
+    assert not hasattr(writer, "set_evidence_context")
+    assert "evidence" not in state.context_bundle.__class__.model_fields
     writer.set_final_result(state, {"status": "success"})
-    assert state.context_bundle.evidence.query == "q"
     assert state.final_result == {"status": "success"}
 
 
@@ -208,13 +200,34 @@ def test_fixed_chunkers_share_algorithm_but_preserve_legacy_metadata() -> None:
     阅读提示:
         主要直接调用：chunk_document, LegacyFixedChunker, CanonicalFixedChunker。
     """
-    document = {"doc_id": "doc_1", "text": "abcdefgh", "metadata": {}}
+    original_extra = {
+        "caller_marker": "preserved",
+        "chunk_type": "stale_caller_value",
+    }
+    document = {
+        "doc_id": "doc_1",
+        "text": "abcdefgh",
+        "metadata": {"extra": original_extra},
+    }
     legacy = LegacyFixedChunker(chunk_size=4, chunk_overlap=1).chunk_document(document)
     canonical = CanonicalFixedChunker(chunk_size=4, chunk_overlap=1).chunk_document(document)
+
     assert [item["text"] for item in legacy] == [item["text"] for item in canonical]
+    assert legacy[0]["metadata"]["chunk_type"] == "fixed_size"
     assert legacy[0]["metadata"]["extra"]["chunk_type"] == "fixed_size"
+    assert canonical[0]["metadata"]["chunk_type"] == "fixed"
     assert canonical[0]["metadata"]["extra"]["chunk_type"] == "fixed"
     assert canonical[0]["metadata"]["extra"]["start_char"] == 0
+    assert canonical[0]["metadata"]["extra"]["end_char"] == 4
+    assert legacy[0]["metadata"]["extra"]["caller_marker"] == "preserved"
+    assert canonical[0]["metadata"]["extra"]["caller_marker"] == "preserved"
+    assert legacy[0]["metadata"]["extra"] is not original_extra
+    assert canonical[0]["metadata"]["extra"] is not original_extra
+    assert document["metadata"]["extra"] is original_extra
+    assert original_extra == {
+        "caller_marker": "preserved",
+        "chunk_type": "stale_caller_value",
+    }
 
 
 # 阅读注释（函数）：处理 测试 运行时 packages do not depend on 评测 package 相关逻辑。

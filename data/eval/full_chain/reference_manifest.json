@@ -1,0 +1,18 @@
+{
+  "files": [
+    {
+      "path": "reference_candidates.jsonl",
+      "sha256": "62994dd75d7cb810d2f452751eafb364142f90197dca9e2505c272a3891759f0"
+    }
+  ],
+  "review_status": {
+    "G1": "PROVISIONAL",
+    "G2": "PROVISIONAL",
+    "G3": "PROVISIONAL",
+    "G4": "PROVISIONAL",
+    "G5": "PROVISIONAL"
+  },
+  "schema_version": "full_chain_reference_manifest_v1",
+  "trusted_reviewers": {},
+  "version": "synthetic-candidates-v1"
+}

@@ -15,7 +15,8 @@ class EvidenceMapper:
     @staticmethod
     def context_text(item: dict[str, Any]) -> str:
         return str(
-            item.get("context_text")
+            item.get("prompt_visible_text")
+            or item.get("context_text")
             or item.get("parent_text")
             or item.get("text")
             or item.get("context_text_preview")
@@ -56,6 +57,11 @@ class EvidenceMapper:
                 "pre_output_rank",
                 item.get("pre_context_rank", item.get("rank")),
             )
+            prompt_visible_text = str(
+                item.get("prompt_visible_text") or ""
+            ).strip()
+            if prompt_visible_text:
+                metadata["prompt_visible_text"] = prompt_visible_text
             sources = (
                 metadata.get("retrieval_sources")
                 or item.get("retrieval_sources")
@@ -83,7 +89,18 @@ class EvidenceMapper:
                     page_end=item.get("page_end"),
                     retrieval_sources=list(dict.fromkeys(sources)),
                     metadata=metadata,
-                    extra={"source": "parent_child_retrieval"},
+                    extra={
+                        **dict(item.get("extra") or {}),
+                        "source": "parent_child_retrieval",
+                        "tenant_id": item.get("tenant_id"),
+                        "kb_id": item.get("kb_id"),
+                        "file_id": item.get("file_id"),
+                        "document_type": item.get("document_type"),
+                        "evidence_role": item.get("evidence_role"),
+                        "project_relation": item.get("project_relation"),
+                        "project_id": item.get("project_id"),
+                        "authority_level": item.get("authority_level"),
+                    },
                 )
             )
         return chunks
@@ -161,7 +178,18 @@ class EvidenceMapper:
                     extra={
                         "expanded_from_parent_match": (
                             source.expanded_from_parent_match
-                        )
+                        ),
+                        **(
+                            {
+                                "prompt_visible_text": str(
+                                    chunk.metadata.get("prompt_visible_text") or ""
+                                ).strip()
+                            }
+                            if str(
+                                chunk.metadata.get("prompt_visible_text") or ""
+                            ).strip()
+                            else {}
+                        ),
                     },
                 )
         return citations

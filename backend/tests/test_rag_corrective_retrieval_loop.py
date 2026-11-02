@@ -6,7 +6,7 @@ from rag.application.parent_child_retrieval import ParentChildRetrievalPipeline
 from rag.planning.retrieval_planner import RetrievalPlan
 from rag.plugins.correction_gates import EvidenceSufficiencyCorrectionGate
 from rag.plugins.corrective_query_planners import SectionGapCorrectiveQueryPlanner
-from rag.ports.quality import EvidenceAssessment
+from rag.ports.quality import EvidenceAssessment, EvidenceJudgement
 from rag.query.query_expander import QueryExpansionResult
 from rag.schema.candidate import CandidateSet
 
@@ -226,6 +226,64 @@ def test_pipeline_always_reassesses_after_full_corrective_retrieval() -> None:
     assert output.query_expansion.metadata["configured_evidence_assessor"][
         "always_executed"
     ] is True
+
+
+class _FinalIrrelevantAssessor:
+    def assess(self, *, query, results, runtime_context=None) -> EvidenceAssessment:
+        del query, runtime_context
+        return EvidenceAssessment(
+            sufficient=False,
+            confidence=0.0,
+            reason="all candidates are irrelevant",
+            item_judgements=tuple(
+                EvidenceJudgement(
+                    evidence_id=str(item["parent_chunk_id"]),
+                    relevance="irrelevant",
+                    confidence=0.0,
+                    reason="not usable for the current section",
+                )
+                for item in results
+            ),
+        )
+
+    def execution_metadata(self):
+        return {"mode": "final_irrelevant"}
+
+
+def test_final_crag_assessment_filters_irrelevant_candidates_before_governance() -> None:
+    pipeline = ParentChildRetrievalPipeline(
+        retrievers=[_Retriever()],
+        source_fusion=_SourceFusion(),
+        query_fusion=_QueryFusion(),
+        candidate_enricher=_Enricher(),
+        reranker=_Reranker(),
+        query_transform_selector=_Selector(),
+        retrieval_planner=_Planner(correction_budget=0),
+        evidence_assessor=_FinalIrrelevantAssessor(),
+        corrective_retrieval_gate=EvidenceSufficiencyCorrectionGate(),
+        corrective_query_planner=_CountingQueryPlanner(),
+    )
+
+    output = pipeline.run(
+        "storage resource construction plan",
+        filter_expr=None,
+        keyword_doc_ids=None,
+        extra_metadata={},
+    )
+
+    assert output.results == []
+    assert len(output.reranked_results) == 1
+    judgement = output.reranked_results[0]["metadata"]["crag_final_judgement"]
+    assert judgement["relevance"] == "irrelevant"
+    assert judgement["confidence"] == 0.0
+    assert output.evidence_quality["crag_final_filter"] == {
+        "applied": True,
+        "assessment_sufficient": False,
+        "input_count": 1,
+        "output_count": 0,
+        "rejected_irrelevant_ids": ["parent-insufficient"],
+        "unjudged_ids": [],
+    }
 
 
 def test_query_plan_normalizes_duplicates_and_original_query() -> None:

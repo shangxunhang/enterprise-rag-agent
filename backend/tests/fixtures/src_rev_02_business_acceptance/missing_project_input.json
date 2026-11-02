@@ -1,0 +1,84 @@
+{
+  "schema_version": "project_input_v3",
+  "task_id": "task_sr02_sim_missing",
+  "tenant_id": "sr02_simulated_missing",
+  "project_name": "示例市政务云扩容项目",
+  "current_project_id": "sr02_simulated_missing",
+  "task_type": "scheme_generation",
+  "user_query": "请根据已提供的项目输入编制政务云扩容建设方案，按指定八节组织正文。在项目背景的资料完整性说明中集中列示全局缺项；各章节只展开与本章结论相关的未决影响。已提供的项目事实应正常使用，未提供的参数不得推测为客户已确认事实。",
+  "source_materials": [],
+  "generation_requirements": {
+    "required_sections": [
+      "项目背景",
+      "建设目标",
+      "总体架构",
+      "计算资源建设方案",
+      "存储资源建设方案",
+      "网络资源建设方案",
+      "安全设计",
+      "实施与验收建议"
+    ],
+    "need_citation": false,
+    "citation_required_sections": [],
+    "need_human_review": true,
+    "min_section_chars": 80,
+    "max_section_retries": 1,
+    "max_context_chars": 6000,
+    "max_tokens_per_section": 1024,
+    "target_section_chars": 3000,
+    "citation_style": "citation_id",
+    "language": "zh-CN",
+    "tone": "formal",
+    "extra": {}
+  },
+  "output_schema": {
+    "document_title": "示例市政务云扩容建设方案",
+    "output_format": "markdown",
+    "required_sections": [
+      "项目背景",
+      "建设目标",
+      "总体架构",
+      "计算资源建设方案",
+      "存储资源建设方案",
+      "网络资源建设方案",
+      "安全设计",
+      "实施与验收建议"
+    ],
+    "required_fields": [],
+    "heading_style": "numbered_chinese",
+    "extra": {}
+  },
+  "metadata": {
+    "allow_demo_defaults": false,
+    "fixture_class": "SIMULATED_ACCEPTANCE_FIXTURE",
+    "fixture_variant": "missing",
+    "fixture_scope": "DETERMINISTIC_TEST_ONLY"
+  },
+  "project_type": "government_cloud",
+  "customer_type": "government",
+  "business_goal": "在已确认的组织和计算资源事实范围内编制政务云扩容建设方案。",
+  "target_documents": ["政务云扩容建设方案"],
+  "total_staff": 640,
+  "functional_department_count": 6,
+  "business_department_count": 12,
+  "department_groups": [],
+  "hardware_resources": [
+    {
+      "resource_type": "compute_server",
+      "device_model": "SIM-MX900",
+      "server_count": 18
+    }
+  ],
+  "target_templates": [],
+  "policy_requirements": ["不得把未提供的资源参数写成已确认项目事实。"],
+  "manual_boundaries": [
+    {
+      "item": "投资预算审批",
+      "handled_by": "human",
+      "description": "方案只说明审批边界，不代替人工审批。"
+    }
+  ],
+  "missing_information": ["计算资源访问方式"],
+  "conflicting_information": [],
+  "extra": {}
+}

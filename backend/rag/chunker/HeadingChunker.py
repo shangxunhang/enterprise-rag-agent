@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：SectionBlock、HeadingChunker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-# src/rag_template/chunker/HeadingChunker.py
+"""按 Markdown、中文章节和数字编号识别文档结构的标题 Chunker。
+
+正常章节整体保留；超过 Token 上限的章节交给 RecursiveChunker 继续拆分，同时保留标题、
+层级、路径、父级章节标识和原文字符偏移。该实现适合有明显目录结构的政策、规范和方案。
+"""
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -12,10 +12,9 @@ from rag.chunker.RecursiveChunker import RecursiveChunker
 from rag.schema.Chunk_Schema import build_chunk
 
 
-# 阅读注释（类）：封装 章节 block，集中封装相关状态、依赖和行为。
 @dataclass
 class SectionBlock:
-    """封装 章节 block，集中封装相关状态、依赖和行为。"""
+    """标题解析后的一个连续章节及其层级路径与原文区间。"""
     title: Optional[str]
     level: Optional[int]
     section_path: Optional[str]
@@ -24,7 +23,6 @@ class SectionBlock:
     end_char: Optional[int]
 
 
-# 阅读注释（类）：封装 heading chunker，集中封装相关状态、依赖和行为。
 class HeadingChunker(BaseChunker):
     """
     标题 / 章节切分器。
@@ -48,38 +46,19 @@ class HeadingChunker(BaseChunker):
     CN_PAREN_ENUM_RE = re.compile(r"^（[一二三四五六七八九十]+）\s*.*")
     NUMBERED_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:[\.、)]|\s+)\s*.+")
 
-    # 阅读注释（函数）：初始化 HeadingChunker，保存运行所需的依赖、配置或状态。
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
-        """初始化 HeadingChunker，保存运行所需的依赖、配置或状态。
-
-        参数:
-            chunk_size: 文本块 size，具体约束请结合类型标注和调用方确认。
-            chunk_overlap: 文本块 overlap，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：__init__, super, RecursiveChunker。
-        """
+        """初始化标题策略，并创建同预算的 Token 级递归兜底器。"""
         super().__init__(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         self.recursive_chunker = RecursiveChunker(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
 
-    # 阅读注释（函数）：处理 文本块 文档 相关逻辑。
     def chunk_document(self, document: Dict) -> List[Dict]:
-        """处理 文本块 文档 相关逻辑。
+        """按章节切分文档，并对超长章节递归生成带共同 parent ID 的子块。
 
-        参数:
-            document: 文档，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict]
-
-        阅读提示:
-            主要直接调用：document.get, self.split_sections, enumerate, section.text.strip, self.recursive_chunker.token_count, chunks.append, build_chunk, self.recursive_chunker.split_text_with_offsets。
+        未超限章节使用 ``heading`` 类型且没有父级；递归拆分结果使用
+        ``heading_recursive``，相对偏移会转换为原文绝对偏移。
         """
         doc_id = document["doc_id"]
         text = document.get("text", "")
@@ -153,18 +132,11 @@ class HeadingChunker(BaseChunker):
 
         return chunks
 
-    # 阅读注释（函数）：处理 split sections 相关逻辑。
     def split_sections(self, text: str) -> List[SectionBlock]:
-        """处理 split sections 相关逻辑。
+        """逐行识别标题并维护层级栈，返回有序章节块。
 
-        参数:
-            text: 待处理文本。
-
-        返回:
-            List[SectionBlock]
-
-        阅读提示:
-            主要直接调用：text.strip, self._iter_lines_with_offsets, line.strip, self.detect_heading, flush_current, heading_stack.append, join, current_lines.append。
+        标题出现时先提交上一章节，再删除不低于当前层级的栈项并压入新标题；没有标题的
+        前言会形成 ``title=None`` 的独立 SectionBlock。
         """
         if not text or not text.strip():
             return []
@@ -180,16 +152,8 @@ class HeadingChunker(BaseChunker):
         current_start: Optional[int] = None
         current_end: Optional[int] = None
 
-        # 阅读注释（函数）：处理 flush current 相关逻辑。
         def flush_current():
-            """处理 flush current 相关逻辑。
-
-            返回:
-                未显式标注；请结合调用方和实际返回语句理解。
-
-            阅读提示:
-                主要直接调用：strip, join, sections.append, SectionBlock。
-            """
+            """把当前行 Buffer 提交为章节，并重置正文与偏移状态。"""
             nonlocal current_lines, current_title, current_level, current_path, current_start, current_end
             block_text = "\n".join(current_lines).strip()
             if block_text:
@@ -233,18 +197,10 @@ class HeadingChunker(BaseChunker):
         flush_current()
         return sections
 
-    # 阅读注释（函数）：处理 detect heading 相关逻辑。
     def detect_heading(self, line: str) -> Optional[Tuple[int, str]]:
-        """处理 detect heading 相关逻辑。
+        """识别常见标题形式并映射到统一 1–6 级层级。
 
-        参数:
-            line: line，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            Optional[Tuple[int, str]]
-
-        阅读提示:
-            主要直接调用：self.MARKDOWN_RE.match, len, md.group, re.sub, self.CN_PART_RE.match, self.CN_CHAPTER_RE.match, self.CN_SECTION_RE.match, self.CN_ARTICLE_RE.match。
+        数字编号 ``1/1.1/1.1.1`` 从二级开始，避免与 Markdown 一级标题争夺最高层级。
         """
         if not line:
             return None
@@ -276,19 +232,8 @@ class HeadingChunker(BaseChunker):
 
         return None
 
-    # 阅读注释（函数）：处理 iter lines with offsets 相关逻辑。
     def _iter_lines_with_offsets(self, text: str) -> List[Tuple[str, int, int]]:
-        """处理 iter lines with offsets 相关逻辑。
-
-        参数:
-            text: 待处理文本。
-
-        返回:
-            List[Tuple[str, int, int]]
-
-        阅读提示:
-            主要直接调用：text.splitlines, len, lines.append。
-        """
+        """按 ``splitlines`` 顺序生成每行正文及其原文半开字符区间。"""
         lines: List[Tuple[str, int, int]] = []
         cursor = 0
         for raw_line in text.splitlines():

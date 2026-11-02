@@ -1,17 +1,16 @@
-# =============================================================================
-# 中文阅读说明：Agent 与 Workflow 模块，负责任务路由、状态编排、工具调用和结果协议。
-# 主要定义：SharedStateReader、SharedStateWriter。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Canonical read/write access to ``SharedStateSchema``.
+"""提供 ``SharedStateSchema`` 的规范读取和受控写入入口。
 
-The adapter keeps legacy compatibility fields synchronized while preventing
-application services from scattering direct dictionary mutation throughout the
-codebase.
+新代码应先写 ``context_bundle`` 等规范字段。本适配器是迁移期 ``contexts``、
+``structured_facts`` 等兼容投影的唯一所有者，兼容字段只能由规范状态单向生成，
+不能反向覆盖规范事实源。
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, Iterable, Optional
+
+from core.hashing import canonical_sha256
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from schemas.agent import AgentResultSchema
@@ -19,22 +18,23 @@ from schemas.common import ErrorSchema
 from schemas.context import WorkflowStepStateSchema
 
 
-# 阅读注释（类）：封装 shared 状态 reader，集中封装相关状态、依赖和行为。
 class SharedStateReader:
-    """封装 shared 状态 reader，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：处理 项目 输入 candidates 相关逻辑。
+    """集中封装仍需兼容多来源读取的共享状态查询。"""
+
     def project_input_candidates(self, state: SharedStateSchema) -> list[Any]:
-        """处理 项目 输入 candidates 相关逻辑。
+        """按可信度顺序返回迁移期可能存在的项目输入候选。
 
-        参数:
-            state: 工作流共享状态。
+        Args:
+            state: 当前工作流共享状态。
 
-        返回:
-            list[Any]
+        Returns:
+            固定顺序候选列表：规范业务上下文、requirements 兼容载荷、task 快照、
+            legacy contexts 视图。调用方应选择首个满足自身 Schema 的值。
 
-        阅读提示:
-            主要直接调用：get。
+        该方法只为兼容旧状态存在；新生产路径应直接读取第一个规范字段。
         """
+
+        # 规范 context_bundle 始终排在第一位，旧字段不得获得更高优先级。
         return [
             state.context_bundle.business.project_input,
             (state.requirements or {}).get("project_input"),
@@ -42,36 +42,31 @@ class SharedStateReader:
             (state.contexts or {}).get("project_input"),
         ]
 
-    # 阅读注释（函数）：获取 Agent 结果。
     def get_agent_result(
         self,
         state: SharedStateSchema,
         agent_name: str,
     ) -> Optional[Dict[str, Any]]:
-        """获取 Agent 结果。
+        """读取指定 Agent 最近登记的序列化结果。
 
-        参数:
-            state: 工作流共享状态。
-            agent_name: Agent 名称，具体约束请结合类型标注和调用方确认。
+        Args:
+            state: 当前工作流共享状态。
+            agent_name: 要查询的稳定 Agent 名称。
 
-        返回:
-            Optional[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：state.agent_results.get。
+        Returns:
+            已保存结果字典；该 Agent 尚未执行时返回 ``None``。
         """
+
         return state.agent_results.get(agent_name)
 
 
-# 阅读注释（类）：封装 shared 状态 writer，集中封装相关状态、依赖和行为。
 class SharedStateWriter:
-    """Canonical state writer and the only owner of compatibility projections.
+    """集中修改规范共享状态并维护必要的单向兼容投影。
 
-    New code writes canonical state first. Legacy ``contexts`` fields may be
-    projected here for migration compatibility, but compatibility data must
-    never be used to overwrite canonical state.
+    所有方法原地修改传入状态。写入顺序始终以规范字段为先，随后才同步顶层或
+    ``contexts`` 兼容视图，防止旧结构成为独立事实源。
     """
-    # 阅读注释（函数）：设置 项目 输入 normalization。
+
     def set_project_input_normalization(
         self,
         state: SharedStateSchema,
@@ -84,192 +79,134 @@ class SharedStateWriter:
         conflicting_information: list[str],
         manual_boundaries: list[Dict[str, Any]],
     ) -> None:
-        """设置 项目 输入 normalization。
+        """发布项目输入规范化结果及迁移期兼容视图。
 
-        参数:
-            state: 工作流共享状态。
-            project_input: 规范化后的项目输入。
-            table_agent_output: table Agent 输出，具体约束请结合类型标注和调用方确认。
-            structured_facts: structured facts，具体约束请结合类型标注和调用方确认。
-            source_materials: source materials，具体约束请结合类型标注和调用方确认。
-            missing_information: missing information，具体约束请结合类型标注和调用方确认。
-            conflicting_information: conflicting information，具体约束请结合类型标注和调用方确认。
-            manual_boundaries: manual boundaries，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
+        Args:
+            state: 要更新的共享状态。
+            project_input: 规范化后的完整项目输入。
+            table_agent_output: 表格/输入解析 Agent 的结构化输出。
+            structured_facts: 从输入中确认的结构化事实集合。
+            source_materials: 规范化后的来源材料声明。
+            missing_information: 当前输入缺失的必要信息。
+            conflicting_information: 输入中检测到的冲突事实。
+            manual_boundaries: 明确要求人工处理、不由模型生成的边界。
         """
-        state.context_bundle.business.project_input = project_input
-        state.context_bundle.business.source_materials = source_materials
-        state.context_bundle.business.missing_information = missing_information
-        state.context_bundle.business.conflicting_information = conflicting_information
-        state.context_bundle.business.manual_boundaries = manual_boundaries
+
+        # 第一步：ProjectInput 在一个 run 内只能首次发布或精确幂等重放。
+        business = state.context_bundle.business
+        existing_project_input = dict(business.project_input or {})
+        if existing_project_input:
+            if canonical_sha256(existing_project_input) != canonical_sha256(project_input):
+                raise ValueError(
+                    "canonical ProjectInput cannot change within the same active run"
+                )
+        else:
+            business.project_input = deepcopy(project_input)
+        business.source_materials = source_materials
+        business.missing_information = missing_information
+        business.conflicting_information = conflicting_information
+        business.manual_boundaries = manual_boundaries
+
+        # 第二步：更新顶层结构化事实兼容字段；其生命周期仍由本写入器拥有。
         state.structured_facts = structured_facts
 
-        # One-way compatibility projection: canonical -> legacy view only.
+        # 第三步：从规范结果单向投影到旧 contexts，供尚未迁移的调用方读取。
         state.contexts["project_input"] = project_input
         state.contexts["table_agent_output"] = table_agent_output
 
-    # 阅读注释（函数）：设置 step 状态。
     def set_step_state(
         self,
         state: SharedStateSchema,
         step_state: WorkflowStepStateSchema,
     ) -> None:
-        """设置 step 状态。
+        """同步保存工作流步骤生命周期状态。
 
-        参数:
-            state: 工作流共享状态。
-            step_state: step 状态，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
+        Args:
+            state: 要更新的共享状态。
+            step_state: 当前步骤的规范状态记录。
         """
+
+        # 第一步：更新顶层兼容映射，维持现有执行器和报告读取路径。
         state.workflow_step_states[step_state.step_id] = step_state
+
+        # 第二步：同步规范 runtime 上下文，使 context_bundle 保持事实权威。
         state.context_bundle.runtime.workflow_step_states[step_state.step_id] = step_state
 
-    # 阅读注释（函数）：设置 current step。
     def set_current_step(self, state: SharedStateSchema, step_name: str) -> None:
-        """设置 current step。
+        """同步更新当前工作流步骤名称。
 
-        参数:
-            state: 工作流共享状态。
-            step_name: step 名称，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
+        Args:
+            state: 要更新的共享状态。
+            step_name: 当前步骤的可读名称。
         """
+
+        # 顶层字段保留给旧调用方和快速序列化视图。
         state.current_step = step_name
+        # 规范运行时上下文保存同一值，避免两个字段漂移。
         state.context_bundle.runtime.current_step = step_name
 
-    # 阅读注释（函数）：处理 add Agent 结果 相关逻辑。
     def add_agent_result(
         self,
         state: SharedStateSchema,
         result: AgentResultSchema,
     ) -> None:
-        """处理 add Agent 结果 相关逻辑。
+        """按 Agent 名称登记标准执行结果。
 
-        参数:
-            state: 工作流共享状态。
-            result: 待处理的结果对象。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：result.model_dump。
+        Args:
+            state: 要更新的共享状态。
+            result: 已完成的标准 Agent 结果。
         """
+
+        # 使用 model_dump 保存稳定数据快照，不在共享状态中保留可变模型对象引用。
         state.agent_results[result.agent_name] = result.model_dump()
 
-    # 阅读注释（函数）：设置 工具 结果。
     def set_tool_result(
         self,
         state: SharedStateSchema,
         tool_call_id: str,
         result: Dict[str, Any],
     ) -> None:
-        """设置 工具 结果。
+        """按工具调用标识保存标准工具结果。
 
-        参数:
-            state: 工作流共享状态。
-            tool_call_id: 工具 call 标识，具体约束请结合类型标注和调用方确认。
-            result: 待处理的结果对象。
-
-        返回:
-            None
+        Args:
+            state: 要更新的共享状态。
+            tool_call_id: 单次工具调用唯一标识。
+            result: 工具结果的序列化字典。
         """
+
         state.tool_results[tool_call_id] = result
 
-    # 阅读注释（函数）：处理 add 错误 相关逻辑。
     def add_error(self, state: SharedStateSchema, error: ErrorSchema) -> None:
-        """处理 add 错误 相关逻辑。
+        """把结构化错误同步加入顶层和规范运行时错误集合。
 
-        参数:
-            state: 工作流共享状态。
-            error: 错误，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：state.errors.append, state.context_bundle.runtime.errors.append。
+        Args:
+            state: 要更新的共享状态。
+            error: 最接近失败源创建的规范错误。
         """
+
+        # 第一步：顶层错误列表保留完整发生顺序，兼容现有结果汇总逻辑。
         state.errors.append(error)
+
+        # 第二步：规范 runtime 集合避免重复同一 Pydantic 错误对象。
         if error not in state.context_bundle.runtime.errors:
             state.context_bundle.runtime.errors.append(error)
 
-    # 阅读注释（函数）：处理 add errors 相关逻辑。
     def add_errors(
         self,
         state: SharedStateSchema,
         errors: Iterable[ErrorSchema],
     ) -> None:
-        """处理 add errors 相关逻辑。
+        """按输入顺序批量登记结构化错误。
 
-        参数:
-            state: 工作流共享状态。
-            errors: errors，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.add_error。
+        Args:
+            state: 要更新的共享状态。
+            errors: 可迭代错误集合。
         """
+
+        # 复用单错误入口，确保去重和双视图同步规则只有一份实现。
         for error in errors:
             self.add_error(state, error)
 
-    # 阅读注释（函数）：设置 证据 上下文。
-    def set_evidence_context(
-        self,
-        state: SharedStateSchema,
-        *,
-        query: str,
-        context_text: str,
-        retrieved_chunks: list[Dict[str, Any]],
-        citations: list[Dict[str, Any]],
-        used_doc_ids: list[str],
-        evidence_sufficient: Optional[bool] = None,
-        evidence_contract: Optional[Dict[str, Any]] = None,
-        evidence_available: Optional[bool] = None,
-        assessment_status: str = "not_assessed",
-    ) -> None:
-        """设置 证据 上下文。
-
-        参数:
-            state: 工作流共享状态。
-            query: 当前检索或生成查询。
-            context_text: 上下文 文本，具体约束请结合类型标注和调用方确认。
-            retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
-            citations: 引用信息集合。
-            used_doc_ids: used doc 标识集合，具体约束请结合类型标注和调用方确认。
-            evidence_sufficient: 证据 sufficient，具体约束请结合类型标注和调用方确认。
-            evidence_contract: 证据 contract，具体约束请结合类型标注和调用方确认。
-            evidence_available: 证据 available，具体约束请结合类型标注和调用方确认。
-            assessment_status: assessment 状态，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：dict, bool。
-        """
-        evidence = state.context_bundle.evidence
-        evidence.query = query
-        evidence.contract = dict(evidence_contract or {})
-        evidence.context_text = context_text
-        evidence.retrieved_chunks = retrieved_chunks
-        evidence.citations = citations
-        evidence.used_doc_ids = used_doc_ids
-        evidence.evidence_available = (
-            bool(retrieved_chunks) if evidence_available is None else evidence_available
-        )
-        evidence.assessment_status = assessment_status
-        evidence.evidence_sufficient = evidence_sufficient
-        evidence.metadata["context_is_projection"] = bool(evidence.contract)
-
-    # 阅读注释（函数）：处理 initialize 生成 相关逻辑。
     def initialize_generation(
         self,
         state: SharedStateSchema,
@@ -278,23 +215,20 @@ class SharedStateWriter:
         document_title: str,
         required_sections: list[str],
     ) -> None:
-        """处理 initialize 生成 相关逻辑。
+        """初始化文档生成上下文的身份和章节契约。
 
-        参数:
-            state: 工作流共享状态。
-            document_id: 文档 标识，具体约束请结合类型标注和调用方确认。
-            document_title: 文档 title，具体约束请结合类型标注和调用方确认。
-            required_sections: required sections，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
+        Args:
+            state: 要更新的共享状态。
+            document_id: 本次生成文档的稳定标识。
+            document_title: 规范文档标题。
+            required_sections: 必须生成或显式说明缺失的章节顺序。
         """
+
         generation = state.context_bundle.generation
         generation.document_id = document_id
         generation.document_title = document_title
         generation.required_sections = required_sections
 
-    # 阅读注释（函数）：设置 current 章节。
     def set_current_section(
         self,
         state: SharedStateSchema,
@@ -302,37 +236,29 @@ class SharedStateWriter:
         section_id: str,
         section_title: str,
     ) -> None:
-        """设置 current 章节。
+        """更新当前正在处理的章节身份。
 
-        参数:
-            state: 工作流共享状态。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-            section_title: 章节 title，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
+        Args:
+            state: 要更新的共享状态。
+            section_id: 当前章节稳定标识。
+            section_title: 当前章节标题。
         """
+
         generation = state.context_bundle.generation
         generation.current_section_id = section_id
         generation.current_section_title = section_title
 
-    # 阅读注释（函数）：处理 add generated 章节 相关逻辑。
     def add_generated_section(self, state: SharedStateSchema, section_id: str) -> None:
-        """处理 add generated 章节 相关逻辑。
+        """把已生成章节标识追加到生成上下文。
 
-        参数:
-            state: 工作流共享状态。
-            section_id: 章节 标识，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：state.context_bundle.generation.generated_section_ids.append。
+        Args:
+            state: 要更新的共享状态。
+            section_id: 已完成生成的章节标识。
         """
+
+        # 保留完成顺序；是否允许重复由上层章节协调器控制。
         state.context_bundle.generation.generated_section_ids.append(section_id)
 
-    # 阅读注释（函数）：设置 scheme outputs。
     def set_scheme_outputs(
         self,
         state: SharedStateSchema,
@@ -341,38 +267,35 @@ class SharedStateWriter:
         scheme_writer_output: Dict[str, Any],
         rag_tool_output: Dict[str, Any],
     ) -> None:
-        # Compatibility projection retained for v1 callers. New features must
-        # not add direct ``state.contexts[...]`` writes outside this adapter.
-        """设置 scheme outputs。
+        """维护方案生成 v1 调用方仍读取的 contexts 兼容输出。
 
-        参数:
-            state: 工作流共享状态。
-            scheme_writer_input: scheme writer 输入，具体约束请结合类型标注和调用方确认。
-            scheme_writer_output: scheme writer 输出，具体约束请结合类型标注和调用方确认。
-            rag_tool_output: RAG 工具 输出，具体约束请结合类型标注和调用方确认。
+        Args:
+            state: 要更新的共享状态。
+            scheme_writer_input: 方案编写 Agent 的结构化输入。
+            scheme_writer_output: 方案编写 Agent 的结构化输出。
+            rag_tool_output: RAG 工具的兼容输出视图。
 
-        返回:
-            None
+        新功能不得在本适配器之外新增直接 ``state.contexts[...]`` 写入。
         """
+
         state.contexts["scheme_writer_input"] = scheme_writer_input
         state.contexts["scheme_writer_output"] = scheme_writer_output
         state.contexts["rag_tool_output"] = rag_tool_output
 
-    # 阅读注释（函数）：设置 final 结果。
     def set_final_result(
         self,
         state: SharedStateSchema,
         result: Dict[str, Any],
     ) -> None:
-        """设置 final 结果。
+        """设置通用工作流兼容最终结果。
 
-        参数:
-            state: 工作流共享状态。
-            result: 待处理的结果对象。
+        Args:
+            state: 要更新的共享状态。
+            result: 通用工作流最终结果字典。
 
-        返回:
-            None
+        企业文档生成不能用该字段替代显式草稿、拒绝产物和可交付结果生命周期。
         """
+
         state.final_result = result
 
     def set_scheme_artifacts(
@@ -383,8 +306,16 @@ class SharedStateWriter:
         rejected_artifact: Dict[str, Any] | None,
         deliverable_final_result: Dict[str, Any] | None,
     ) -> None:
-        """Publish scheme artifacts without conflating draft and deliverable."""
+        """发布方案草稿、拒绝产物和最终可交付物的独立生命周期状态。
 
+        Args:
+            state: 要更新的共享状态。
+            generated_draft: 已生成但不自动代表通过门禁的完整草稿。
+            rejected_artifact: 门禁拒绝后保留的产物和原因；未拒绝时为 ``None``。
+            deliverable_final_result: 通过最终交付门禁的结果；未通过时为 ``None``。
+        """
+
+        # 三个字段必须同时更新，防止旧运行残留的 deliverable 与新草稿混用。
         state.generated_draft = generated_draft
         state.rejected_artifact = rejected_artifact
         state.deliverable_final_result = deliverable_final_result

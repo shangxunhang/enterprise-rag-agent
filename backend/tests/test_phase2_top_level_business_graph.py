@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import replace
+import ast
 import importlib
 import inspect
 import json
 import os
 from pathlib import Path
+import textwrap
 from unittest.mock import patch
 
 import pytest
@@ -33,8 +35,15 @@ PHASE2_NODE_SEQUENCE = [
     "retrieve_document_evidence",
     "initialize_generation",
     "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
     "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "decide_document_version",
     "evaluate_document_gate",
+    "build_generation_report",
     "persist_deliverable",
     "finalize_workflow_result",
 ]
@@ -43,6 +52,22 @@ PHASE2_NODE_NAMES = {
     "persist_rejected",
     "finalize_workflow_failure",
 }
+TARGET_NODE_SEQUENCE = [
+    "normalize_project_input",
+    "plan_document",
+    "retrieve_document_evidence",
+    "initialize_generation",
+    "execute_sections",
+    "document_verify",
+    "repair_document_conflicts",
+    "incremental_document_reverify",
+    "assemble_document",
+    "validate_document_assembly",
+    "final_artifact_review",
+    "evaluate_document_gate",
+    "persist_deliverable",
+    "finalize_workflow_result",
+]
 TECHNICAL_FAILURE_SEQUENCE = [
     "normalize_project_input",
     "plan_document",
@@ -56,6 +81,8 @@ def _run_production_fake(
     *,
     run_id: str,
     patchers=(),
+    gate_enforcement_mode: str = "strict",
+    supervisor_factory=None,
 ) -> dict:
     settings = replace(
         get_settings(),
@@ -65,6 +92,7 @@ def _run_production_fake(
         enable_llm_routing=False,
         trace_enabled=True,
         data_capture_enabled=True,
+        gate_enforcement_mode=gate_enforcement_mode,
     )
     environment = {
         "USE_REAL_RAG_TOOL": "false",
@@ -93,7 +121,7 @@ def _run_production_fake(
         )
         for patcher in patchers:
             stack.enter_context(patcher)
-        return MainlineApplicationService().run(
+        return MainlineApplicationService(supervisor_factory=supervisor_factory).run(
             project_root=Path(__file__).resolve().parents[2],
             user_input="生成企业级 RAG-Agent 系统建设方案",
             run_id=run_id,
@@ -103,6 +131,26 @@ def _run_production_fake(
             allow_demo_defaults=True,
             enable_agent_self_rag=False,
         )
+
+
+def _run_legacy_gate_fake(output_root: Path, **kwargs) -> dict:
+    """Preserve existing legacy gate policy; never prove Target release authority."""
+    from test_phase2_runtime_safety_closure import _InspectingSupervisorFactory
+
+    def select_existing_legacy_gate(engine):
+        assert engine.stage_service.target_post_write_composition is not None
+        # The test-only seam runs after the real factory startup validations.
+        # Only these two legacy policy controls select the existing old branch.
+        engine.stage_service.target_post_write_composition = None
+
+    factory = _InspectingSupervisorFactory(select_existing_legacy_gate)
+    summary = _run_production_fake(
+        output_root, supervisor_factory=factory, **kwargs,
+    )
+    assert factory.engines
+    assert all(engine.stage_service.target_post_write_composition is None
+               for engine in factory.engines)
+    return summary
 
 
 def _phase2_metadata(summary: dict) -> dict:
@@ -171,8 +219,18 @@ def test_production_graph_declares_all_top_level_business_nodes() -> None:
     )
 
     assert set(graph_module.PHASE2_BUSINESS_NODE_NAMES) == PHASE2_NODE_NAMES
-    for node_name in PHASE2_NODE_NAMES:
-        assert f'builder.add_node(\n            "{node_name}"' in builder_source
+    declared_nodes = {
+        call.args[0].value
+        for call in ast.walk(ast.parse(textwrap.dedent(builder_source)))
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "add_node"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+    }
+    # The audited typed Budget pause control is outside the business-stage roster.
+    assert declared_nodes == PHASE2_NODE_NAMES | {"budget_authorization_interrupt"}
 
 
 def test_success_route_is_explicit_and_ordered() -> None:
@@ -187,6 +245,7 @@ def test_evidence_insufficient_routes_to_rejected_artifact() -> None:
     assert graph_module.phase2_gate_routes() == {
         "deliverable": "persist_deliverable",
         "rejected": "persist_rejected",
+        "blocked": "finalize_workflow_result",
         "technical_failure": "finalize_workflow_failure",
     }
 
@@ -200,17 +259,23 @@ def test_technical_failure_route_bypasses_business_artifact_nodes() -> None:
     ]
 
 
-def test_section_execution_remains_one_sequential_stage() -> None:
+def test_section_execution_defaults_to_one_and_uses_safe_langgraph_fanout() -> None:
     stage_module = _stage_module()
     source = inspect.getsource(stage_module.SchemeGenerationStageService.execute_sections)
 
-    assert "for section_plan in document_plan.sections" in source
-    assert '"previous_sections": list(sections)' in source
+    assert "self.section_max_concurrency > 1" in source
+    assert "item.can_run_in_parallel" in source
+    assert "not item.requires_global_context" in source
+    assert "not item.depends_on" in source
+    assert "set(item.depends_on) <= completed_ids" in source
+    assert "section_parallel_execution_graph.execute_batch" in source
+    assert "previous_sections=completed_sections()" in source
     assert "SectionGraphExecutionRequestSchema" in source
     assert "SectionExecutionCoordinator" in inspect.getsource(
         stage_module.SchemeGenerationStageService
     )
-    assert "Send(" not in source
+    assert "asyncio" not in source
+    assert "ThreadPoolExecutor" not in source
 
 
 def test_document_gate_has_one_independent_stage_owner() -> None:
@@ -269,7 +334,7 @@ def test_phase2_state_contract_is_versioned_and_json_safe() -> None:
 
     serialized = state_module.SchemeGenerationGraphStateCodec().dump_payload(payload)
     assert serialized["schema_version"] == "scheme_generation_graph_payload_v1"
-    assert state_module.SCHEME_GENERATION_GRAPH_STATE_VERSION == 1
+    assert state_module.SCHEME_GENERATION_GRAPH_STATE_VERSION == 3
     assert "services" not in serialized
     assert "citation_registry" not in serialized
 
@@ -323,10 +388,10 @@ def test_production_trace_and_checkpoints_expose_each_business_boundary(
     metadata = _phase2_metadata(production_success_summary)
     started_nodes = _phase2_started_nodes(production_success_summary)
 
-    assert started_nodes == PHASE2_NODE_SEQUENCE
-    assert metadata["business_node_sequence"] == PHASE2_NODE_SEQUENCE
-    assert metadata["checkpoint_history_count"] > len(PHASE2_NODE_SEQUENCE)
-    assert metadata["checkpoint_business_nodes"] == PHASE2_NODE_SEQUENCE
+    assert started_nodes == TARGET_NODE_SEQUENCE
+    assert metadata["business_node_sequence"] == TARGET_NODE_SEQUENCE
+    assert metadata["checkpoint_history_count"] > len(TARGET_NODE_SEQUENCE)
+    assert metadata["checkpoint_business_nodes"] == TARGET_NODE_SEQUENCE
     assert metadata["checkpoint_thread_id"] == production_success_summary["run_id"]
     assert metadata["checkpoint_namespace"] == "scheme_generation_v2:v2.0"
 
@@ -373,7 +438,7 @@ def test_production_artifact_lifecycle_and_capture_are_exactly_once(
         assert (sft_count, rejected_count) == (0, 1)
 
 
-def test_evidence_insufficient_reaches_gate_once_and_persists_rejected(
+def test_legacy_evidence_insufficient_reaches_gate_once_and_persists_rejected(
     tmp_path,
 ) -> None:
     gate_calls: list[dict] = []
@@ -394,21 +459,21 @@ def test_evidence_insufficient_reaches_gate_once_and_persists_rejected(
     )
     assessment_patcher = patch.object(
         SchemeGenerationStageService,
-        "_evidence_assessment",
+        "_evidence_assessment_from_bundle",
         return_value={
             "status": "insufficient",
             "evidence_available": False,
             "details": {"forced_by_test": True},
         },
     )
-    summary = _run_production_fake(
+    summary = _run_legacy_gate_fake(
         tmp_path,
         run_id="phase2_evidence_insufficient",
         patchers=(gate_patcher, assessment_patcher),
     )
 
     assert _phase2_started_nodes(summary) == [
-        *PHASE2_NODE_SEQUENCE[:7],
+        *PHASE2_NODE_SEQUENCE[:14],
         "persist_rejected",
         "finalize_workflow_result",
     ]
@@ -431,12 +496,49 @@ def test_evidence_insufficient_reaches_gate_once_and_persists_rejected(
     assert gate_finished["latency_ms"] is not None
 
 
+def test_legacy_shadow_gate_failure_keeps_real_failure_and_completes_run(
+    tmp_path,
+) -> None:
+    forced_gate = HardGateResultSchema(
+        passed=False,
+        failures=["forced business quality failure"],
+        checks={"forced_business_quality": False},
+    )
+    summary = _run_legacy_gate_fake(
+        tmp_path,
+        run_id="phase2_shadow_gate_failure",
+        gate_enforcement_mode="shadow",
+        patchers=(
+            patch(
+                "apps.enterprise_document.services.scheme_writer.stage_service."
+                "evaluate_scheme_draft",
+                return_value=forced_gate,
+            ),
+        ),
+    )
+
+    assert summary["status"] == "success"
+    assert summary["generated_draft"]
+    assert summary["rejected_artifact"]
+    assert summary["deliverable_final_result"] is None
+    output = summary["scheme_writer_output"]
+    assert output["hard_gate"]["passed"] is False
+    assert output["hard_gate"]["metadata"]["enforcement_mode"] == "shadow"
+    assert output["hard_gate"]["metadata"]["enforcement_action"] == "continue"
+    assert output["hard_gate"]["metadata"]["would_block_in_strict"] is True
+    assert output["extra"]["execution_status"] == "success"
+    assert output["extra"]["business_quality_status"] == "failed"
+    assert output["extra"]["release_status"] == "shadow_only"
+    assert output["extra"]["final_artifact_generated"] is True
+
+
 def test_technical_failure_routes_directly_to_failure_without_artifact(
     tmp_path,
 ) -> None:
     summary = _run_production_fake(
         tmp_path,
         run_id="phase2_technical_failure",
+        gate_enforcement_mode="shadow",
         patchers=(
             patch.object(
                 SchemeGenerationStageService,

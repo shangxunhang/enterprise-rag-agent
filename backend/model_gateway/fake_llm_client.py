@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：FakeLLMClient。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Deterministic LLM client for smoke and recovery tests."""
+"""用于冒烟、恢复和门禁测试的确定性模型客户端。
+
+它不模拟自然语言质量，而是按 ``call_purpose`` 与环境场景稳定地产生特定输出，专门
+验证路由、补充检索、引用修复、Self-RAG 和文档硬门禁等控制路径。
+"""
 
 from __future__ import annotations
 
@@ -14,12 +14,10 @@ from contracts.base_client import BaseLLMClient
 from schemas.model import ModelRequestSchema, ModelResponseSchema, TokenUsageSchema
 
 
-# 阅读注释（类）：封装 fake llmclient，集中封装相关状态、依赖和行为。
 class FakeLLMClient(BaseLLMClient):
-    """封装 fake llmclient，集中封装相关状态、依赖和行为。"""
+    """根据测试场景生成可预测响应，并返回近似 Token 用量。"""
     model_name = "fake_llm"
 
-    # 阅读注释（函数）：处理 force unbound 输出 相关逻辑。
     @staticmethod
     def _force_unbound_output(request: ModelRequestSchema, scenario: str) -> bool:
         """Return whether this call must omit all citation markers.
@@ -44,20 +42,9 @@ class FakeLLMClient(BaseLLMClient):
             return "_attempt_2" not in str(request.model_call_id)
         return False
 
-    # 阅读注释（函数）：处理 quote from 提示词 相关逻辑。
     @staticmethod
     def _quote_from_prompt(prompt: str) -> str:
-        """处理 quote from 提示词 相关逻辑。
-
-        参数:
-            prompt: 提示词，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：re.search, strip, str, json.loads, match.group。
-        """
+        """从 Prompt 中提取一条真实 ``quote_text``，让测试输出满足同一证据契约。"""
         match = re.search(r'"quote_text"\s*:\s*("(?:\\.|[^"\\])*")', prompt)
         if not match:
             return ""
@@ -66,24 +53,354 @@ class FakeLLMClient(BaseLLMClient):
         except Exception:
             return ""
 
-    # 阅读注释（函数）：生成 FakeLLMClient。
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
-        """生成 FakeLLMClient。
+        """按调用目的和场景选择确定性输出分支。
 
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：request.extra.get, lower, strip, str, os.getenv, self._force_unbound_output, self._quote_from_prompt, join。
+        路由和语义门禁返回固定 JSON；Self-RAG 场景可让首次检查要求补检索；引用相关
+        场景可故意生成无标记章节或复用 Prompt 中真实证据。这样测试的是生产控制逻辑，
+        而不是依赖随机模型行为碰巧触发某个分支。
         """
         purpose = request.extra.get("call_purpose")
+        response_contract = request.extra.get("response_contract")
         scenario = str(os.getenv("FAKE_LLM_SCENARIO", "default")).strip().lower()
         force_unbound = self._force_unbound_output(request, scenario)
 
-        if purpose == "workflow_routing":
+        if response_contract == "canonical_claim_extraction_v1":
+            units = None
+            for message in request.messages:
+                text = message.get("content", "")
+                position = text.find("{")
+                if position < 0:
+                    continue
+                try:
+                    candidate, _end = json.JSONDecoder().raw_decode(text[position:])
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(candidate, dict) and "coverage_units" in candidate:
+                    units = candidate["coverage_units"]
+                    break
+            if units is None:
+                raise ValueError("fake Claim extractor requires exact coverage units")
+            # Generic smoke has no semantic oracle: unknown is not no-claim/PASS.
+            content = json.dumps({"units": [
+                {"unit_id": item["unit_id"], "accounting_state": "INDETERMINATE", "claims": []}
+                for item in units
+            ]}, ensure_ascii=False)
+        elif response_contract == "canonical_claim_verifier_v2":
+            # Default fake has no validity oracle: even SUPPORTED is not VERIFIED.
+            support_relation = None
+            for message in request.messages:
+                try:
+                    payload = json.loads(message.get("content", ""))
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and "shared_support" in payload:
+                    support_relation = payload["shared_support"]["relation"]
+                    break
+            if support_relation is None:
+                raise ValueError("fake Verifier requires committed shared support input")
+            content = json.dumps({
+                "verdict": "CONFLICTED" if support_relation == "CONTRADICTED" else "UNSUPPORTED",
+                "rationale": "Deterministic contract fixture; Claim validity is not independently proven.",
+                "positive_basis_refs": [],
+                "issues": [{"issue_code": "FAKE_VALIDITY_UNCONFIRMED", "severity": "MAJOR",
+                            "message": "No semantic validity oracle supplied for this fake verification.", "source_refs": []}],
+            })
+        elif response_contract in {
+            "canonical_claim_evidence_support_v1",
+            "canonical_claim_evidence_support_v2",
+        }:
+            # Generic smoke is not a semantic oracle; never manufacture SUPPORTED
+            # or an ALIGNED certainty relation.
+            payload = {
+                "relation": "INDETERMINATE",
+                "supporting_refs": [],
+                "contradicting_refs": [],
+            }
+            if response_contract == "canonical_claim_evidence_support_v2":
+                payload.update(
+                    certainty_relation="INDETERMINATE",
+                    certainty_reason_codes=["FAKE_CERTAINTY_ORACLE_UNAVAILABLE"],
+                )
+            content = json.dumps(payload)
+        elif response_contract == "citation_claim_association_v1":
+            material = None
+            for message in request.messages:
+                try:
+                    text = message.get("content", "")
+                    candidate, _end = json.JSONDecoder().raw_decode(text[text.index("{"):])
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(candidate, dict) and "citation_association_input" in candidate:
+                    material = candidate["citation_association_input"]
+                    break
+            if material is None:
+                raise ValueError("fake association requires exact committed citation/Claim inputs")
+            # No generic semantic oracle; scenario tests supply determinate associations.
+            content = json.dumps({"associations": [{"occurrence_ref": ref,
+                "state": "INDETERMINATE", "associated_claim_target_ids": []}
+                for ref in material["eligible_occurrence_refs"]]})
+        elif response_contract == "requirement_adherence_batch_v1":
+            requirements = None
+            unit_refs = []
+            for message in request.messages:
+                text = str(message.get("content", ""))
+                if text.startswith("CONTROL_REF=requirement-batch://"):
+                    try:
+                        payload = json.loads(text.split("\n", 1)[1])
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(payload, dict) and "requirements" in payload:
+                        requirements = payload["requirements"]
+                position = text.find("{")
+                if position >= 0:
+                    try:
+                        payload, _end = json.JSONDecoder().raw_decode(text[position:])
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(payload, dict):
+                        artifact = payload.get("artifact_units") or (
+                            payload.get("requirement_adherence_artifact") or {}
+                        ).get("artifact_units") or []
+                        if isinstance(artifact, list):
+                            unit_refs = [str(item.get("unit_ref") or "") for item in artifact if isinstance(item, dict) and item.get("unit_ref")]
+            if requirements is None:
+                raise ValueError("fake Requirement Adherence requires exact canonical Requirement batch")
+            # Generic smoke has no business-semantic oracle.  It must not turn
+            # structurally valid input into a semantic PASS.
+            content = json.dumps({"results": [
+                {"requirement_id": item["requirement_id"], "observation": "INDETERMINATE",
+                 "response_refs": sorted(set(unit_refs)), "reason_codes": ["FAKE_SEMANTIC_ORACLE_UNAVAILABLE"]}
+                for item in requirements
+            ]}, ensure_ascii=False)
+        elif response_contract == "coverage_semantic_presence_batch_v1":
+            requirements = None
+            for message in request.messages:
+                text = str(message.get("content", ""))
+                if not text.startswith("CONTROL_REF=coverage-semantic://"):
+                    continue
+                try:
+                    payload = json.loads(text.split("\n", 1)[1])
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and "semantic_requirements" in payload:
+                    requirements = payload["semantic_requirements"]
+                    break
+            if requirements is None:
+                raise ValueError("fake Coverage requires exact semantic Coverage targets")
+            # Generic smoke has no semantic-presence oracle.  Never manufacture
+            # PRESENT or MISSING from lexical coincidences.
+            content = json.dumps({"results": [
+                {"requirement_id": item["requirement_id"], "observation": "INDETERMINATE",
+                 "matched_unit_refs": [], "reason_codes": ["FAKE_SEMANTIC_ORACLE_UNAVAILABLE"]}
+                for item in requirements
+            ]}, ensure_ascii=False)
+        elif response_contract == "artifact_consistency_shared_relation_batch_v1":
+            logical_works = None
+            assertion_refs = []
+            for message in request.messages:
+                text = str(message.get("content", ""))
+                if text.startswith("CONTROL_REF=consistency-shared-batch://"):
+                    try:
+                        payload = json.loads(text.split("\n", 1)[1])
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(payload, dict):
+                        logical_works = payload.get("logical_works")
+                position = text.find("{")
+                if position < 0:
+                    continue
+                try:
+                    payload, _end = json.JSONDecoder().raw_decode(text[position:])
+                except (ValueError, TypeError):
+                    continue
+                stack = [payload]
+                while stack:
+                    value = stack.pop()
+                    if isinstance(value, dict):
+                        rows = value.get("assertions")
+                        if isinstance(rows, list):
+                            assertion_refs.extend(
+                                str(item.get("assertion_ref") or "")
+                                for item in rows
+                                if isinstance(item, dict)
+                                and item.get("assertion_ref")
+                            )
+                        stack.extend(value.values())
+                    elif isinstance(value, list):
+                        stack.extend(value)
+            if not isinstance(logical_works, list) or not logical_works:
+                raise ValueError(
+                    "fake shared Consistency requires exact logical work controls"
+                )
+            universe = tuple(sorted(set(assertion_refs)))
+            work_results = []
+            for work in logical_works:
+                required = work.get("required_relation_member_sets") or []
+                obligations = work.get("required_logical_obligation_refs") or []
+                candidates = [tuple(sorted(set(pair))) for pair in required]
+                synthesized = set()
+                if obligations and not candidates and len(universe) >= 2:
+                    candidate = universe[:2]
+                    candidates = [candidate]
+                    synthesized.add(candidate)
+                rows = []
+                for pair in candidates:
+                    unresolved_materiality = pair in synthesized
+                    rows.append(
+                        {
+                            "member_assertion_refs": list(pair),
+                            "relation_materiality": (
+                                "INDETERMINATE"
+                                if unresolved_materiality
+                                else "MATERIAL_RELATION"
+                            ),
+                            "relation": (
+                                None if unresolved_materiality else "INDETERMINATE"
+                            ),
+                            "semantic_relation_description": (
+                                "Generic fake cannot establish the semantic consistency relation."
+                            ),
+                            "role_bindings": [],
+                            "scope_condition_bindings": [],
+                            "reason_codes": ["FAKE_SEMANTIC_ORACLE_UNAVAILABLE"],
+                            "ambiguity_codes": (
+                                ["FAKE_MATERIALITY_UNRESOLVED"]
+                                if unresolved_materiality
+                                else []
+                            ),
+                            "formal_predicate": None,
+                            "precision_tolerance": None,
+                        }
+                    )
+                work_results.append(
+                    {
+                        "logical_work_ref": work["logical_work_ref"],
+                        "discovery_complete": True,
+                        "results": rows,
+                    }
+                )
+            content = json.dumps(
+                {"work_results": work_results}, ensure_ascii=False
+            )
+        elif response_contract == "artifact_consistency_relation_batch_v1":
+            required_pairs = None
+            logical_obligations = []
+            assertion_refs = []
+            for message in request.messages:
+                text = str(message.get("content", ""))
+                if text.startswith("CONTROL_REF=consistency-batch://"):
+                    try:
+                        payload = json.loads(text.split("\n", 1)[1])
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(payload, dict):
+                        required_pairs = payload.get("required_relation_member_sets")
+                        logical_obligations = payload.get(
+                            "required_logical_obligation_refs"
+                        ) or []
+                position = text.find("{")
+                if position < 0:
+                    continue
+                try:
+                    payload, _end = json.JSONDecoder().raw_decode(text[position:])
+                except (ValueError, TypeError):
+                    continue
+                stack = [payload]
+                while stack:
+                    value = stack.pop()
+                    if isinstance(value, dict):
+                        rows = value.get("assertions")
+                        if isinstance(rows, list):
+                            assertion_refs.extend(
+                                str(item.get("assertion_ref") or "")
+                                for item in rows
+                                if isinstance(item, dict)
+                                and item.get("assertion_ref")
+                            )
+                        stack.extend(value.values())
+                    elif isinstance(value, list):
+                        stack.extend(value)
+            if required_pairs is None:
+                raise ValueError("fake Consistency requires exact required relation member sets")
+            candidates = [tuple(sorted(set(pair))) for pair in required_pairs]
+            # A global logical discovery obligation with a 2+ member universe
+            # cannot be turned into a fake empty/no-material PASS. Keep one
+            # bounded candidate explicitly unresolved when no force pair exists.
+            if logical_obligations and not candidates:
+                universe = tuple(sorted(set(assertion_refs)))
+                if len(universe) >= 2:
+                    candidates = [universe[:2]]
+            content = json.dumps(
+                {
+                    "discovery_complete": True,
+                    "results": [
+                        {
+                            "member_assertion_refs": list(pair),
+                            "relation_materiality": (
+                                "INDETERMINATE"
+                                if logical_obligations and pair not in {
+                                    tuple(sorted(set(item))) for item in required_pairs
+                                }
+                                else "MATERIAL_RELATION"
+                            ),
+                            "relation": (
+                                None
+                                if logical_obligations and pair not in {
+                                    tuple(sorted(set(item))) for item in required_pairs
+                                }
+                                else "INDETERMINATE"
+                            ),
+                            "semantic_relation_description": "Generic fake cannot establish the semantic consistency relation.",
+                            "role_bindings": [],
+                            "scope_condition_bindings": [],
+                            "reason_codes": ["FAKE_SEMANTIC_ORACLE_UNAVAILABLE"],
+                            "ambiguity_codes": ["FAKE_GLOBAL_DISCOVERY_UNRESOLVED"] if logical_obligations else [],
+                            "formal_predicate": None,
+                            "precision_tolerance": None,
+                        }
+                        for pair in candidates
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        elif response_contract == "planner_fact_requirements_v1":
+            # Contract-only smoke response. Scenario tests supply semantic choices
+            # at this external-model boundary, never by pre-committing a Plan.
+            task_contract = None
+            for message in request.messages:
+                try:
+                    candidate = json.loads(message.get("content", ""))
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(candidate, dict) and "section_contracts" in candidate:
+                    task_contract = candidate
+                    break
+            if task_contract is None:
+                raise ValueError("fake Planner requires the actual locked section contract")
+            content = json.dumps({"sections": [
+                {"section_id": section["section_id"], "fact_requirements": []}
+                for section in task_contract["section_contracts"]
+            ]}, ensure_ascii=False)
+        elif response_contract == "criterion_support_evaluator_v1":
+            evidence_id = ""
+            try:
+                contract_input = json.loads(request.prompt.rsplit("\n", 1)[-1])
+                selected_evidence = contract_input.get("selected_evidence") or []
+                if selected_evidence:
+                    evidence_id = str(selected_evidence[0].get("evidence_id") or "").strip()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                evidence_id = ""
+            content = json.dumps(
+                {
+                    "support_state": "supported" if evidence_id else "indeterminate",
+                    "evidence_ids": [evidence_id] if evidence_id else [],
+                    "conflicts": [],
+                    "reason_codes": ["fake_llm_deterministic_contract"],
+                },
+                ensure_ascii=False,
+            )
+        elif purpose == "workflow_routing":
             content = '{"task_type":"scheme_generation","reason":"deterministic smoke-test route"}'
         elif purpose == "semantic_section_gate":
             content = '{"decision":"pass","summary":"deterministic semantic gate pass","issues":[]}'

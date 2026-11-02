@@ -1,0 +1,453 @@
+{
+  "schema": "full8_business_deterministic_data_v1",
+  "generated_on": "2026-10-28",
+  "real_provider_calls": 0,
+  "generation_method": "LOCAL_DETERMINISTIC_TEST_DATA_NOT_DEEPSEEK",
+  "authority": "TEST_ONLY_NEVER_ISSUE_CANONICAL_SOURCE",
+  "business_scenarios": [
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-005",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-005",
+      "matrix_id": "BC-02",
+      "title": "零值与缺失不混淆",
+      "gold_refs": [
+        "RC1-GOLD-W-002",
+        "RC1-GOLD-W-003",
+        "RC1-GOLD-F-004"
+      ],
+      "input": {
+        "confirmed_compute_servers": 0,
+        "storage_nodes": null,
+        "missing_fields": [
+          "storage_nodes"
+        ]
+      },
+      "claims": [
+        "计算服务器已确认0台。",
+        "存储服务器数量未提供。"
+      ],
+      "expected": {
+        "must_keep_confirmed_zero": true,
+        "must_not_infer_missing_zero": true,
+        "release_status": "UNDETERMINED"
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-006",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-006",
+      "matrix_id": "BC-05",
+      "title": "跨项目来源权限",
+      "gold_refs": [
+        "RC1-GOLD-F-025",
+        "RC1-GOLD-F-026"
+      ],
+      "input": {
+        "current_project": "synthetic-gov-cloud-business-20261028",
+        "evidence": [
+          {
+            "project_id": "synthetic-gov-cloud-business-20261028",
+            "value": 24,
+            "source_id": "source-a-current"
+          },
+          {
+            "project_id": "other-customer",
+            "value": 30,
+            "source_id": "source-b-forbidden"
+          }
+        ]
+      },
+      "claims": [
+        "本项目配置30台服务器。"
+      ],
+      "expected": {
+        "must_reject_foreign_project_source": true,
+        "release_status": "UNDETERMINED"
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-007",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-007",
+      "matrix_id": "BC-19",
+      "title": "版本更新旧值不可污染",
+      "gold_refs": [
+        "RC1-GOLD-F-015",
+        "RC1-GOLD-F-028"
+      ],
+      "input": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "versioned_facts": [
+          {
+            "revision": 1,
+            "server_count": 20,
+            "current": false
+          },
+          {
+            "revision": 2,
+            "server_count": 24,
+            "current": true
+          }
+        ]
+      },
+      "claims": [
+        "当前服务器20台。"
+      ],
+      "expected": {
+        "must_reject_stale_revision": true,
+        "must_not_change_old_source_bytes": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-008",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-008",
+      "matrix_id": "BC-03",
+      "title": "计划不代表采购完成",
+      "gold_refs": [
+        "RC1-GOLD-W-011",
+        "RC1-GOLD-W-012",
+        "RC1-GOLD-F-006"
+      ],
+      "input": {
+        "planned_server_count": 6,
+        "ordered": false,
+        "purchased": false,
+        "deployed": false
+      },
+      "claims": [
+        "已采购并部署6台服务器。"
+      ],
+      "expected": {
+        "must_not_promote_intent_to_fact": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-009",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-009",
+      "matrix_id": "BC-14",
+      "title": "同一快照跨章节服务器数冲突",
+      "gold_refs": [
+        "RC1-GOLD-C-048",
+        "RC1-GOLD-W-024"
+      ],
+      "input": {
+        "snapshot_id": "same-current-snapshot",
+        "paragraphs": [
+          {
+            "section_id": "scope",
+            "title": "建设范围",
+            "order": 1,
+            "text": "本项目配置服务器 24 台。",
+            "server_count": 24
+          },
+          {
+            "section_id": "compute",
+            "title": "计算资源",
+            "order": 2,
+            "text": "本项目配置服务器 30 台。",
+            "server_count": 30
+          }
+        ]
+      },
+      "expected": {
+        "document_verifier_conflict_type": "cross_section_fact_conflict",
+        "document_verification_passed": false
+      },
+      "test_level": "NATIVE_DOCUMENT_VERIFIER_READY"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-010",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-010",
+      "matrix_id": "BC-15",
+      "title": "AZ 分项之和与总数不一致",
+      "gold_refs": [
+        "RC1-GOLD-C-042",
+        "RC1-GOLD-C-053"
+      ],
+      "input": {
+        "availability_zones": [
+          {
+            "name": "AZ-A",
+            "server_count": 10,
+            "disjoint": true
+          },
+          {
+            "name": "AZ-B",
+            "server_count": 14,
+            "disjoint": true
+          }
+        ],
+        "declared_total_server_count": 25,
+        "computed_sum": 24
+      },
+      "expected": {
+        "must_not_assert_declared_total_equals_parts": true,
+        "must_not_reduce_composite_to_unrelated_binary_equality": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-011",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-011",
+      "matrix_id": "BC-04",
+      "title": "十进制与二进制容量不能直接等同",
+      "gold_refs": [
+        "RC1-GOLD-F-014",
+        "RC1-GOLD-C-013",
+        "RC1-GOLD-C-014"
+      ],
+      "input": {
+        "a": {
+          "value": 1,
+          "unit": "TB",
+          "scale": "decimal"
+        },
+        "b": {
+          "value": 1,
+          "unit": "TiB",
+          "scale": "binary"
+        }
+      },
+      "claims": [
+        "1 TB容量等于1 TiB容量。"
+      ],
+      "expected": {
+        "must_not_equate_units_without_explicit_conversion": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-012",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-012",
+      "matrix_id": "BC-06",
+      "title": "引用别名合法但无法支持断言",
+      "gold_refs": [
+        "RC1-GOLD-W-020",
+        "RC1-GOLD-W-023"
+      ],
+      "input": {
+        "evidence": {
+          "citation_id": "C1",
+          "text": "计算节点为24台。",
+          "project_id": "synthetic-gov-cloud-business-20261028"
+        },
+        "writer_claim": {
+          "text": "计算节点为30台。",
+          "citation_alias": "C1"
+        }
+      },
+      "expected": {
+        "alias_known": true,
+        "claim_supported": false,
+        "no_fake_grounding": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-013",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-013",
+      "matrix_id": "BC-05",
+      "title": "同优先级证据相互冲突",
+      "gold_refs": [
+        "RC1-GOLD-F-027"
+      ],
+      "input": {
+        "same_snapshot": true,
+        "same_priority": true,
+        "assertions": [
+          {
+            "source_id": "source-a",
+            "server_count": 24
+          },
+          {
+            "source_id": "source-b",
+            "server_count": 30
+          }
+        ]
+      },
+      "expected": {
+        "must_preserve_conflict": true,
+        "no_silent_winner": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-014",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-014",
+      "matrix_id": "BC-16",
+      "title": "缺章不得收缩必需章节集合",
+      "gold_refs": [
+        "RC1-GOLD-W-006"
+      ],
+      "input": {
+        "required_sections": [
+          "项目背景",
+          "建设目标",
+          "总体架构",
+          "计算资源",
+          "存储资源",
+          "网络资源",
+          "安全设计",
+          "实施与验收"
+        ],
+        "produced_sections": [
+          "项目背景",
+          "建设目标",
+          "总体架构",
+          "计算资源",
+          "存储资源",
+          "网络资源",
+          "安全设计"
+        ]
+      },
+      "expected": {
+        "missing_sections": [
+          "实施与验收"
+        ],
+        "must_not_claim_complete": true,
+        "must_not_release_as_fully_accepted": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-015",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-015",
+      "matrix_id": "BC-18",
+      "title": "有正文但无验收不能提升 Partial",
+      "gold_refs": [
+        "RC1-GOLD-W-006"
+      ],
+      "input": {
+        "generated_sections": 8,
+        "accepted_sections": 0,
+        "partially_accepted_paragraphs_with_proof": 0,
+        "unaccepted_scope": 8
+      },
+      "expected": {
+        "partial_success_not_authorized_by_body_only": true,
+        "must_not_fabricate_release": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    },
+    {
+      "schema": "synthetic_business_case_v1",
+      "scenario_id": "SYN-BIZ-016",
+      "scope": {
+        "project_id": "synthetic-gov-cloud-business-20261028",
+        "tenant": "fixture",
+        "external_business_fact": false,
+        "source_authority": "TEST_SCENARIO_INPUT_ONLY",
+        "not_canonical_owner": true
+      },
+      "id": "SYN-BIZ-016",
+      "matrix_id": "BC-20",
+      "title": "混合错误下预算与最终身份归因",
+      "gold_refs": [],
+      "input": {
+        "model_calls_available": 0,
+        "retry_limit": 0,
+        "first_rejection_attempt": "attempt-a",
+        "subsequent_independent_section": "section-b",
+        "prior_verified_result_missing": true
+      },
+      "expected": {
+        "must_not_dispatch_after_capacity_exhaustion": true,
+        "must_not_charge_duplicate_call": true,
+        "no_fabricated_result": true
+      },
+      "test_level": "DATA_READY_OWNER_HYDRATION_PENDING"
+    }
+  ],
+  "oracle_guidance": "Scenario expected constraints are independent test requirements, not canonical owner results or model Gold",
+  "data_level_limit": "Only SYN-BIZ-009 currently has a direct native DocumentVerifier input adapter; rest require approved production-owner fixture assembly."
+}

@@ -1,62 +1,43 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：compute_answer_keyword_hit、compute_answer_context_overlap、compute_citation_hit、evaluate_generation。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
+"""计算旧版 RAG 生成链的轻量答案质量指标。
+
+本模块只评估字面关键词、答案与检索上下文的关键词重叠，以及引用文档是否命中
+黄金文档。它不实现语义忠实度、答案相关性、NLI、RAGAS 或 LLM-as-Judge，适合
+早期回归和接口闭环，不应被解释为完整生成质量评估。
 """
-generation_eval.py
-==================
-
-RAG 生成答案评估模块。
-
-本文件负责评估 LLM 基于检索结果生成的最终 answer 是否满足基本质量要求。
-
-第一版只实现轻量级生成评估指标：
-1. answer_keyword_hit：答案中是否包含期望关键词
-2. citation_hit：答案引用的来源是否命中期望文档
-
-本文件暂不实现复杂语义评估，例如：
-1. faithfulness
-2. answer relevance
-3. context relevance
-4. LLM-as-a-judge
-5. RAGAS / ARES 风格评估
-
-这些高级评估可以在后续版本中继续扩展。
-当前阶段的目标是先完成一个简单、可运行、可量化的生成质量评估闭环。
-"""
-
-
-
 
 from typing import List, Optional, Set
 
-from rag.schema.eval_schema import EvalSample, GenerationEvalResult, RetrievalResult
+from rag.schema.eval_schema import (
+    EvalSample,
+    GenerationEvalResult,
+    RetrievalResult,
+)
 
 
-# 阅读注释（函数）：计算 answer keyword hit。
 def compute_answer_keyword_hit(
     answer: str,
     answer_keywords: List[str],
 ) -> float:
+    """计算答案对黄金关键词的字面覆盖比例。
+
+    Args:
+        answer: LLM 最终生成答案。
+        answer_keywords: 预期在答案中出现的核心关键词。
+
+    Returns:
+        命中关键词数量除以关键词总数；关键词或答案为空时返回 ``0.0``。
     """
-    计算 answer_keyword_hit。
 
-    answer_keyword_hit 用于判断最终生成答案中是否包含期望关键词。
-
-    该指标可以作为 Answer Relevance 的轻量代理指标：
-    如果答案中包含问题期望的核心关键词，说明它大概率回答到了问题。
-
-    公式：
-        answer_keyword_hit = 命中的 answer_keywords 数量 / answer_keywords 总数量
-    """
+    # 没有黄金关键词时，该旧版指标无法计算，按原协议返回零。
     if not answer_keywords:
         return 0.0
 
+    # 空答案不可能覆盖任何关键词。
     if not answer:
         return 0.0
 
+    # 逐关键词执行大小写敏感的直接子串匹配。
     hit_count = 0
-
     for keyword in answer_keywords:
         if keyword in answer:
             hit_count += 1
@@ -64,134 +45,120 @@ def compute_answer_keyword_hit(
     return hit_count / len(answer_keywords)
 
 
-# 阅读注释（函数）：计算 answer 上下文 overlap。
 def compute_answer_context_overlap(
     answer: str,
     retrieved_results: List[RetrievalResult],
     answer_keywords: Optional[List[str]] = None,
 ) -> float:
+    """估算答案中已出现关键词有多少能在检索上下文中找到。
+
+    Args:
+        answer: LLM 最终答案。
+        retrieved_results: 当前查询的标准化检索结果。
+        answer_keywords: 用作支持判断锚点的黄金答案关键词。
+
+    Returns:
+        同时出现在答案和上下文中的关键词数，除以实际出现在答案中的黄金关键词数。
+        缺少答案、关键词、上下文或有效关键词时返回 ``0.0``。
+
+    该指标只检查词法重叠，无法识别上下文是否支持答案中的关系、数值或否定结论。
     """
-    计算 answer_context_overlap。
 
-    answer_context_overlap 用于判断答案中的关键信息是否能在 retrieved context 中找到依据。
-
-    该指标可以作为 Answer Faithfulness 的轻量代理指标：
-    如果答案中出现的核心关键词也能在检索上下文中找到，
-    说明答案大概率是基于 context 生成的，而不是完全凭空编造。
-
-    第一版采用关键词级别的简单实现：
-    1. 如果提供 answer_keywords，则检查这些关键词是否同时出现在 answer 和 context 中
-    2. 如果没有提供 answer_keywords，则暂时返回 0.0
-
-    后续可以升级为：
-    1. LLM-as-a-judge faithfulness
-    2. NLI contradiction detection
-    3. RAGAS faithfulness
-    4. ARES-style judge model
-    """
+    # 第一步：缺少答案或黄金关键词时无法建立支持关系。
     if not answer:
         return 0.0
-
     if not answer_keywords:
         return 0.0
 
+    # 第二步：按检索顺序拼接所有非空上下文文本。
     context_text = "\n".join(
-        result.text for result in retrieved_results if result.text
+        result.text
+        for result in retrieved_results
+        if result.text
     )
-
     if not context_text:
         return 0.0
 
+    # 第三步：只评估确实出现在答案中的黄金关键词。
     supported_count = 0
     valid_keyword_count = 0
-
     for keyword in answer_keywords:
-        # 只评估确实出现在 answer 中的关键词
         if keyword in answer:
             valid_keyword_count += 1
-
             if keyword in context_text:
                 supported_count += 1
 
+    # 第四步：答案没有包含任何黄金关键词时，重叠代理记零。
     if valid_keyword_count == 0:
         return 0.0
 
     return supported_count / valid_keyword_count
 
 
-# 阅读注释（函数）：计算 引用 hit。
 def compute_citation_hit(
     expected_doc_ids: List[str],
     cited_doc_ids: Optional[List[str]] = None,
 ) -> float:
+    """判断答案引用是否至少命中一个黄金文档。
+
+    Args:
+        expected_doc_ids: 黄金来源文档标识。
+        cited_doc_ids: 生成链实际输出的引用文档标识。
+
+    Returns:
+        两个集合存在交集时返回 ``1.0``，否则返回 ``0.0``。
     """
-    计算 citation_hit。
 
-    citation_hit 用于判断最终答案引用的来源文档是否命中 expected_doc_ids。
-
-    如果答案引用的 doc_id 中，至少有一个出现在 expected_doc_ids 中，则返回 1.0；
-    否则返回 0.0。
-
-    注意：
-        第一版中 cited_doc_ids 需要由上游生成模块或 eval_runner 传入。
-        如果你的 generator 暂时还不能输出引用来源，可以传 None 或空列表。
-    """
+    # 缺少黄金文档或实际引用时，无法形成命中。
     if not expected_doc_ids:
         return 0.0
-
     if not cited_doc_ids:
         return 0.0
 
+    # 转换为集合以消除重复引用对二值指标的影响。
     expected_doc_id_set: Set[str] = set(expected_doc_ids)
     cited_doc_id_set: Set[str] = set(cited_doc_ids)
-
     return 1.0 if expected_doc_id_set & cited_doc_id_set else 0.0
 
 
-# 阅读注释（函数）：评估 生成。
 def evaluate_generation(
     sample: EvalSample,
     answer: str,
     retrieved_results: List[RetrievalResult],
     cited_doc_ids: Optional[List[str]] = None,
 ) -> GenerationEvalResult:
+    """对一条黄金样本的生成结果计算全部旧版轻量指标。
+
+    Args:
+        sample: 提供 answer_keywords 和 expected_doc_ids 的评测样本。
+        answer: LLM 最终答案。
+        retrieved_results: 用于生成答案的检索结果。
+        cited_doc_ids: 答案实际引用的文档标识。
+
+    Returns:
+        包含关键词命中、上下文重叠和引用命中的 ``GenerationEvalResult``。
     """
-    对单条 EvalSample 的生成答案进行评估。
 
-    参数:
-        sample:
-            单条评估样本，包含 query、expected_doc_ids、answer_keywords 等信息。
-
-        answer:
-            LLM 最终生成的答案。
-
-        retrieved_results:
-            当前 query 对应的检索结果，用于判断 answer 是否被 context 支持。
-
-        cited_doc_ids:
-            answer 中实际引用的 doc_id 列表。
-            如果当前生成模块还没有 citation 功能，可以传 None。
-
-    返回:
-        GenerationEvalResult:
-            单条样本的生成评估结果。
-    """
+    # 第一步：检查最终答案是否覆盖黄金回答关键词。
     answer_keyword_hit = compute_answer_keyword_hit(
         answer=answer,
         answer_keywords=sample.answer_keywords,
     )
 
+    # 第二步：估算答案中的黄金关键词是否能在检索上下文中找到。
     answer_context_overlap = compute_answer_context_overlap(
         answer=answer,
         retrieved_results=retrieved_results,
         answer_keywords=sample.answer_keywords,
     )
 
+    # 第三步：检查结构化引用是否命中黄金文档集合。
     citation_hit = compute_citation_hit(
         expected_doc_ids=sample.expected_doc_ids,
         cited_doc_ids=cited_doc_ids,
     )
 
+    # 第四步：封装稳定结果协议，供旧版 eval_runner 聚合。
     return GenerationEvalResult(
         answer_keyword_hit=answer_keyword_hit,
         answer_context_overlap=answer_context_overlap,

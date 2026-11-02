@@ -10,7 +10,7 @@ from apps.enterprise_document.quality.model_adapter import (
     resolve_quality_generator,
 )
 from apps.enterprise_document.quality.ports import RepairOutput
-from rag.judge.rag_quality_judge import SelfRAGJudge
+from apps.enterprise_document.quality.self_rag_judge import SelfRAGJudge
 
 
 def _context(value: Any) -> dict[str, Any]:

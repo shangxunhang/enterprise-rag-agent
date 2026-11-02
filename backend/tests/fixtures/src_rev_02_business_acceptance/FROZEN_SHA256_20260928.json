@@ -1,0 +1,19 @@
+{
+  "record_type": "SRCREV_02_BIZ_IMPL_01_PRE_GENERATION_FREEZE_V1",
+  "recorded_at_utc": "2026-09-27T16:39:57Z",
+  "local_date_asia_shanghai": "2026-09-28",
+  "start_head": "7a6a86552fa4c29875e8472d9b26c2c4bd00f566",
+  "classification": "SIMULATED_ACCEPTANCE_FIXTURE",
+  "expected_classification": "TEST_EXPECTATION_ONLY",
+  "phase_at_freeze": "BEFORE_FAKE_PROVIDER_OR_INTEGRATION_GENERATION",
+  "hash_algorithm": "SHA-256",
+  "files": {
+    "expected/missing_expected.json": "58fd862639bdaba10ed2c1c8cc76efcb67b51f2eb333ff8df920eee51fe8fc6e",
+    "expected/normal_expected.json": "9e042480a972b17244d031319346e48d7d45e80778d9501e42221f0e64a91dc0",
+    "missing_project_input.json": "e9ec1dbed1b1bc63b17fc0d5d003057f67b6aa402f5f26423b11dbfd5e1c6497",
+    "normal_project_input.json": "2d6218a8e59298e2bee2a1be50edd1b74dcbab4eb637082745b65a5a6e582b0d",
+    "paired_diff.json": "c72801c77d097a0ad3cc0afe5bc8a1f5f015d29bb77c403d2f07ce85780de57d",
+    "README.md": "90afa4a40229e5aca1e1b8b989177cc1a5465ee5c4b8096cfe76cc2c76d6de9a"
+  },
+  "revision_rule": "If an expected file is found wrong, keep this original freeze record, document reason and new version before rerun; do not change expected to match generated output."
+}

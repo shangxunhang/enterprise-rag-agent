@@ -14,6 +14,64 @@ from model_gateway.model_contract import ModelSelection
 from schemas.model import ModelResponseSchema
 
 
+_ADDITIVE_USAGE_FIELDS = {
+    "logical_calls",
+    "unique_logical_call_ids",
+    "provider_attempts",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "latency_ms",
+    "failures",
+    "cancelled_attempts",
+    "incomplete_usage_attempts",
+    "availability_fallback_count",
+    "quality_escalation_count",
+}
+_ADDITIVE_USAGE_MAP_FIELDS = {
+    "calls_by_model",
+    "calls_by_profile",
+    "calls_by_provider",
+}
+
+
+def merge_model_usage_snapshots(
+    prior: dict[str, Any] | None,
+    current: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge persisted prior usage with one new runtime session's delta."""
+
+    left = dict(prior or {})
+    right = dict(current or {})
+    if not left:
+        return right
+    if not right:
+        return left
+
+    merged = {**left, **right}
+    for field_name in _ADDITIVE_USAGE_FIELDS:
+        merged[field_name] = int(left.get(field_name, 0) or 0) + int(
+            right.get(field_name, 0) or 0
+        )
+    for field_name in _ADDITIVE_USAGE_MAP_FIELDS:
+        combined: dict[str, int] = {}
+        keys = set(left.get(field_name, {})) | set(right.get(field_name, {}))
+        for key in sorted(keys):
+            combined[key] = int(left.get(field_name, {}).get(key, 0)) + int(
+                right.get(field_name, {}).get(key, 0)
+            )
+        merged[field_name] = combined
+
+    prior_cost = left.get("cost_if_available")
+    current_cost = right.get("cost_if_available")
+    merged["cost_if_available"] = (
+        None
+        if prior_cost is None and current_cost is None
+        else float(prior_cost or 0.0) + float(current_cost or 0.0)
+    )
+    return merged
+
+
 class ModelUsageLedger:
     def __init__(self) -> None:
         self._lock = Lock()

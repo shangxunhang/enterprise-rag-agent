@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：模型网关模块，用于屏蔽不同 LLM 提供方和本地模型调用差异。
-# 主要定义：LocalQwenLLMClient。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Thin Qwen client over prompt formatting and HuggingFace runtime services."""
+"""基于统一提示词格式器和 HuggingFace 运行时实现的本地 Qwen 客户端。"""
 
 from __future__ import annotations
 
@@ -16,10 +12,8 @@ from model_gateway.local_hf_runtime import LocalHuggingFaceRuntime
 from schemas.model import ModelRequestSchema, ModelResponseSchema, TokenUsageSchema
 
 
-# 阅读注释（类）：封装 本地 qwen llmclient，集中封装相关状态、依赖和行为。
 class LocalQwenLLMClient(BaseLLMClient):
-    """封装 本地 qwen llmclient，集中封装相关状态、依赖和行为。"""
-    # 阅读注释（函数）：初始化 LocalQwenLLMClient，保存运行所需的依赖、配置或状态。
+    """把统一模型请求转换为本地生成参数，并返回供应商无关响应。"""
     def __init__(
         self,
         model_name: str,
@@ -30,22 +24,7 @@ class LocalQwenLLMClient(BaseLLMClient):
         runtime: LocalHuggingFaceRuntime | None = None,
         formatter: ChatPromptFormatter | None = None,
     ) -> None:
-        """初始化 LocalQwenLLMClient，保存运行所需的依赖、配置或状态。
-
-        参数:
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-            model_path: 模型 路径，具体约束请结合类型标注和调用方确认。
-            device: device，具体约束请结合类型标注和调用方确认。
-            max_new_tokens: max new tokens，具体约束请结合类型标注和调用方确认。
-            runtime: 运行时，具体约束请结合类型标注和调用方确认。
-            formatter: formatter，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：Path, LocalHuggingFaceRuntime, ChatPromptFormatter。
-        """
+        """保存注册名称和生成上限，并允许测试注入轻量运行时与格式器。"""
         self.model_name = model_name
         self.model_path = Path(model_path)
         self.device = device
@@ -57,62 +36,28 @@ class LocalQwenLLMClient(BaseLLMClient):
         )
         self.formatter = formatter or ChatPromptFormatter()
 
-    # 阅读注释（函数）：处理 tokenizer 相关逻辑。
     @property
     def _tokenizer(self):
-        """处理 tokenizer 相关逻辑。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-        """
+        """兼容旧测试代码的 tokenizer 代理；真实所有权属于 runtime。"""
         return self.runtime.tokenizer
 
-    # 阅读注释（函数）：处理 tokenizer 相关逻辑。
     @_tokenizer.setter
     def _tokenizer(self, value):
-        """处理 tokenizer 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-        """
+        """把兼容赋值转发给 runtime，不建立第二份 tokenizer 状态。"""
         self.runtime.tokenizer = value
 
-    # 阅读注释（函数）：处理 模型 相关逻辑。
     @property
     def _model(self):
-        """处理 模型 相关逻辑。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-        """
+        """兼容旧测试代码的模型代理；真实所有权属于 runtime。"""
         return self.runtime.model
 
-    # 阅读注释（函数）：处理 模型 相关逻辑。
     @_model.setter
     def _model(self, value):
-        """处理 模型 相关逻辑。
-
-        参数:
-            value: value，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-        """
+        """把兼容赋值转发给 runtime，不建立第二份模型状态。"""
         self.runtime.model = value
 
-    # 阅读注释（函数）：确保 loaded 满足运行约束。
     def _ensure_loaded(self) -> None:
-        """确保 loaded 满足运行约束。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：self.runtime.ensure_loaded。
-        """
+        """触发延迟加载，并同步 runtime 最终选择的实际设备。"""
         self.runtime.ensure_loaded()
         self.device = self.runtime.device
 
@@ -124,50 +69,21 @@ class LocalQwenLLMClient(BaseLLMClient):
         """Release local model resources during gateway shutdown."""
         self.runtime.unload()
 
-    # 阅读注释（函数）：构建 消息集合。
     def _build_messages(self, request: ModelRequestSchema) -> list[dict[str, str]]:
-        """构建 消息集合。
-
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            list[dict[str, str]]
-
-        阅读提示:
-            主要直接调用：self.formatter.messages。
-        """
+        """兼容入口：委托格式器生成标准聊天消息序列。"""
         return self.formatter.messages(request)
 
-    # 阅读注释（函数）：构建 提示词 文本。
     def _build_prompt_text(self, request: ModelRequestSchema) -> str:
-        """构建 提示词 文本。
-
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            str
-
-        阅读提示:
-            主要直接调用：self._ensure_loaded, self.formatter.prompt_text。
-        """
+        """在 runtime 会话内应用当前 tokenizer 的 chat template。"""
         with self.runtime.call_session():
             self.device = self.runtime.device
             return self.formatter.prompt_text(self.runtime.tokenizer, request)
 
-    # 阅读注释（函数）：生成 LocalQwenLLMClient。
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
-        """生成 LocalQwenLLMClient。
+        """在一个独占 runtime 会话内完成格式化、生成、解码和用量统计。
 
-        参数:
-            request: 当前请求对象。
-
-        返回:
-            ModelResponseSchema
-
-        阅读提示:
-            主要直接调用：self._ensure_loaded, time.time, self.formatter.prompt_text, min, max, self.runtime.generate, int, strip。
+        这样按需释放不会发生在 Prompt 已格式化但模型尚未生成之间。请求的 ``max_tokens``
+        仍受客户端实例 ``max_new_tokens`` 上限约束，采样参数只在 ``do_sample`` 为真时生效。
         """
         # Keep prompt formatting, generation and decoding in one exclusive
         # runtime session so an on-demand release cannot unload between them.

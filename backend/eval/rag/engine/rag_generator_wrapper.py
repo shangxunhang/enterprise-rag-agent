@@ -1,15 +1,8 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：RAGGeneratorWrapper。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_generator_wrapper.py
-========================
+"""把旧版 RAG 重排、Prompt 构建和模型生成封装为统一评测接口。
 
-用于 eval 阶段的完整 RAG 生成器封装。
-
-它把 reranker、prompt_builder、llm_generator 串起来，
-并对 eval_runner 暴露统一 generate(query, retrieved_results) 接口。
+``eval_runner`` 只依赖 ``generate(query, retrieved_results)``。本适配器把可选
+reranker、prompt_builder 和 llm_generator 串联起来，并以参与 Prompt 的文档 ID
+作为第一版引用代理。该引用代理不表示答案中存在显式声明级引用。
 """
 
 from typing import Any, Dict, List
@@ -17,77 +10,64 @@ from typing import Any, Dict, List
 from rag.schema.eval_schema import RetrievalResult
 
 
-# 阅读注释（类）：封装 raggenerator wrapper，集中封装相关状态、依赖和行为。
 class RAGGeneratorWrapper:
-    """
-    完整 RAG 生成器封装。
+    """为旧版评测 Runner 提供最小完整 RAG 生成链。
 
-    eval_runner 只认识 generator.generate(query, retrieved_results)，
-    但真实 RAG 生成流程通常包括：
-    1. rerank
-    2. prompt build
-    3. llm generate
-    4. source/citation 提取
-
-    所以这里用 wrapper 把完整生成链路封装起来。
+    Attributes:
+        prompt_builder: 必须提供 ``build_prompt(query, retrieved_results)``。
+        llm_generator: 必须提供 ``generate(prompt)``。
+        reranker: 可选提供 ``rerank(query, candidates)``。
+        rerank_top_k: 可选重排后截断数量。
     """
 
-    # 阅读注释（函数）：初始化 RAGGeneratorWrapper，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         prompt_builder: Any,
         llm_generator: Any,
         reranker: Any = None,
         rerank_top_k: int | None = None,
-    ):
-        """初始化 RAGGeneratorWrapper，保存运行所需的依赖、配置或状态。
+    ) -> None:
+        """保存生成链依赖和可选重排截断参数。"""
 
-        参数:
-            prompt_builder: 提示词 builder，具体约束请结合类型标注和调用方确认。
-            llm_generator: LLM generator，具体约束请结合类型标注和调用方确认。
-            reranker: reranker，具体约束请结合类型标注和调用方确认。
-            rerank_top_k: 重排 top k，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-        """
         self.prompt_builder = prompt_builder
         self.llm_generator = llm_generator
         self.reranker = reranker
         self.rerank_top_k = rerank_top_k
 
-    # 阅读注释（函数）：生成 RAGGeneratorWrapper。
     def generate(
         self,
         query: str,
         retrieved_results: List[RetrievalResult],
     ) -> Dict[str, Any]:
+        """根据查询和检索结果生成答案及引用文档代理。
+
+        Args:
+            query: 原始用户查询。
+            retrieved_results: Retriever 返回的标准化结果。
+
+        Returns:
+            ``{"answer": str, "cited_doc_ids": list[str]}``，兼容旧版
+            ``eval_runner.call_generator``。
         """
-        根据 query 和 retrieved_results 生成最终答案。
 
-        返回格式必须兼容 eval_runner.call_generator：
-
-        {
-            "answer": "...",
-            "cited_doc_ids": ["doc_001", "doc_002"]
-        }
-        """
-
+        # 第一步：默认直接使用检索顺序；配置 reranker 时先执行重排。
         final_results = retrieved_results
-
         if self.reranker is not None:
             final_results = self._rerank(
                 query=query,
                 retrieved_results=retrieved_results,
             )
 
+        # 第二步：使用最终上下文构造 Prompt。
         prompt = self._build_prompt(
             query=query,
             retrieved_results=final_results,
         )
 
+        # 第三步：调用模型生成答案文本。
         answer = self._generate_answer(prompt)
 
+        # 第四步：把进入 Prompt 的去重文档 ID 作为临时引用代理。
         cited_doc_ids = self._extract_cited_doc_ids(final_results)
 
         return {
@@ -95,75 +75,59 @@ class RAGGeneratorWrapper:
             "cited_doc_ids": cited_doc_ids,
         }
 
-    # 阅读注释（函数）：对 RAGGeneratorWrapper 重新排序。
     def _rerank(
         self,
         query: str,
         retrieved_results: List[RetrievalResult],
     ) -> List[RetrievalResult]:
-        """
-        调用 reranker 对检索结果重排。
+        """调用注入的 reranker 并按可选 top_k 截断。
 
-        这里要根据你现有 reranker 的真实接口微调。
+        reranker 接口约定为 ``rerank(query=..., candidates=...)``。如具体实现使用
+        字典或其他 Schema，应在注入前增加适配器，而不是让评测 Runner 识别多种接口。
         """
 
-        # 如果你的 reranker 接收 dict/list，需要在这里转换
+        # 第一步：将标准化结果作为 candidates 交给重排器。
         reranked_results = self.reranker.rerank(
             query=query,
             candidates=retrieved_results,
         )
 
+        # 第二步：仅在显式配置时截断；None 保留重排器全部结果。
         if self.rerank_top_k is not None:
             reranked_results = reranked_results[: self.rerank_top_k]
 
         return reranked_results
 
-    # 阅读注释（函数）：构建 提示词。
     def _build_prompt(
         self,
         query: str,
         retrieved_results: List[RetrievalResult],
     ) -> str:
-        """
-        调用 prompt_builder 构造 prompt。
-
-        这里也要根据你现有 PromptBuilder 的真实接口微调。
-        """
+        """调用 Prompt Builder 构造模型输入文本。"""
 
         return self.prompt_builder.build_prompt(
             query=query,
             retrieved_results=retrieved_results,
         )
 
-    # 阅读注释（函数）：生成 answer。
     def _generate_answer(self, prompt: str) -> str:
-        """
-        调用 LLM 生成答案。
-
-        这里要根据你现有 LLM 类的真实接口微调。
-        """
+        """调用注入的模型生成器返回答案文本。"""
 
         return self.llm_generator.generate(prompt)
 
-    # 阅读注释（函数）：提取 cited doc 标识集合。
     def _extract_cited_doc_ids(
         self,
         retrieved_results: List[RetrievalResult],
     ) -> List[str]:
-        """
-        第一版 citation 简化处理：
+        """按上下文顺序提取去重文档 ID 作为引用代理。
 
-        只要 answer 是基于这些 retrieved_results 生成的，
-        就先把参与 prompt 的 doc_id 当成 cited_doc_ids。
-
-        后续可以升级为：
-        1. answer 显式引用 chunk_id
-        2. prompt 要求模型输出 sources
-        3. 从 answer 中解析引用标记
+        该实现假设进入 Prompt 的结果都可能支持答案，因此只能用于第一版闭环。
+        后续应由模型输出显式 citation_id，再绑定到具体声明位置。
         """
 
-        cited_doc_ids = []
+        cited_doc_ids: List[str] = []
 
+        # 按最终上下文顺序收集，既去重又保留首次出现顺序。
         for result in retrieved_results:
             if result.doc_id and result.doc_id not in cited_doc_ids:
                 cited_doc_ids.append(result.doc_id)

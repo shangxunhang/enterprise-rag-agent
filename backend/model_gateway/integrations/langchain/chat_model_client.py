@@ -9,6 +9,9 @@ from langchain_core.messages import BaseMessage
 from langchain_core.runnables import Runnable
 
 from contracts.base_client import BaseLLMClient
+from core.retry_policy import classify_failure
+from core.runtime.execution_control import WorkflowExecutionCancelled
+from core.secret_redaction import redact_sensitive_text
 from model_gateway.integrations.langchain.message_mapping import (
     finish_reason_from_message,
     message_content_to_text,
@@ -16,6 +19,15 @@ from model_gateway.integrations.langchain.message_mapping import (
     token_usage_from_message,
 )
 from schemas.model import ModelRequestSchema, ModelResponseSchema
+
+
+class SanitizedProviderInvocationError(RuntimeError):
+    """Provider failure with classification preserved and secrets removed."""
+
+    def __init__(self, exc: Exception, *, secrets: tuple[str, ...]) -> None:
+        self.original_error_type = exc.__class__.__name__
+        self.failure_category = classify_failure(exc)
+        super().__init__(redact_sensitive_text(exc, secrets=secrets))
 
 
 class LangChainChatModelClient(BaseLLMClient):
@@ -41,6 +53,16 @@ class LangChainChatModelClient(BaseLLMClient):
         self.model_name = str(model_name).strip()
         self.chat_model = chat_model
         self.provider_name = str(provider_name or "langchain").strip()
+
+    def _provider_secrets(self) -> tuple[str, ...]:
+        values: list[str] = []
+        for attribute in ("openai_api_key", "api_key"):
+            value = getattr(self.chat_model, attribute, None)
+            getter = getattr(value, "get_secret_value", None)
+            raw = getter() if callable(getter) else value
+            if isinstance(raw, str) and raw:
+                values.append(raw)
+        return tuple(dict.fromkeys(values))
 
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
         messages = request_to_langchain_messages(request)
@@ -71,7 +93,15 @@ class LangChainChatModelClient(BaseLLMClient):
         # stable enterprise request schema while still using LangChain's
         # standard invocation path.
         runnable = self.chat_model.bind(**generation_kwargs)
-        message = runnable.invoke(messages, config=config)
+        try:
+            message = runnable.invoke(messages, config=config)
+        except WorkflowExecutionCancelled:
+            raise
+        except Exception as exc:
+            raise SanitizedProviderInvocationError(
+                exc,
+                secrets=self._provider_secrets(),
+            ) from None
         latency_ms = int((time.monotonic() - started) * 1000)
 
         if not isinstance(message, BaseMessage):

@@ -27,8 +27,34 @@ class GenerationPluginConfig(BaseModel):
         return value
 
 
+class CanonicalBudgetPolicyConfig(BaseModel):
+    """Deployment-fixed SIF-12 hard Budget limits for Target production."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    logical_model_calls: int = Field(ge=0)
+    logical_tool_calls: int = Field(ge=0)
+    model_tokens_total: int = Field(ge=0)
+    research_rounds: int = Field(ge=0)
+    repair_attempts: int = Field(ge=0)
+    generation_attempts: int = Field(ge=0)
+    replan_attempts: int = Field(ge=0)
+    true_retry_attempts: int = Field(ge=0)
+    max_elapsed_seconds: int = Field(gt=0)
+    policy_ref: str
+    policy_version: str
+
+    @field_validator("policy_ref", "policy_version")
+    @classmethod
+    def canonical_budget_identity_not_blank(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("canonical Budget policy identity cannot be blank")
+        return normalized
+
+
 class GroundedGenerationPolicyConfig(BaseModel):
-    """Bounded post-generation checking, repair and retrieval feedback."""
+    """Bounded generation policy plus explicit canonical SIF-12 deployment limits."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +71,7 @@ class GroundedGenerationPolicyConfig(BaseModel):
     max_total_tokens: int = Field(default=24000, ge=256)
     human_review_on_exhaustion: bool = True
     budget_scope: Literal["section"] = "section"
+    canonical_budget: CanonicalBudgetPolicyConfig
 
     @model_validator(mode="after")
     def require_enabled_plugins(self) -> "GroundedGenerationPolicyConfig":

@@ -126,7 +126,7 @@ def test_context_manager_fails_when_required_untruncatable_item_cannot_fit() -> 
 
 
 # 阅读注释（函数）：处理 测试 章节 策略 preserves 证据 citations history and lineage 相关逻辑。
-def test_section_policy_preserves_evidence_citations_history_and_lineage() -> None:
+def test_section_policy_preserves_evidence_and_retires_raw_previous_section_authority() -> None:
     """处理 测试 章节 策略 preserves 证据 citations history and lineage 相关逻辑。
 
     返回:
@@ -176,10 +176,6 @@ def test_section_policy_preserves_evidence_citations_history_and_lineage() -> No
         ),
         assessment=RAGEvidenceAssessmentSchema(),
     )
-    rag_context.extra = {
-        "evidence_contract": contract.model_dump(),
-        "evidence_contract_sha256": "a" * 64,
-    }
     project_input = ProjectInputSchema.model_validate(
         {
             "task_id": "task_1",
@@ -218,12 +214,15 @@ def test_section_policy_preserves_evidence_citations_history_and_lineage() -> No
         rag_context=rag_context,
         citations=[citation],
         previous_sections=[previous],
+        evidence_bundle=contract,
     )
     package = LLMContextManager().build(request)
 
     item_by_id = {item.item_id: item for item in package.selected_items}
     assert item_by_id["E1"].citation_ids == ["C1"]
-    assert "previous_sections" in item_by_id
+    assert "previous_sections" not in item_by_id
+    assert package.metadata["legacy_previous_sections_ignored"] == 1
+    assert package.metadata["target_cross_section_semantics"] == "canonical_provider_only"
     assert package.lineage["index_version"] == "idx_v1"
     assert package.lineage["embedding_model"] == "m3e-base"
     assert "[C1]" in package.rendered_context

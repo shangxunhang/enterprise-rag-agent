@@ -1,0 +1,12 @@
+{
+  "documents": [
+    {
+      "source_name": "LOCAL_REFERENCE_DOCUMENT.docx",
+      "project_id": "example_project",
+      "document_role": "gold_reference",
+      "document_version": "0702",
+      "is_gold_reference": true,
+      "should_index": false
+    }
+  ]
+}

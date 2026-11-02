@@ -4,10 +4,127 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 from model_gateway.call_boundary import ModelCallBudgetExceeded
+
+
+class TaskDrainingBudgetExceeded(RuntimeError):
+    def __init__(self, resource: str, limit: int) -> None:
+        self.resource = resource
+        self.limit = int(limit)
+        super().__init__(f"task budget draining: {resource} limit={limit}")
+
+
+@dataclass
+class TaskDrainingBudget:
+    """Checkpoint-safe admission control for new Section atomic operations.
+
+    A Section admitted before draining may finish.  Once the configured limit is
+    reached, subsequent Section starts are rejected before any RAG/Model call.
+    """
+
+    max_section_starts: int = 1_000_000
+    started_section_ids: list[str] = field(default_factory=list)
+    completed_section_ids: list[str] = field(default_factory=list)
+    active_section_ids: list[str] = field(default_factory=list)
+    draining: bool = False
+    draining_reason: str | None = None
+
+    @classmethod
+    def from_policy_metadata(cls, metadata: dict | None) -> "TaskDrainingBudget":
+        raw = dict(metadata or {})
+        nested = raw.get("task_budget")
+        if isinstance(nested, dict):
+            raw = dict(nested)
+        return cls(
+            max_section_starts=max(
+                0,
+                int(raw.get("max_section_starts", 1_000_000)),
+            )
+        )
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: dict | None,
+        *,
+        policy_metadata: dict | None = None,
+    ) -> "TaskDrainingBudget":
+        raw = dict(snapshot or {})
+        if not raw:
+            return cls.from_policy_metadata(policy_metadata)
+        return cls(
+            max_section_starts=max(
+                0,
+                int(raw.get("max_section_starts", 1_000_000)),
+            ),
+            started_section_ids=list(
+                dict.fromkeys(str(item) for item in raw.get("started_section_ids", []))
+            ),
+            completed_section_ids=list(
+                dict.fromkeys(str(item) for item in raw.get("completed_section_ids", []))
+            ),
+            active_section_ids=list(
+                dict.fromkeys(str(item) for item in raw.get("active_section_ids", []))
+            ),
+            draining=bool(raw.get("draining", False)),
+            draining_reason=(
+                str(raw.get("draining_reason") or "").strip() or None
+            ),
+        )
+
+    def begin_section(self, section_id: str) -> None:
+        section_id = str(section_id).strip()
+        if not section_id:
+            raise ValueError("task budget requires section_id")
+        if section_id in self.completed_section_ids:
+            return
+        if section_id in self.active_section_ids:
+            return
+        if self.draining:
+            raise TaskDrainingBudgetExceeded(
+                self.draining_reason or "draining",
+                self.max_section_starts,
+            )
+        if len(self.started_section_ids) >= self.max_section_starts:
+            self.draining = True
+            self.draining_reason = "section_starts"
+            raise TaskDrainingBudgetExceeded(
+                "section_starts",
+                self.max_section_starts,
+            )
+        self.started_section_ids.append(section_id)
+        self.active_section_ids.append(section_id)
+
+    def finish_section(self, section_id: str) -> None:
+        section_id = str(section_id).strip()
+        self.active_section_ids = [
+            item for item in self.active_section_ids if item != section_id
+        ]
+        if section_id and section_id not in self.completed_section_ids:
+            self.completed_section_ids.append(section_id)
+        if len(self.started_section_ids) >= self.max_section_starts:
+            self.draining = True
+            self.draining_reason = self.draining_reason or "section_starts"
+
+    def abort_section(self, section_id: str) -> None:
+        section_id = str(section_id).strip()
+        self.active_section_ids = [
+            item for item in self.active_section_ids if item != section_id
+        ]
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "budget_semantics": "task_section_admission_v1",
+            "max_section_starts": self.max_section_starts,
+            "started_section_ids": list(self.started_section_ids),
+            "completed_section_ids": list(self.completed_section_ids),
+            "active_section_ids": list(self.active_section_ids),
+            "draining": self.draining,
+            "draining_reason": self.draining_reason,
+        }
 
 
 class WorkflowBudgetExceeded(ModelCallBudgetExceeded):
@@ -106,10 +223,18 @@ _ACTIVE_BUDGET: ContextVar[WorkflowBudget | None] = ContextVar(
     "enterprise_document_workflow_budget",
     default=None,
 )
+_ACTIVE_TASK_BUDGET: ContextVar[TaskDrainingBudget | None] = ContextVar(
+    "enterprise_document_task_draining_budget",
+    default=None,
+)
 
 
 def current_workflow_budget() -> WorkflowBudget | None:
     return _ACTIVE_BUDGET.get()
+
+
+def current_task_draining_budget() -> TaskDrainingBudget | None:
+    return _ACTIVE_TASK_BUDGET.get()
 
 
 @contextmanager
@@ -119,3 +244,14 @@ def activate_workflow_budget(budget: WorkflowBudget) -> Iterator[WorkflowBudget]
         yield budget
     finally:
         _ACTIVE_BUDGET.reset(token)
+
+
+@contextmanager
+def activate_task_draining_budget(
+    budget: TaskDrainingBudget,
+) -> Iterator[TaskDrainingBudget]:
+    token: Token[TaskDrainingBudget | None] = _ACTIVE_TASK_BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        _ACTIVE_TASK_BUDGET.reset(token)

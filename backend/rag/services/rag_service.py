@@ -49,10 +49,7 @@ def _bundle_from_tool_output(
             context=context,
         )
 
-    trace_id = str(
-        request.extra.get("retrieval_trace_id")
-        or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
-    )
+    trace_id = _retrieval_trace_id(request)
     evidence_quality = (
         output.extra.get("evidence_quality")
         if isinstance(output.extra, dict)
@@ -67,7 +64,7 @@ def _bundle_from_tool_output(
     correction_trace = [
         dict(item) for item in rounds if isinstance(item, dict)
     ] if isinstance(rounds, list) else []
-    return bundle.model_copy(
+    updated_bundle = bundle.model_copy(
         update={
             "task_id": request.task_id,
             "run_id": request.run_id,
@@ -90,6 +87,60 @@ def _bundle_from_tool_output(
                 },
             },
         }
+    )
+    return EvidenceBundleSchema.model_validate(
+        updated_bundle.model_dump(mode="python", round_trip=True)
+    )
+
+
+def _retrieval_trace_id(request: RAGToolInputSchema) -> str:
+    """Resolve one deterministic identity at the RAG service edge."""
+
+    return str(
+        request.retrieval_trace_id
+        or f"rag_{request.run_id}_{request.retrieval_scope or 'document'}"
+    )
+
+
+def _failed_retrieval_bundle(
+    request: RAGToolInputSchema,
+    exc: Exception,
+    *,
+    service_name: str,
+    error_factory: ErrorFactory,
+    retry_policy: RetryDecisionPolicy,
+    latency_ms: float,
+) -> EvidenceBundleSchema:
+    """Normalize one Exception-derived RAG service failure."""
+
+    failure_category = classify_failure(exc)
+    retryable = retry_policy.should_retry(failure_category)
+    return EvidenceBundleSchema(
+        task_id=request.task_id,
+        run_id=request.run_id,
+        status=ExecutionStatus.FAILED,
+        query=request.query,
+        retrieval_trace_id=_retrieval_trace_id(request),
+        context=RAGContextSchema(
+            context_text="",
+            max_context_chars=int(request.max_context_chars or 6000),
+            used_context_chars=0,
+            context_item_count=0,
+        ),
+        trace=RAGTraceSchema(
+            retrieval_mode="adaptive",
+            query=request.query,
+            latency_ms=latency_ms,
+        ),
+        error=error_factory.create(
+            error_code="RAG_RETRIEVAL_FAILED",
+            error_type=exc.__class__.__name__,
+            message=str(exc),
+            recoverable=retryable,
+            retryable=retryable,
+            failure_category=failure_category,
+            component=service_name,
+        ),
     )
 
 
@@ -175,38 +226,13 @@ class RAGService(RAGServicePort):
         except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
             raise
         except Exception as exc:
-            failure_category = classify_failure(exc)
-            retryable = self.retry_policy.should_retry(failure_category)
-            trace = RAGTraceSchema(
-                retrieval_mode="adaptive",
-                query=request.query,
+            return _failed_retrieval_bundle(
+                request,
+                exc,
+                service_name=self.service_name,
+                error_factory=self.error_factory,
+                retry_policy=self.retry_policy,
                 latency_ms=elapsed_ms(self.timer, started),
-            )
-            return EvidenceBundleSchema(
-                task_id=request.task_id,
-                run_id=request.run_id,
-                status=ExecutionStatus.FAILED,
-                query=request.query,
-                retrieval_trace_id=str(
-                    request.extra.get("retrieval_trace_id")
-                    or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
-                ),
-                context=RAGContextSchema(
-                    context_text="",
-                    max_context_chars=int(request.max_context_chars or 6000),
-                    used_context_chars=0,
-                    context_item_count=0,
-                ),
-                trace=trace,
-                error=self.error_factory.create(
-                    error_code="RAG_RETRIEVAL_FAILED",
-                    error_type=exc.__class__.__name__,
-                    message=str(exc),
-                    recoverable=retryable,
-                    retryable=retryable,
-                    failure_category=failure_category,
-                    component=self.service_name,
-                ),
             )
 
     def close(self) -> None:
@@ -218,29 +244,51 @@ class RAGService(RAGServicePort):
 class FakeRAGService(RAGServicePort):
     """Deterministic evidence service used by the fake mainline."""
 
-    def __init__(self, tool: FakeRAGTool | None = None) -> None:
+    service_name = "FakeRAGService"
+
+    def __init__(
+        self,
+        tool: FakeRAGTool | None = None,
+        *,
+        error_factory: ErrorFactory | None = None,
+        retry_policy: RetryDecisionPolicy | None = None,
+        timer: Timer | None = None,
+    ) -> None:
         self.tool = tool or FakeRAGTool()
+        self.error_factory = error_factory or ErrorFactory()
+        self.retry_policy = retry_policy or RetryDecisionPolicy()
+        self.timer = timer or MonotonicTimer()
 
     def retrieve(self, request: RAGToolInputSchema) -> EvidenceBundleSchema:
-        tool_call_id = str(
-            request.extra.get("retrieval_trace_id")
-            or f"rag_{request.run_id}_{request.extra.get('retrieval_scope') or 'document'}"
-        )
-        result = self.tool.run(
-            ToolCallSchema(
-                tool_call_id=tool_call_id,
-                task_id=request.task_id,
-                run_id=request.run_id,
-                tool_name=self.tool.tool_name,
-                tool_input={**request.model_dump(), **dict(request.extra)},
-                caller_agent=request.agent_name,
-                created_at=datetime.now(timezone.utc).isoformat(),
+        started = self.timer.now()
+        try:
+            tool_call_id = _retrieval_trace_id(request)
+            result = self.tool.run(
+                ToolCallSchema(
+                    tool_call_id=tool_call_id,
+                    task_id=request.task_id,
+                    run_id=request.run_id,
+                    tool_name=self.tool.tool_name,
+                    tool_input=request.model_dump(mode="json"),
+                    caller_agent=request.agent_name,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
             )
-        )
-        return _bundle_from_tool_output(
-            request,
-            RAGToolOutputSchema.model_validate(result.result or {}),
-        )
+            return _bundle_from_tool_output(
+                request,
+                RAGToolOutputSchema.model_validate(result.result or {}),
+            )
+        except (ModelCallBudgetExceeded, WorkflowExecutionCancelled):
+            raise
+        except Exception as exc:
+            return _failed_retrieval_bundle(
+                request,
+                exc,
+                service_name=self.service_name,
+                error_factory=self.error_factory,
+                retry_policy=self.retry_policy,
+                latency_ms=elapsed_ms(self.timer, started),
+            )
 
 
 class ObservedRAGService(RAGServicePort):
@@ -261,9 +309,7 @@ class ObservedRAGService(RAGServicePort):
             span_kind="client",
             parent=current_span(),
         )
-        call_id = str(
-            request.extra.get("retrieval_trace_id") or f"rag_{request.run_id}"
-        )
+        call_id = _retrieval_trace_id(request)
         self._record(
             task_id=request.task_id,
             run_id=request.run_id,
@@ -283,7 +329,7 @@ class ObservedRAGService(RAGServicePort):
             started_at=span.started_at,
             input_summary={
                 "query": request.query,
-                "scope": request.extra.get("retrieval_scope"),
+                "scope": request.retrieval_scope,
             },
             tags=["trace_v2", "rag"],
         )

@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：chunk_fixed_size。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Shared fixed-size chunking algorithm.
+"""两个历史 FixedSizeChunker import 路径共用的实际切分与偏移算法。
 
 The project historically exposed two import paths with slightly different legacy
 chunk metadata.  This module owns the actual splitting/offset algorithm while
@@ -10,7 +6,7 @@ thin adapters preserve both public behaviours.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Literal
+from typing import Any, Dict, List, Literal
 
 from rag.schema.Chunk_Schema import build_chunk
 from rag.util.text_utils import split_text_by_fixed_size
@@ -18,7 +14,21 @@ from rag.util.text_utils import split_text_by_fixed_size
 SchemaStyle = Literal["document", "fields"]
 
 
-# 阅读注释（函数）：处理 文本块 fixed size 相关逻辑。
+def _compat_extra(
+    document: Dict,
+    *,
+    chunk_type: str,
+    **fields: Any,
+) -> Dict[str, Any]:
+    """Copy caller metadata.extra and overlay authoritative chunk facts."""
+
+    metadata = document.get("metadata") or {}
+    extra = dict(metadata.get("extra") or {})
+    extra.update(fields)
+    extra["chunk_type"] = chunk_type
+    return extra
+
+
 def chunk_fixed_size(
     document: Dict,
     *,
@@ -26,7 +36,12 @@ def chunk_fixed_size(
     chunk_overlap: int,
     schema_style: SchemaStyle = "fields",
 ) -> List[Dict]:
-    """Split one document and map pieces to the requested legacy schema style."""
+    """按固定字符窗切分一个 Document，并映射到指定历史 Schema 风格。
+
+    ``document`` 风格直接委托旧 ``build_chunk(doc=...)``；``fields`` 风格还会从上次游标
+    向后定位正文偏移。重复文本无法可靠定位时，``start_char/end_char`` 保留为空，而不是
+    猜测一个错误位置。
+    """
     text = document.get("text", "")
     chunk_texts = split_text_by_fixed_size(
         text=text,
@@ -44,6 +59,10 @@ def chunk_fixed_size(
                     chunk_text=chunk_text,
                     chunk_index=idx,
                     chunk_type="fixed_size",
+                    extra=_compat_extra(
+                        document,
+                        chunk_type="fixed_size",
+                    ),
                 )
             )
             continue
@@ -65,6 +84,12 @@ def chunk_fixed_size(
                 chunk_type="fixed",
                 start_char=start_char,
                 end_char=end_char,
+                extra=_compat_extra(
+                    document,
+                    chunk_type="fixed",
+                    start_char=start_char,
+                    end_char=end_char,
+                ),
             )
         )
 

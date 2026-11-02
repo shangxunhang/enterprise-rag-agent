@@ -6,6 +6,7 @@ from typing import Optional
 
 from agent.base_agent import BaseAgent
 from agent.runtime.shared_state_schema import SharedStateSchema
+from apps.enterprise_document.services.gate_enforcement import GateEnforcementController
 from apps.enterprise_document.services.semantic_section_judge import SemanticSectionJudge
 from apps.enterprise_document.services.scheme_writer.advisory_service import (
     SectionAdvisoryService,
@@ -43,6 +44,12 @@ from apps.enterprise_document.services.scheme_writer.section_generation_service 
 from apps.enterprise_document.services.scheme_writer.section_retrieval_query_builder import (
     SectionRetrievalQueryBuilder,
 )
+from apps.enterprise_document.services.scheme_writer.semantic_claim_classifier import (
+    SemanticClaimClassifier,
+)
+from apps.enterprise_document.services.scheme_writer.writer_governance import (
+    WriterClaimAuditor,
+)
 from apps.enterprise_document.services.scheme_writer.use_case import (
     SchemeGenerationUseCase,
 )
@@ -51,6 +58,7 @@ from contracts.observability import DataCaptureSink
 from contracts.rag import RAGServicePort
 from model_gateway.model_gateway import ModelGateway
 from prompt_manager.prompt_manager import PromptManager
+from rag.store.evidence_bundle_store import EvidenceBundleSnapshotStore
 from schemas.agent import AgentResultSchema
 from schemas.rag import RetrievalAccessScopeSchema
 
@@ -67,9 +75,10 @@ class SchemeWriterAgent(BaseAgent):
         model_gateway: Optional[ModelGateway] = None,
         data_capture_recorder: Optional[DataCaptureSink] = None,
         prompt_manager: Optional[PromptManager] = None,
-        prompt_id: str = "scheme_section_generation_v1",
+        prompt_id: str = "scheme_section_generation_v2",
         model_name: str = "fake_llm",
         rag_service_name: str = "RAGService",
+        section_retrieval_default_enabled: bool = True,
         enable_agent_self_rag: bool = True,
         enable_semantic_gate: bool = False,
         semantic_gate_model_name: Optional[str] = None,
@@ -77,12 +86,16 @@ class SchemeWriterAgent(BaseAgent):
         repair_strategy: object | None = None,
         generation_quality_metadata: Optional[dict] = None,
         retrieval_access_scope: RetrievalAccessScopeSchema | None = None,
+        evidence_bundle_store: EvidenceBundleSnapshotStore | None = None,
+        section_max_concurrency: int = 1,
+        gate_enforcement_mode: str = "strict",
     ) -> None:
         # Long-lived adapters and configuration are owned by the composition
         # root.  Focused services receive only the collaborators they use.
         context_manager = LLMContextManager()
         context_policy = SectionGenerationContextPolicy()
         semantic_model_name = semantic_gate_model_name or model_name
+        gate_enforcement_controller = GateEnforcementController(gate_enforcement_mode)
 
         self.runtime_support = SchemeWriterRuntimeSupport()
         self.input_service = SchemeInputService()
@@ -90,8 +103,8 @@ class SchemeWriterAgent(BaseAgent):
         self.evidence_service = SchemeEvidenceService(
             rag_service=rag_service,
             agent_name=self.agent_name,
-            model_gateway=model_gateway,
             retrieval_access_scope=retrieval_access_scope,
+            evidence_bundle_store=evidence_bundle_store,
         )
         self.prompt_service = SectionPromptService(
             context_manager=context_manager,
@@ -122,6 +135,13 @@ class SchemeWriterAgent(BaseAgent):
             citation_service=self.citation_service,
         )
         self.advisory_service = SectionAdvisoryService()
+        writer_claim_auditor = (
+            WriterClaimAuditor(
+                classifier=SemanticClaimClassifier(model_gateway=model_gateway)
+            )
+            if model_gateway is not None
+            else WriterClaimAuditor()
+        )
         self.section_generation_service = SectionGenerationService(
             runtime_support=self.runtime_support,
             prompt_service=self.prompt_service,
@@ -129,6 +149,8 @@ class SchemeWriterAgent(BaseAgent):
             citation_service=self.citation_service,
             grounding_repair_service=self.grounding_repair_service,
             advisory_service=self.advisory_service,
+            writer_claim_auditor=writer_claim_auditor,
+            gate_enforcement_controller=gate_enforcement_controller,
             semantic_judge=SemanticSectionJudge(
                 model_gateway=model_gateway,
                 model_name=semantic_model_name,
@@ -164,7 +186,9 @@ class SchemeWriterAgent(BaseAgent):
             agent_name=self.agent_name,
             agent_type=self.agent_type,
             rag_service_name=rag_service_name,
+            section_retrieval_default_enabled=section_retrieval_default_enabled,
             enable_semantic_gate=enable_semantic_gate,
+            section_max_concurrency=section_max_concurrency,
         )
         self.stage_service = self.use_case.stage_service
 

@@ -1,42 +1,19 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_safe_float、_get_candidate_text、NoOpParentChildReranker、ParentChildReranker。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/reranker/parent_child_reranker.py
-=============================================
+"""P3 父子检索重排：使用最终父级上下文而非仅命中子块打分。
 
-P3 parent-child reranker:
-- Input: retrieval_result_v2 list from P2 hybrid retriever.
-- Score: query + parent_text by a cross-encoder reranker.
-- Output: reranked retrieval_result_v2 list with rerank_score and updated rank.
-
-职责边界：
-- 只做 rerank，不做检索、不做 BM25、不做 RRF、不做 prompt packing。
-- 第一版默认用 parent_text，因为最终进入 prompt 的上下文就是 parent。
+输入是 P2 的 ``retrieval_result_v2``；Cross-Encoder 默认计算 Query 与 ``parent_text`` 的
+相关度，写入 ``rerank_score`` 并更新排名。该层不执行召回、RRF 或 Context Packing。
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Optional
+from core.diagnostics import capture_event, capture_pool, current_diagnostics
 
 
-# 阅读注释（函数）：处理 safe float 相关逻辑。
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """处理 safe float 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：float。
-    """
+    """安全规范化原召回分数和 Cross-Encoder Logit。"""
     try:
         if value is None:
             return default
@@ -45,15 +22,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-# 阅读注释（函数）：获取 candidate 文本。
 def _get_candidate_text(result: Dict[str, Any], text_field: str = "parent_text") -> str:
-    """Return the text used for rerank."""
+    """按指定字段取重排文本，并依次回退到父块、通用正文和子块正文。"""
     if text_field and result.get(text_field):
         return str(result.get(text_field) or "")
     return str(result.get("parent_text") or result.get("text") or result.get("child_text") or "")
 
 
-# 阅读注释（类）：封装 no op 父块 子块 reranker，集中封装相关状态、依赖和行为。
 class NoOpParentChildReranker:
     """No-op reranker for smoke tests.
 
@@ -61,7 +36,6 @@ class NoOpParentChildReranker:
     Useful when the reranker model is not available yet.
     """
 
-    # 阅读注释（函数）：对 NoOpParentChildReranker 重新排序。
     def rerank(
         self,
         query: str,
@@ -70,22 +44,15 @@ class NoOpParentChildReranker:
         top_k: Optional[int] = None,
         text_field: str = "parent_text",
     ) -> List[Dict[str, Any]]:
-        """对 NoOpParentChildReranker 重新排序。
-
-        参数:
-            query: 当前检索或生成查询。
-            results: 待处理的结果集合。
-            top_k: top k，具体约束请结合类型标注和调用方确认。
-            text_field: 文本 field，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            List[Dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：deepcopy, int, enumerate, _safe_float, item.get, dict。
-        """
+        """保留 P2 顺序，把原 ``score`` 投影为 ``rerank_score``，供无模型测试使用。"""
+        if current_diagnostics().enabled:
+            capture_event("R-RERANK", {"phase": "REQUEST", "query": query, "text_field": text_field,
+                "model": "noop", "implementation": "NoOpParentChildReranker",
+                "input_ids": [item.get("parent_chunk_id") or item.get("chunk_id") for item in results],
+                "actual_texts": [_get_candidate_text(item, text_field) for item in results]}, unit_id="C08", operation_id="noop_rerank")
         del query, text_field
         selected = [deepcopy(x) for x in results]
+        capture_pool("R-RERANK", selected, unit_id="C08", operation_id="noop_before_top_k", phase="BEFORE_TOP_K", model="noop", top_k=top_k)
         if top_k is not None:
             selected = selected[: int(top_k)]
         for idx, item in enumerate(selected, start=1):
@@ -95,14 +62,13 @@ class NoOpParentChildReranker:
             meta["retrieval_stage"] = "p3_noop_rerank"
             meta["reranker"] = "noop"
             item["metadata"] = meta
+        capture_pool("R-RERANK", selected, unit_id="C08", operation_id="noop_after_top_k", phase="RESULT", model="noop", top_k=top_k)
         return selected
 
 
-# 阅读注释（类）：封装 父块 子块 reranker，集中封装相关状态、依赖和行为。
 class ParentChildReranker:
-    """Cross-encoder reranker for parent-child retrieval results."""
+    """面向父子检索结果的本地 Cross-Encoder 重排器。"""
 
-    # 阅读注释（函数）：初始化 ParentChildReranker，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         model_name: str,
@@ -112,20 +78,10 @@ class ParentChildReranker:
         max_length: int = 512,
         local_files_only: bool = True,
     ):
-        """初始化 ParentChildReranker，保存运行所需的依赖、配置或状态。
+        """延迟导入 PyTorch/Transformers 并加载本地 Cross-Encoder 资源。
 
-        参数:
-            model_name: 模型 名称，具体约束请结合类型标注和调用方确认。
-            device: device，具体约束请结合类型标注和调用方确认。
-            batch_size: batch size，具体约束请结合类型标注和调用方确认。
-            max_length: max length，具体约束请结合类型标注和调用方确认。
-            local_files_only: 本地 files only，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            未显式标注；请结合调用方和实际返回语句理解。
-
-        阅读提示:
-            主要直接调用：ValueError, str, int, bool, print, AutoTokenizer.from_pretrained, AutoModelForSequenceClassification.from_pretrained, self.model.to。
+        ``local_files_only`` 默认开启，避免运行时意外联网；最大序列长度和批量大小是显存与
+        父块信息保留之间的直接权衡。
         """
         if not model_name:
             raise ValueError("model_name is required")
@@ -162,7 +118,6 @@ class ParentChildReranker:
         print("[ParentChildReranker] Model loaded")
         print("=" * 80)
 
-    # 阅读注释（函数）：计算 pairs 的评分。
     def score_pairs(self, pairs: List[List[str]]) -> List[float]:
         """Score [[query, text], ...] pairs."""
         if not pairs:
@@ -179,6 +134,21 @@ class ParentChildReranker:
                     max_length=self.max_length,
                     return_tensors="pt",
                 )
+                if current_diagnostics().enabled:
+                    try:
+                        import hashlib
+                        import json
+                        token_ids = inputs["input_ids"].tolist()
+                        masks = inputs.get("attention_mask")
+                        lengths = [sum(mask) for mask in masks.tolist()] if masks is not None else [len(ids) for ids in token_ids]
+                        capture_event("R-RERANK", {"phase": "TOKENIZED", "batch_start": start,
+                            "model": self.model_name, "tokenizer": getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
+                            "max_length": self.max_length, "truncation": True, "padding": True,
+                            "input_token_digest": hashlib.sha256(json.dumps(token_ids, separators=(",", ":")).encode()).hexdigest(),
+                            "input_token_lengths": lengths}, unit_id="C08", operation_id="rerank_tokenized")
+                    except Exception:
+                        current_diagnostics().emit({"event_type": "R-RERANK", "evidence_key": "R-RERANK", "unit_id": "C08",
+                            "payload": {"phase": "TOKEN_SUMMARY_UNAVAILABLE", "complete": False}})
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 outputs = self.model(**inputs)
                 logits = outputs.logits
@@ -186,7 +156,6 @@ class ParentChildReranker:
                 all_scores.extend(float(x) for x in scores)
         return all_scores
 
-    # 阅读注释（函数）：对 ParentChildReranker 重新排序。
     def rerank(
         self,
         query: str,
@@ -195,7 +164,7 @@ class ParentChildReranker:
         top_k: Optional[int] = None,
         text_field: str = "parent_text",
     ) -> List[Dict[str, Any]]:
-        """Rerank retrieval_result_v2 records by query + parent_text."""
+        """对候选副本批量打分，保留重排前排名/分数并按 Logit 重新编号。"""
         if not query or not str(query).strip():
             raise ValueError("query cannot be empty")
         if not results:
@@ -203,6 +172,10 @@ class ParentChildReranker:
 
         candidates = [deepcopy(x) for x in results]
         pairs = [[str(query), _get_candidate_text(x, text_field=text_field)] for x in candidates]
+        capture_event("R-RERANK", {"phase": "REQUEST", "query": str(query), "text_field": text_field,
+            "model": self.model_name, "max_length": self.max_length,
+            "input_ids": [item.get("parent_chunk_id") or item.get("chunk_id") for item in candidates],
+            "actual_pairs": pairs}, unit_id="C08", operation_id="parent_cross_encoder_request")
         scores = self.score_pairs(pairs)
 
         reranked: List[Dict[str, Any]] = []
@@ -218,10 +191,14 @@ class ParentChildReranker:
             reranked.append(item)
 
         reranked.sort(key=lambda x: _safe_float(x.get("rerank_score"), float("-inf")), reverse=True)
+        capture_pool("R-RERANK", reranked, unit_id="C08", operation_id="cross_encoder_before_top_k", query=query,
+            phase="BEFORE_TOP_K", top_k=top_k, text_field=text_field, model=self.model_name)
         if top_k is not None:
             reranked = reranked[: int(top_k)]
         for idx, item in enumerate(reranked, start=1):
             item["rank"] = idx
+        capture_pool("R-RERANK", reranked, unit_id="C08", operation_id="cross_encoder_after_top_k", query=query,
+            phase="RESULT", top_k=top_k, text_field=text_field, model=self.model_name)
         return reranked
 
     def close(self) -> None:

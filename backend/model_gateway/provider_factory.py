@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.runnables import RunnableLambda
 
@@ -85,12 +86,32 @@ class ModelProviderFactory:
                     "langchain-openai is not installed"
                 )
             else:
-                chat_model = ChatOpenAI(
+                chat_model_class = ChatOpenAI
+                if profile.profile_id == "deepseek" and urlsplit(base_url).hostname == "api.deepseek.com":
+                    from model_gateway.integrations.langchain.deepseek_chat_model import DeepSeekChatOpenAI
+
+                    chat_model_class = DeepSeekChatOpenAI
+                chat_model = chat_model_class(
                     model=provider_model,
                     api_key=api_key,
                     base_url=base_url,
                     timeout=float(profile.timeout_seconds),
                     max_retries=0,
+                    extra_body={
+                        "thinking": {
+                            "type": (
+                                "enabled"
+                                if bool(
+                                    getattr(
+                                        settings,
+                                        "deepseek_thinking_enabled",
+                                        False,
+                                    )
+                                )
+                                else "disabled"
+                            )
+                        }
+                    },
                 )
 
         return LangChainChatModelClient(

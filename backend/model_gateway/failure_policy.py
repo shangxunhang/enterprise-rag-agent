@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from model_gateway.model_contract import ModelSelection
-from schemas.failure import FailureCategory
+from schemas.failure import FailureCategory, FailureOrigin
 from schemas.model import ModelResponseSchema
 
 
@@ -61,6 +61,11 @@ class AvailabilityFailurePolicy:
         selection: ModelSelection,
     ) -> bool:
         if response.success:
+            return False
+        # Provider fallback is legal only for failures whose nearest source is
+        # the provider/runtime boundary. Budget/storage/unknown failures must
+        # never use provider fallback as an escape hatch.
+        if response.failure_origin is not FailureOrigin.PROVIDER_RUNTIME:
             return False
         error_type = str(response.error.error_type if response.error else "")
         failure_category = (

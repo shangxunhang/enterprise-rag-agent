@@ -1,17 +1,12 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：以常量、Schema 导入或注册配置为主。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-src/rag_template/prompt/templates.py
-====================================
+"""保存旧版知识库问答的静态 Prompt 模板文本。
 
-RAG Prompt 模板配置。
-
-这里只存放 prompt 模板文本，不写业务逻辑。
+本模块不执行路由或渲染。``prompt_builder`` 根据 ``QueryType.value`` 从
+``PROMPT_TEMPLATES`` 选择模板，并注入统一系统约束、资料上下文和用户问题。修改模板
+会改变模型行为和后训练采集数据，应同步提升 Prompt 版本或记录实验配置。
 """
 
 
+# 所有问答模板共享的最高层约束：只依据资料、保留规则词语并输出 chunk_id 来源。
 BASE_SYSTEM_INSTRUCTION = """
 你是一个严谨的知识库问答助手。
 
@@ -27,6 +22,7 @@ BASE_SYSTEM_INSTRUCTION = """
 """
 
 
+# 通用问答模板，适用于规则分类器未识别出特殊回答结构的查询。
 DEFAULT_QA_TEMPLATE = """
 {system_instruction}
 
@@ -45,6 +41,7 @@ DEFAULT_QA_TEMPLATE = """
 """
 
 
+# 定义类问题要求给出概念、资料中明确作用和补充说明，禁止外部背景扩展。
 DEFINITION_QA_TEMPLATE = """
 {system_instruction}
 
@@ -71,6 +68,7 @@ DEFINITION_QA_TEMPLATE = """
 """
 
 
+# 原因类问题要求区分原因、明确影响和资料给出的正确做法。
 REASON_QA_TEMPLATE = """
 {system_instruction}
 
@@ -98,6 +96,7 @@ REASON_QA_TEMPLATE = """
 """
 
 
+# 流程类问题优先保留资料原编号，并要求覆盖参与角色、条件和结果。
 PROCESS_QA_TEMPLATE = """
 {system_instruction}
 
@@ -118,6 +117,7 @@ PROCESS_QA_TEMPLATE = """
 """
 
 
+# 对比类问题要求按对象分开描述特点、适用场景和资料中的选择建议。
 COMPARISON_QA_TEMPLATE = """
 {system_instruction}
 
@@ -139,6 +139,7 @@ COMPARISON_QA_TEMPLATE = """
 """
 
 
+# 列表类问题强调完整覆盖资料中明确列出的项目和数量/字段要求。
 LIST_QA_TEMPLATE = """
 {system_instruction}
 
@@ -164,6 +165,7 @@ LIST_QA_TEMPLATE = """
 """
 
 
+# 文档总结模板不接收 query，只基于 context 提炼核心内容。
 SUMMARY_TEMPLATE = """
 你是一个严谨的文档总结助手。
 
@@ -178,6 +180,9 @@ SUMMARY_TEMPLATE = """
 2. 不要编造。
 3. 保留关键来源 chunk_id。
 """
+
+
+# 规则类问题重点保持“必须、禁止、不得”等规范性词语方向不变。
 RULE_QA_TEMPLATE = """
 {system_instruction}
 
@@ -203,6 +208,7 @@ RULE_QA_TEMPLATE = """
 """
 
 
+# 键必须与 QueryType.value 对齐；default 是所有未知类型的回退模板。
 PROMPT_TEMPLATES = {
     "default": DEFAULT_QA_TEMPLATE,
     "definition": DEFINITION_QA_TEMPLATE,
@@ -211,5 +217,5 @@ PROMPT_TEMPLATES = {
     "comparison": COMPARISON_QA_TEMPLATE,
     "list": LIST_QA_TEMPLATE,
     "summary": SUMMARY_TEMPLATE,
-    "rule":RULE_QA_TEMPLATE
+    "rule": RULE_QA_TEMPLATE,
 }

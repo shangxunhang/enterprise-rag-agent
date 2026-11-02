@@ -1,74 +1,87 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：QueryType、detect_query_type。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-query_type.py
-=============
+"""用确定性规则识别旧版知识库问答的查询类型。
 
-RAG 问题类型识别模块。
-
-本文件负责根据用户 query 判断问题类型，
-用于 Prompt Router 选择不同的 prompt 模板。
-
-当前第一版采用规则匹配。
-后续可以升级为：
-1. LLM 分类
-2. 小模型分类
-3. 规则 + LLM 混合分类
+分类结果只用于选择 Prompt 模板，不改变检索策略。当前规则按固定优先级匹配中文
+触发词；一个查询同时命中多类时，返回代码中最先检查的类型。复杂意图识别应由
+新的路由器或模型分类器承担。
 """
 
 from enum import Enum
 
 
-# 阅读注释（类）：封装 查询 类型，集中封装相关状态、依赖和行为。
 class QueryType(str, Enum):
-    """
-    RAG 问题类型枚举。
-    """
+    """旧版 Prompt Router 支持的问题类型。"""
 
-    DEFINITION = "definition"      # 是什么 / 定义 / 概念
-    REASON = "reason"              # 为什么 / 原因
-    PROCESS = "process"            # 流程 / 步骤 / 怎么做
-    COMPARISON = "comparison"      # 对比 / 区别 / 分别适合
-    LIST = "list"                  # 有哪些 / 包括哪些
-    DEFAULT = "default"            # 默认问答
+    # 定义、原因、流程、对比和列表分别对应不同回答结构。
+    DEFINITION = "definition"
+    REASON = "reason"
+    PROCESS = "process"
+    COMPARISON = "comparison"
+    LIST = "list"
+
+    # DEFAULT 用于未命中任何规则的通用问答。
+    DEFAULT = "default"
+
+    # 历史成员名为 RUN，但值对应制度/规则类模板；保留名称以兼容旧调用方。
     RUN = "rule"
 
 
-# 阅读注释（函数）：处理 detect 查询 类型 相关逻辑。
 def detect_query_type(query: str) -> QueryType:
-    """
-    根据 query 判断问题类型。
+    """根据中文触发词返回问题类型。
 
-    参数:
-        query:
-            用户问题。
+    Args:
+        query: 用户查询文本。
 
-    返回:
-        QueryType:
-            问题类型。
+    Returns:
+        首个命中的 ``QueryType``；空查询或无匹配规则时返回 ``DEFAULT``。
     """
+
+    # 第一步：空值没有可分类语义，使用通用模板。
     if not query:
         return QueryType.DEFAULT
 
+    # 第二步：去除首尾空白，但不改写大小写或标点。
     query = query.strip()
 
-    if any(word in query for word in ["是什么", "什么是", "定义", "概念"]):
+    # 第三步：按固定优先级检查定义类触发词。
+    if any(
+        word in query
+        for word in ["是什么", "什么是", "定义", "概念"]
+    ):
         return QueryType.DEFINITION
 
-    if any(word in query for word in ["为什么", "为何", "原因", "怎么会"]):
+    # 第四步：检查原因解释类问题。
+    if any(
+        word in query
+        for word in ["为什么", "为何", "原因", "怎么会"]
+    ):
         return QueryType.REASON
 
-    if any(word in query for word in ["流程", "步骤", "怎么做", "如何", "怎么办"]):
+    # 第五步：检查流程、步骤和操作类问题。
+    if any(
+        word in query
+        for word in ["流程", "步骤", "怎么做", "如何", "怎么办"]
+    ):
         return QueryType.PROCESS
 
-    if any(word in query for word in ["区别", "对比", "比较", "分别", "适合什么场景"]):
+    # 第六步：检查对比、区别和场景选择类问题。
+    if any(
+        word in query
+        for word in ["区别", "对比", "比较", "分别", "适合什么场景"]
+    ):
         return QueryType.COMPARISON
 
-    if any(word in query for word in ["有哪些", "包括哪些", "包含哪些", "有什么"]):
+    # 第七步：检查枚举和组成项类问题。
+    if any(
+        word in query
+        for word in ["有哪些", "包括哪些", "包含哪些", "有什么"]
+    ):
         return QueryType.LIST
-    if any(word in query for word in ["不能", "禁止", "必须", "不得", "权限", "合规", "安全"]):
-        return QueryType.RULE
+
+    # 第八步：检查制度、权限、安全和强制规则类问题。
+    if any(
+        word in query
+        for word in ["不能", "禁止", "必须", "不得", "权限", "合规", "安全"]
+    ):
+        return QueryType.RUN
 
     return QueryType.DEFAULT

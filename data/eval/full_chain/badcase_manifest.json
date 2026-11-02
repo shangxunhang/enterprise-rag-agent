@@ -1,0 +1,85 @@
+{
+  "cases": [
+    {
+      "badcase_id": "Attempt3-unsorted-refs",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "HISTORICAL_EXACT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_bca014_verifier_reply_ref_normalization.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "W13"
+    },
+    {
+      "badcase_id": "Attempt4-illegal-positive-basis",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "HISTORICAL_EXACT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "docs/post_r13_business_improvements_audits/LOCAL_VERIFIER_RECOVERY_DESIGN_20261004_01a10514/readonly_counterexample_copy",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "backend/tests/test_full_chain_eval_generation_claim.py::test_attempt4_exact_original_positive_members_keep_native_rejection[W07]"
+    },
+    {
+      "badcase_id": "Attempt5-role-bindings",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "SYNTHETIC_EQUIVALENT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_full_chain_eval_postwrite_release.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "backend/tests/test_full_chain_eval_postwrite_release.py::test_S07_bad_role_structure_is_technical_not_semantic_conflict"
+    },
+    {
+      "badcase_id": "Attempt5-recovery-predecessor",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "SYNTHETIC_EQUIVALENT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_full_chain_eval_runtime_reliability.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "backend/tests/test_full_chain_eval_runtime_reliability.py::test_T03_T08_readonly_runtime_counterexamples[record1-RECOVERY_PREDECESSOR_MISMATCH]"
+    },
+    {
+      "badcase_id": "Attempt5-long-gate-drain",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "SYNTHETIC_EQUIVALENT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_full_chain_eval_runtime_reliability.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "backend/tests/test_full_chain_eval_postwrite_release.py::test_S15_real_composition_timeout_keeps_required_plan_without_completion"
+    },
+    {
+      "badcase_id": "oversized-chunk",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "SYNTHETIC_EQUIVALENT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_full_chain_eval_ingestion_index.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "I04"
+    },
+    {
+      "badcase_id": "rerank-prompt-mismatch",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "SYNTHETIC_EQUIVALENT",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_full_chain_eval_retrieval.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "R04"
+    },
+    {
+      "badcase_id": "A01-unsupported-missing",
+      "historical_cause_closed": false,
+      "independent_business_verdict": "NOT_ESTABLISHED",
+      "replay_kind": "ISOLATED_PRODUCTION_FAKE",
+      "scope": "LOCAL_FIXED_BOUNDARY",
+      "source": "backend/tests/test_full_chain_eval_ingestion_index.py",
+      "status": "TEST_MAPPING_DECLARED_EXECUTION_IN_IMPLEMENTATION_RECEIPT",
+      "test_mapping": "I11 I12 I13 I14 I15 I16"
+    }
+  ],
+  "schema_version": "full_chain_badcase_manifest_v1"
+}

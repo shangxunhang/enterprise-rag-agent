@@ -1,9 +1,9 @@
-# =============================================================================
-# 中文阅读说明：文档级确定性聚合服务。
-# 只负责把章节、证据、引用和检索结果组装为完整 SchemeDraft 与 Hard Gate 所需聚合数据。
-# 不调用 RAG、LLM，不写 SharedState，不执行 Capture 或 Document Hard Gate。
-# =============================================================================
-"""Deterministic document assembly for scheme generation."""
+"""把已完成章节、证据和引用确定性聚合为文档草稿及门禁输入。
+
+装配器不调用 RAG 或 LLM，不写 SharedState，也不执行 Capture 或文档硬门禁。它只计算
+缺失章节、正文顺序、引用绑定、Chunk 去重和逐章节证据要求，确保后续门禁看到完整且
+可复现的文档级事实。
+"""
 
 from __future__ import annotations
 
@@ -16,13 +16,18 @@ from apps.enterprise_document.schemas.scheme_writer_schema import (
 
 
 class DocumentAssembler:
-    """Own deterministic aggregation from completed sections to one document draft."""
+    """负责从章节结果到 ``SchemeDraft`` 的纯聚合，不决定是否允许交付。"""
 
     def assemble(
         self,
         request: DocumentAssemblyRequestSchema,
     ) -> DocumentAssemblyResultSchema:
-        """Assemble completed section results without external I/O or side effects."""
+        """无外部 I/O 地装配章节，并计算文档门禁所需的证据覆盖状态。
+
+        检索 Chunk 按稳定标识去重，同时保留父子 Chunk 的全部已知 ID。引用必需章节采用
+        全称量化：每个章节都必须独立达到 sufficient，或因证据不足而被明确 blocked；
+        文档级证据判断不能替代缺失或未评估的章节结论。
+        """
 
         sections = list(request.sections)
         required_sections = list(request.required_sections)
@@ -77,8 +82,15 @@ class DocumentAssembler:
             )
 
         evidence_available = bool(
-            request.document_evidence_available
-            or any(bundle.citations for bundle in request.section_evidence)
+            (
+                request.document_evidence_bundle is not None
+                and request.document_evidence_bundle.assessment.evidence_available
+            )
+            or any(
+                bundle.evidence_bundle is not None
+                and bundle.evidence_bundle.assessment.evidence_available
+                for bundle in request.section_evidence
+            )
         )
         citation_required_titles = list(
             dict.fromkeys(request.citation_required_sections)
@@ -87,13 +99,16 @@ class DocumentAssembler:
         for bundle in request.section_evidence:
             if bundle.section_title not in citation_required_titles:
                 continue
-            status = str(
-                (bundle.metadata or {}).get(
-                    "evidence_assessment_status",
-                    "not_assessed",
+            if bundle.evidence_bundle is None:
+                status = "not_assessed"
+            else:
+                raw_status = bundle.evidence_bundle.assessment.status
+                status = (
+                    raw_status.value
+                    if raw_status is not None and hasattr(raw_status, "value")
+                    else str(raw_status or "not_assessed")
                 )
-                or "not_assessed"
-            ).strip().lower() or "not_assessed"
+            status = status.strip().lower() or "not_assessed"
             final_section_statuses[bundle.section_title] = status
 
         section_by_title = {
@@ -112,9 +127,22 @@ class DocumentAssembler:
                 if section is not None
                 else ""
             )
-            explicitly_blocked = (
+            writer_execution_status = (
+                str(
+                    (section.extra or {}).get("writer_execution_status")
+                    or ""
+                ).strip()
+                if section is not None
+                else ""
+            )
+            explicitly_blocked = bool(
                 generation_blocked
-                and generation_block_reason == "evidence_insufficient"
+                and (
+                    generation_block_reason == "evidence_insufficient"
+                    or generation_block_reason.startswith("writer_")
+                    or writer_execution_status
+                    in {"blocked", "human_review", "not_assessed"}
+                )
             )
             if explicitly_blocked:
                 effective_status = "blocked"
@@ -150,7 +178,11 @@ class DocumentAssembler:
 
         degraded_sections: list[str] = []
         evidence_by_section = {
-            bundle.section_id: dict((bundle.metadata or {}).get("evidence_assessment") or {})
+            bundle.section_id: (
+                bundle.evidence_bundle.assessment.model_dump(mode="json")
+                if bundle.evidence_bundle is not None
+                else {}
+            )
             for bundle in request.section_evidence
         }
         for section in sections:
@@ -161,8 +193,10 @@ class DocumentAssembler:
                 evidence_details.get("quality_mode_degraded")
             ):
                 degraded_sections.append(section.section_id)
-        document_assessment_details = dict(
-            (request.document_evidence_assessment or {}).get("details") or {}
+        document_assessment_details = (
+            dict(request.document_evidence_bundle.assessment.details or {})
+            if request.document_evidence_bundle is not None
+            else {}
         )
         quality_mode_degraded = bool(
             degraded_sections

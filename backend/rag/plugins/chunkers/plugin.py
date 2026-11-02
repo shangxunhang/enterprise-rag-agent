@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_safe_int、_first、_last、_bounds、_unit_extra、FixedParentChildChunkerPlugin、StructuredParentChildChunkerPlugin、RecursiveParentChildChunkerPlugin、HeadingParentChildChunkerPlugin、ParagraphParentChildChunkerPlugin等。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Configuration-driven parent/child chunker plugins.
+"""配置驱动的父子分块插件。
 
 The online RAG stack consumes parent_chunk_v1 and child_chunk_v1.  This module
 adapts several parent splitting strategies to that stable contract while child
@@ -12,8 +8,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any, Iterable, Sequence
+from core.diagnostics import capture_event, capture_pool, current_diagnostics
 
-from rag.chunker.ChildParentChunker import ChildParentChunker, ParentChildChunkResult
+from rag.chunker.ChildParentChunker import ChildParentChunker
 from rag.chunker.FixedSizeChunker import FixedSizeChunker
 from rag.chunker.HeadingChunker import HeadingChunker
 from rag.chunker.ParagraphChunker import ParagraphChunker
@@ -25,45 +22,28 @@ from rag.configs.SchemaConfig import (
     DEFAULT_PARENT_CHUNK_VERSION,
     DEFAULT_SOURCE_TYPE,
 )
+from rag.ports.chunking import ParentChildChunkResult
+from rag.plugins.chunkers.heading_parent_paragraph_child import (
+    HeadingParagraphChunker,
+)
+from rag.plugins.chunkers.policy_article_clause import PolicyArticleClauseChunker
+from rag.plugins.chunkers.project_fact_record import ProjectFactRecordChunker
+from rag.plugins.chunkers.table_row_record import TableRowRecordChunker
+from rag.plugins.chunkers.template_section import TemplateSectionChunker
 from rag.schema.Chunk_Schema import build_child_chunk_v1, build_parent_chunk_v1
 from rag.util.text_utils import unique_keep_order
 
 
-# 阅读注释（函数）：处理 safe int 相关逻辑。
 def _safe_int(value: Any, default: int | None = None) -> int | None:
-    """处理 safe int 相关逻辑。
-
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        int | None
-
-    阅读提示:
-        主要直接调用：int。
-    """
+    """安全转换可选位置和层级字段。"""
     try:
         return int(value) if value not in (None, "") else default
     except Exception:
         return default
 
 
-# 阅读注释（函数）：处理 first 相关逻辑。
 def _first(items: Sequence[dict[str, Any]], key: str, default: Any = None) -> Any:
-    """处理 first 相关逻辑。
-
-    参数:
-        items: 待处理的数据项集合。
-        key: key，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Any
-
-    阅读提示:
-        主要直接调用：item.get。
-    """
+    """取一组来源单元中首个非空字段。"""
     for item in items:
         value = item.get(key)
         if value not in (None, ""):
@@ -71,21 +51,8 @@ def _first(items: Sequence[dict[str, Any]], key: str, default: Any = None) -> An
     return default
 
 
-# 阅读注释（函数）：处理 last 相关逻辑。
 def _last(items: Sequence[dict[str, Any]], key: str, default: Any = None) -> Any:
-    """处理 last 相关逻辑。
-
-    参数:
-        items: 待处理的数据项集合。
-        key: key，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Any
-
-    阅读提示:
-        主要直接调用：reversed, item.get。
-    """
+    """取一组来源单元中最后一个非空字段。"""
     for item in reversed(items):
         value = item.get(key)
         if value not in (None, ""):
@@ -93,21 +60,8 @@ def _last(items: Sequence[dict[str, Any]], key: str, default: Any = None) -> Any
     return default
 
 
-# 阅读注释（函数）：处理 bounds 相关逻辑。
 def _bounds(items: Sequence[dict[str, Any]], key: str, *, maximum: bool) -> int | None:
-    """处理 bounds 相关逻辑。
-
-    参数:
-        items: 待处理的数据项集合。
-        key: key，具体约束请结合类型标注和调用方确认。
-        maximum: maximum，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        int | None
-
-    阅读提示:
-        主要直接调用：_safe_int, item.get, max, min。
-    """
+    """计算来源单元页码等整数字段的最小或最大边界。"""
     values = [_safe_int(item.get(key)) for item in items]
     values = [value for value in values if value is not None]
     if not values:
@@ -115,26 +69,29 @@ def _bounds(items: Sequence[dict[str, Any]], key: str, *, maximum: bool) -> int 
     return max(values) if maximum else min(values)
 
 
-# 阅读注释（函数）：处理 unit extra 相关逻辑。
 def _unit_extra(units: Sequence[dict[str, Any]], *, text: str, chunker_name: str) -> dict[str, Any]:
-    """处理 unit extra 相关逻辑。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-        text: 待处理文本。
-        chunker_name: chunker 名称，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        dict[str, Any]
-
-    阅读提示:
-        主要直接调用：flags.extend, unit.get, _first, round, sum, len, unique_keep_order, u.get。
-    """
+    """聚合来源、质量和 Stage C document-profile 血缘。"""
     flags: list[Any] = []
     for unit in units:
         flags.extend(unit.get("quality_flags") or [])
     scores = [unit.get("quality_score") for unit in units if unit.get("quality_score") is not None]
-    return {
+
+    document_profile: dict[str, Any] | None = None
+    for unit in units:
+        unit_extra = unit.get("extra")
+        if not isinstance(unit_extra, dict):
+            continue
+        candidate = unit_extra.get("document_profile")
+        if isinstance(candidate, dict):
+            if document_profile is None:
+                document_profile = dict(candidate)
+            elif document_profile != candidate:
+                raise ValueError(
+                    "one chunk cannot combine conflicting document profiles; "
+                    f"doc_id={unit.get('doc_id')!r}"
+                )
+
+    result = {
         "chunker_name": chunker_name,
         "source_uri": _first(units, "source_uri"),
         "source_name": _first(units, "source_name"),
@@ -147,13 +104,14 @@ def _unit_extra(units: Sequence[dict[str, Any]], *, text: str, chunker_name: str
         "source_unit_types": unique_keep_order([u.get("unit_type") for u in units]),
         "text_length": len(text),
     }
+    if document_profile is not None:
+        result["document_profile"] = document_profile
+    return result
 
 
-# 阅读注释（类）：封装 fixed 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class FixedParentChildChunkerPlugin:
     """Registry adapter over the existing production parent/child chunker."""
 
-    # 阅读注释（函数）：初始化 FixedParentChildChunkerPlugin，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -170,28 +128,7 @@ class FixedParentChildChunkerPlugin:
         tokenizer_local_files_only: bool = True,
         build_context: Any = None,
     ) -> None:
-        """初始化 FixedParentChildChunkerPlugin，保存运行所需的依赖、配置或状态。
-
-        参数:
-            parent_chunk_size: 父块 文本块 size，具体约束请结合类型标注和调用方确认。
-            parent_chunk_overlap: 父块 文本块 overlap，具体约束请结合类型标注和调用方确认。
-            child_chunk_size: 子块 文本块 size，具体约束请结合类型标注和调用方确认。
-            child_chunk_overlap: 子块 文本块 overlap，具体约束请结合类型标注和调用方确认。
-            unit: unit，具体约束请结合类型标注和调用方确认。
-            parent_chunk_version: 父块 文本块 版本，具体约束请结合类型标注和调用方确认。
-            child_chunk_version: 子块 文本块 版本，具体约束请结合类型标注和调用方确认。
-            deterministic_created_at: deterministic created at，具体约束请结合类型标注和调用方确认。
-            chunker_name: chunker 名称，具体约束请结合类型标注和调用方确认。
-            tokenizer_model_name: tokenizer 模型 名称，具体约束请结合类型标注和调用方确认。
-            tokenizer_local_files_only: tokenizer 本地 files only，具体约束请结合类型标注和调用方确认。
-            build_context: build 上下文，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：ChildParentChunker, bool。
-        """
+        """把固定父窗和固定子窗参数适配到现有生产 ``ChildParentChunker``。"""
         self.created_at = deterministic_created_at
         self.delegate = ChildParentChunker(
             parent_chunk_size=parent_chunk_size,
@@ -219,36 +156,16 @@ class FixedParentChildChunkerPlugin:
             "tokenizer_local_files_only": bool(tokenizer_local_files_only),
         }
 
-    # 阅读注释（函数）：处理 文本块 记录集合 相关逻辑。
     def chunk_records(self, records: Iterable[dict[str, Any]]) -> ParentChildChunkResult:
-        """处理 文本块 记录集合 相关逻辑。
-
-        参数:
-            records: 记录集合，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ParentChildChunkResult
-
-        阅读提示:
-            主要直接调用：self.delegate.chunk_records, self._normalize_output。
-        """
+        """委托固定分块算法，并统一附加确定时间和插件血缘。"""
         result = self.delegate.chunk_records(records)
         self._normalize_output(result)
+        capture_pool("I-CHUNK", result.parents, unit_id="A05", operation_id="fixed_parents", phase="PARENTS")
+        capture_pool("I-CHUNK", result.children, unit_id="A05", operation_id="fixed_children", phase="CHILDREN")
         return result
 
-    # 阅读注释（函数）：规范化 输出。
     def _normalize_output(self, result: ParentChildChunkResult) -> None:
-        """规范化 输出。
-
-        参数:
-            result: 待处理的结果对象。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：getattr, plugin.to_dict, dict, record.get。
-        """
+        """向父子 Chunk 写入可复现时间和实际插件身份。"""
         plugin = getattr(self, "plugin_metadata", None)
         plugin_dict = plugin.to_dict() if plugin is not None else {}
         for record in [*result.parents, *result.children]:
@@ -258,27 +175,17 @@ class FixedParentChildChunkerPlugin:
             extra["chunker_plugin"] = plugin_dict
             record["extra"] = extra
 
-    # 阅读注释（函数）：处理 execution 元数据 相关逻辑。
     def execution_metadata(self) -> dict[str, Any]:
-        """处理 execution 元数据 相关逻辑。
-
-        返回:
-            dict[str, Any]
-
-        阅读提示:
-            主要直接调用：dict。
-        """
+        """返回固定父子窗、单位和 tokenizer 配置。"""
         return dict(self._metadata)
 
 
-# 阅读注释（类）：封装 structured 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class StructuredParentChildChunkerPlugin:
     """Use a structural parent splitter and fixed child windows."""
 
     STRATEGY = "recursive"
     FLAT_CHUNKER = RecursiveChunker
 
-    # 阅读注释（函数）：初始化 StructuredParentChildChunkerPlugin，保存运行所需的依赖、配置或状态。
     def __init__(
         self,
         *,
@@ -293,26 +200,7 @@ class StructuredParentChildChunkerPlugin:
         chunker_name: str | None = None,
         build_context: Any = None,
     ) -> None:
-        """初始化 StructuredParentChildChunkerPlugin，保存运行所需的依赖、配置或状态。
-
-        参数:
-            parent_chunk_size: 父块 文本块 size，具体约束请结合类型标注和调用方确认。
-            parent_chunk_overlap: 父块 文本块 overlap，具体约束请结合类型标注和调用方确认。
-            child_chunk_size: 子块 文本块 size，具体约束请结合类型标注和调用方确认。
-            child_chunk_overlap: 子块 文本块 overlap，具体约束请结合类型标注和调用方确认。
-            unit: unit，具体约束请结合类型标注和调用方确认。
-            parent_chunk_version: 父块 文本块 版本，具体约束请结合类型标注和调用方确认。
-            child_chunk_version: 子块 文本块 版本，具体约束请结合类型标注和调用方确认。
-            deterministic_created_at: deterministic created at，具体约束请结合类型标注和调用方确认。
-            chunker_name: chunker 名称，具体约束请结合类型标注和调用方确认。
-            build_context: build 上下文，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：ValueError, int, lower, str, self.FLAT_CHUNKER, ChildParentChunker, max, min。
-        """
+        """配置结构化父块切分器和固定子窗，并校验大小/重叠约束。"""
         if parent_chunk_size <= 0 or child_chunk_size <= 0:
             raise ValueError("parent/child chunk sizes must be positive")
         if not 0 <= parent_chunk_overlap < parent_chunk_size:
@@ -346,13 +234,8 @@ class StructuredParentChildChunkerPlugin:
             chunker_name=self.chunker_name,
         )
 
-    # 阅读注释（函数）：处理 execution 元数据 相关逻辑。
     def execution_metadata(self) -> dict[str, Any]:
-        """处理 execution 元数据 相关逻辑。
-
-        返回:
-            dict[str, Any]
-        """
+        """返回父级结构策略与子窗参数。"""
         return {
             "parent_strategy": self.STRATEGY,
             "child_strategy": "fixed",
@@ -363,19 +246,8 @@ class StructuredParentChildChunkerPlugin:
             "unit": self.unit,
         }
 
-    # 阅读注释（函数）：处理 文本块 记录集合 相关逻辑。
     def chunk_records(self, records: Iterable[dict[str, Any]]) -> ParentChildChunkResult:
-        """处理 文本块 记录集合 相关逻辑。
-
-        参数:
-            records: 记录集合，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            ParentChildChunkResult
-
-        阅读提示:
-            主要直接调用：defaultdict, row_to_unit, unit.get, should_skip_unit, append, str, sorted, self._chunk_doc。
-        """
+        """清理输入单元、按文档稳定分组排序，再逐文档生成父子 Chunk。"""
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for record in records:
             unit = row_to_unit(record)
@@ -395,27 +267,21 @@ class StructuredParentChildChunkerPlugin:
             children.extend(doc_children)
         return ParentChildChunkResult(parents=parents, children=children)
 
-    # 阅读注释（函数）：处理 文本块 doc 相关逻辑。
     def _chunk_doc(
         self,
         doc_id: str,
         units: list[dict[str, Any]],
         global_child_index: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-        """处理 文本块 doc 相关逻辑。
+        """将来源单元拼成带偏移正文，结构化切父块，再在每个父块内生成固定子窗。
 
-        参数:
-            doc_id: doc 标识，具体约束请结合类型标注和调用方确认。
-            units: units，具体约束请结合类型标注和调用方确认。
-            global_child_index: global 子块 索引，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            tuple[list[dict[str, Any]], list[dict[str, Any]], int]
-
-        阅读提示:
-            主要直接调用：self._join_units, _last, _first, self.parent_splitter.chunk_document, enumerate, strip, str, flat.get。
+        父块通过字符区间找回真实来源单元、页码和标题；子块索引在全部文档范围内单调递增。
         """
         text, spans = self._join_units(units)
+        if current_diagnostics().enabled:
+            capture_event("I-CHUNK", {"phase": "JOIN", "doc_id": doc_id,
+                "unit_spans": [{"unit_id": unit.get("unit_id"), "start": span[0], "end": span[1]} for unit, span in zip(units, spans)]},
+                unit_id="A05", operation_id="structured_unit_join")
         if not text:
             return [], [], global_child_index
         document = {
@@ -439,6 +305,7 @@ class StructuredParentChildChunkerPlugin:
             metadata = flat.get("metadata") if isinstance(flat.get("metadata"), dict) else {}
             start = _safe_int(metadata.get("start_char"))
             end = _safe_int(metadata.get("end_char"))
+            exact_offset_recorded = start is not None and end is not None
             if start is None:
                 start = text.find(parent_text)
             if end is None and start is not None and start >= 0:
@@ -521,22 +388,19 @@ class StructuredParentChildChunkerPlugin:
                 child["extra"]["chunker_plugin"] = plugin_dict
             parents.append(parent)
             children.extend(child_records)
+            if current_diagnostics().enabled:
+                capture_event("I-CHUNK", {"phase": "PARENT_MAPPING", "doc_id": doc_id,
+                    "parent_id": parent_id, "source_unit_ids": parent.get("source_unit_ids"),
+                    "source_start": start if exact_offset_recorded else None, "source_end": end if exact_offset_recorded else None,
+                    "span_availability": "ACTUAL_OFFSET" if exact_offset_recorded else "NOT_RECORDED",
+                    "children": [{"child_id": child["child_chunk_id"], "parent_id": parent_id,
+                        "start_in_parent": child.get("char_start_in_parent"), "end_in_parent": child.get("char_end_in_parent")} for child in child_records]},
+                    unit_id="A05", operation_id=parent_id)
         return parents, children, global_child_index
 
-    # 阅读注释（函数）：处理 join units 相关逻辑。
     @staticmethod
     def _join_units(units: Sequence[dict[str, Any]]) -> tuple[str, list[tuple[int, int]]]:
-        """处理 join units 相关逻辑。
-
-        参数:
-            units: units，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            tuple[str, list[tuple[int, int]]]
-
-        阅读提示:
-            主要直接调用：str, unit.get, spans.append, pieces.append, len, join。
-        """
+        """以换行连接来源单元，并记录每个单元在合并正文中的字符区间。"""
         pieces: list[str] = []
         spans: list[tuple[int, int]] = []
         cursor = 0
@@ -554,7 +418,6 @@ class StructuredParentChildChunkerPlugin:
             spans.append((start, cursor))
         return "".join(pieces), spans
 
-    # 阅读注释（函数）：处理 units for span 相关逻辑。
     @staticmethod
     def _units_for_span(
         units: Sequence[dict[str, Any]],
@@ -562,49 +425,259 @@ class StructuredParentChildChunkerPlugin:
         start: int | None,
         end: int | None,
     ) -> list[dict[str, Any]]:
-        """处理 units for span 相关逻辑。
-
-        参数:
-            units: units，具体约束请结合类型标注和调用方确认。
-            spans: spans，具体约束请结合类型标注和调用方确认。
-            start: start，具体约束请结合类型标注和调用方确认。
-            end: end，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            list[dict[str, Any]]
-
-        阅读提示:
-            主要直接调用：zip。
-        """
+        """返回与父块字符区间相交的来源单元；偏移未知时交给调用方回退。"""
         if start is None or end is None or start < 0:
             return []
         return [unit for unit, (u_start, u_end) in zip(units, spans) if u_start < end and u_end > start]
 
 
-# 阅读注释（类）：封装 recursive 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class RecursiveParentChildChunkerPlugin(StructuredParentChildChunkerPlugin):
-    """封装 recursive 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。"""
+    """使用递归分隔符策略切分父块。"""
     STRATEGY = "recursive"
     FLAT_CHUNKER = RecursiveChunker
 
 
-# 阅读注释（类）：封装 heading 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class HeadingParentChildChunkerPlugin(StructuredParentChildChunkerPlugin):
-    """封装 heading 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。"""
+    """优先按标题层级形成父块。"""
     STRATEGY = "heading"
     FLAT_CHUNKER = HeadingChunker
 
 
-# 阅读注释（类）：封装 paragraph 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class ParagraphParentChildChunkerPlugin(StructuredParentChildChunkerPlugin):
-    """封装 paragraph 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。"""
+    """优先按段落边界形成父块。"""
     STRATEGY = "paragraph"
     FLAT_CHUNKER = ParagraphChunker
 
 
-# 阅读注释（类）：封装 fixed structured 父块 子块 chunker 插件，作为可配置插件接入 RAG 或 Agent 主链。
 class FixedStructuredParentChildChunkerPlugin(StructuredParentChildChunkerPlugin):
     """Alternative fixed implementation used for registry parity tests."""
 
     STRATEGY = "fixed"
     FLAT_CHUNKER = FixedSizeChunker
+
+
+class TypeAwareParentChildChunkerPlugin:
+    """Route each reviewed document to a profile-selected parent strategy.
+
+    The Stage C catalog stores a stable ``chunk_strategy`` per document.  This
+    plugin groups records by ``doc_id``, rejects missing/conflicting profile
+    metadata, and delegates each document to an existing deterministic
+    parent/child implementation with strategy-specific budgets.
+    """
+
+    ROUTES = {
+        "heading_parent_paragraph_child": HeadingParagraphChunker,
+        "policy_article_clause": PolicyArticleClauseChunker,
+        "fact_record": ProjectFactRecordChunker,
+        "table_row_record": TableRowRecordChunker,
+        "template_section": TemplateSectionChunker,
+        "fixed_token_fallback": RecursiveParentChildChunkerPlugin,
+    }
+
+    DEFAULT_STRATEGY_PARAMS: dict[str, dict[str, int]] = {
+        "heading_parent_paragraph_child": {
+            "parent_chunk_size": 1800,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 520,
+            "child_chunk_overlap": 0,
+        },
+        "policy_article_clause": {
+            "parent_chunk_size": 2400,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 900,
+            "child_chunk_overlap": 0,
+        },
+        "fact_record": {
+            "parent_chunk_size": 2400,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 1000,
+            "child_chunk_overlap": 0,
+        },
+        "table_row_record": {
+            "parent_chunk_size": 4096,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 4096,
+            "child_chunk_overlap": 0,
+        },
+        "template_section": {
+            "parent_chunk_size": 2600,
+            "parent_chunk_overlap": 0,
+            "child_chunk_size": 900,
+            "child_chunk_overlap": 0,
+        },
+        "fixed_token_fallback": {
+            "parent_chunk_size": 1200,
+            "parent_chunk_overlap": 100,
+            "child_chunk_size": 400,
+            "child_chunk_overlap": 40,
+        },
+    }
+
+    def __init__(
+        self,
+        *,
+        strategy_params: dict[str, dict[str, int]] | None = None,
+        unit: str = "char",
+        parent_chunk_version: str = DEFAULT_PARENT_CHUNK_VERSION,
+        child_chunk_version: str = DEFAULT_CHILD_CHUNK_VERSION,
+        deterministic_created_at: str | None = None,
+        require_document_profile: bool = True,
+        semantic_revision: str = "stage_c_final_v2_r1",
+        chunker_name: str = "type_aware_parent_child",
+        build_context: Any = None,
+    ) -> None:
+        self.unit = str(unit or "char").strip().lower()
+        if self.unit not in {"char", "token"}:
+            raise ValueError("unit must be exactly 'char' or 'token'")
+        self.parent_chunk_version = str(parent_chunk_version)
+        self.child_chunk_version = str(child_chunk_version)
+        self.created_at = deterministic_created_at
+        self.require_document_profile = bool(require_document_profile)
+        self.semantic_revision = str(semantic_revision or "").strip()
+        if not self.semantic_revision:
+            raise ValueError("semantic_revision cannot be blank")
+        self.chunker_name = str(chunker_name or "type_aware_parent_child")
+
+        merged = {
+            key: dict(value)
+            for key, value in self.DEFAULT_STRATEGY_PARAMS.items()
+        }
+        for strategy, params in dict(strategy_params or {}).items():
+            if strategy not in self.ROUTES:
+                raise ValueError(
+                    "unsupported type-aware chunk strategy override: "
+                    f"{strategy!r}"
+                )
+            if not isinstance(params, dict):
+                raise TypeError(
+                    "strategy_params values must be objects; "
+                    f"strategy={strategy!r}"
+                )
+            merged[strategy].update(params)
+        self.strategy_params = merged
+        self._last_route_counts: dict[str, int] = {}
+
+    @staticmethod
+    def _profile_strategy(record: dict[str, Any]) -> str | None:
+        extra = record.get("extra")
+        if not isinstance(extra, dict):
+            return None
+        profile = extra.get("document_profile")
+        if not isinstance(profile, dict):
+            return None
+        parsing = profile.get("parsing")
+        value = (
+            parsing.get("chunk_strategy")
+            if isinstance(parsing, dict)
+            else profile.get("chunk_strategy")
+        )
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    def _build_delegate(self, strategy: str) -> Any:
+        try:
+            delegate_type = self.ROUTES[strategy]
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported document profile chunk_strategy={strategy!r}"
+            ) from exc
+        params = dict(self.strategy_params[strategy])
+        return delegate_type(
+            **params,
+            unit=self.unit,
+            parent_chunk_version=self.parent_chunk_version,
+            child_chunk_version=self.child_chunk_version,
+            deterministic_created_at=self.created_at,
+            chunker_name=f"{self.chunker_name}:{strategy}",
+        )
+
+    def chunk_records(
+        self,
+        records: Iterable[dict[str, Any]],
+    ) -> ParentChildChunkResult:
+        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for raw in records:
+            record = dict(raw)
+            document_id = str(record.get("doc_id") or "").strip()
+            if not document_id:
+                raise ValueError("type-aware chunking requires doc_id")
+            groups[document_id].append(record)
+
+        parents: list[dict[str, Any]] = []
+        children: list[dict[str, Any]] = []
+        route_counts: dict[str, int] = defaultdict(int)
+
+        for document_id in sorted(groups):
+            document_records = groups[document_id]
+            strategies = {
+                strategy
+                for strategy in (
+                    self._profile_strategy(item)
+                    for item in document_records
+                )
+                if strategy is not None
+            }
+            if not strategies:
+                if self.require_document_profile:
+                    raise ValueError(
+                        "type-aware chunking requires document_profile metadata; "
+                        f"document_id={document_id!r}"
+                    )
+                strategies = {"fixed_token_fallback"}
+            if len(strategies) != 1:
+                raise ValueError(
+                    "one document cannot declare multiple chunk strategies; "
+                    f"document_id={document_id!r} strategies={sorted(strategies)!r}"
+                )
+            strategy = next(iter(strategies))
+            delegate = self._build_delegate(strategy)
+            result = delegate.chunk_records(document_records)
+            route_counts[strategy] += 1
+
+            plugin = getattr(self, "plugin_metadata", None)
+            plugin_dict = plugin.to_dict() if plugin is not None else {}
+            for record in [*result.parents, *result.children]:
+                extra = dict(record.get("extra") or {})
+                routing = dict(extra.get("type_aware_chunking") or {})
+                routing.update(
+                    {
+                        "selected_profile_strategy": strategy,
+                        "delegate": delegate.__class__.__name__,
+                        "parameters": dict(self.strategy_params[strategy]),
+                    }
+                )
+                extra["type_aware_chunking"] = routing
+                if plugin_dict:
+                    extra["chunker_plugin"] = plugin_dict
+                record["extra"] = extra
+            parents.extend(result.parents)
+            children.extend(result.children)
+
+        # Delegates are invoked per document, so normalize the global child
+        # sequence after deterministic document/chunk ordering.
+        parents = sorted(
+            parents,
+            key=lambda item: str(item.get("parent_chunk_id") or ""),
+        )
+        children = sorted(
+            children,
+            key=lambda item: str(item.get("child_chunk_id") or ""),
+        )
+        for index, child in enumerate(children, start=1):
+            child["child_chunk_index"] = index
+
+        self._last_route_counts = dict(sorted(route_counts.items()))
+        return ParentChildChunkResult(parents=parents, children=children)
+
+    def execution_metadata(self) -> dict[str, Any]:
+        return {
+            "routing_field": "extra.document_profile.parsing.chunk_strategy",
+            "require_document_profile": self.require_document_profile,
+            "semantic_revision": self.semantic_revision,
+            "unit": self.unit,
+            "strategy_params": {
+                key: dict(value)
+                for key, value in sorted(self.strategy_params.items())
+            },
+            "route_document_counts": dict(self._last_route_counts),
+        }

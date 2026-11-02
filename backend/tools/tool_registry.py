@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：后端业务模块。
-# 主要定义：ToolRegistry。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Tool registry."""
+"""提供进程内工具实例注册与按名称查找能力。
+
+注册表只保存装配层已经创建的工具实例，不负责构造、执行或销毁工具。Agent 和
+``ToolExecutor`` 通过稳定 ``tool_name`` 查找实例，从而与具体工具类解耦。
+"""
 
 from __future__ import annotations
 
@@ -11,73 +11,61 @@ from typing import Dict, List
 from contracts.base_tool import BaseTool
 
 
-# 阅读注释（类）：封装 工具 注册表，集中封装相关状态、依赖和行为。
 class ToolRegistry:
-    """Registry for tools."""
+    """维护当前运行时可调用的工具实例集合。
 
-    # 阅读注释（函数）：初始化 ToolRegistry，保存运行所需的依赖、配置或状态。
+    Attributes:
+        _tools: 以稳定工具名称为键的内部实例映射。
+    """
+
     def __init__(self) -> None:
-        """初始化 ToolRegistry，保存运行所需的依赖、配置或状态。
+        """创建空工具注册表。"""
 
-        返回:
-            None
-        """
+        # 注册表保存实例本身，后续查找返回装配阶段配置好的同一对象。
         self._tools: Dict[str, BaseTool] = {}
 
-    # 阅读注释（函数）：注册 ToolRegistry。
     def register(self, tool: BaseTool) -> None:
-        """注册 ToolRegistry。
+        """登记一个名称尚未占用的工具实例。
 
-        参数:
-            tool: 工具，具体约束请结合类型标注和调用方确认。
+        Args:
+            tool: 已完成依赖装配且具有稳定 ``tool_name`` 的工具。
 
-        返回:
-            None
-
-        阅读提示:
-            主要直接调用：ValueError。
+        Raises:
+            ValueError: 相同名称已经登记时抛出，防止后注册实例静默覆盖前者。
         """
+
+        # 第一步：以工具名称检查唯一性，保证调用解析结果确定。
         if tool.tool_name in self._tools:
             raise ValueError(f"Tool already registered: {tool.tool_name}")
+
+        # 第二步：保存调用方创建的实例；注册表不改变其生命周期。
         self._tools[tool.tool_name] = tool
 
-    # 阅读注释（函数）：获取 ToolRegistry。
     def get(self, tool_name: str) -> BaseTool:
-        """获取 ToolRegistry。
+        """按稳定名称取得已注册工具。
 
-        参数:
-            tool_name: 工具 名称，具体约束请结合类型标注和调用方确认。
+        Args:
+            tool_name: ``ToolCallSchema`` 请求的工具名称。
 
-        返回:
-            BaseTool
+        Returns:
+            装配阶段登记的工具实例。
 
-        阅读提示:
-            主要直接调用：KeyError。
+        Raises:
+            KeyError: 名称尚未注册时抛出，避免把 ``None`` 延迟传到远端执行点。
         """
+
+        # 显式检查并提供领域化错误文本，方便 ToolExecutor 统一归一化异常。
         if tool_name not in self._tools:
             raise KeyError(f"Tool not found: {tool_name}")
         return self._tools[tool_name]
 
-    # 阅读注释（函数）：处理 exists 相关逻辑。
     def exists(self, tool_name: str) -> bool:
-        """处理 exists 相关逻辑。
+        """判断给定工具名称是否已注册。"""
 
-        参数:
-            tool_name: 工具 名称，具体约束请结合类型标注和调用方确认。
-
-        返回:
-            bool
-        """
         return tool_name in self._tools
 
-    # 阅读注释（函数）：列出 tools。
     def list_tools(self) -> List[str]:
-        """列出 tools。
+        """按注册顺序返回全部工具名称。"""
 
-        返回:
-            List[str]
-
-        阅读提示:
-            主要直接调用：list, self._tools.keys。
-        """
+        # 返回新列表，避免调用方接触内部字典视图。
         return list(self._tools.keys())

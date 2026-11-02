@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from application.mainline_service import MainlineApplicationService
@@ -50,6 +51,8 @@ class _InspectingFactory(SupervisorFactory):
 
 
 def _run_final_fake(output_root: Path, *, run_id: str):
+    from bca014_i10_capacity_fixtures import explicit_fake_startup_policy
+    profile,default_path,original=explicit_fake_startup_policy(output_root,run_id)
     settings = replace(
         get_settings(),
         data_root=output_root,
@@ -60,6 +63,7 @@ def _run_final_fake(output_root: Path, *, run_id: str):
         data_capture_enabled=True,
     )
     environment = {
+        "GROUNDED_GENERATION_POLICY_FILE": str(profile),
         "USE_REAL_RAG_TOOL": "false",
         "FAKE_RAG_SCENARIO": "default",
         "FAKE_LLM_SCENARIO": "default",
@@ -104,6 +108,7 @@ def _run_final_fake(output_root: Path, *, run_id: str):
             allow_demo_defaults=True,
             enable_agent_self_rag=False,
         )
+    assert default_path.read_bytes()==original
     return summary, factory
 
 
@@ -124,7 +129,7 @@ def test_composition_root_installs_langchain_facades() -> None:
     assert "LangChainModelGatewayFacade" in source
     assert "build_rag_runnable" in source
     assert "LangChainRAGServiceFacade" in source
-    assert "SQLiteCheckpointSaver" in source
+    assert "create_sqlite_checkpoint_resource" in source
 
 
 def test_production_mainline_uses_runnables_and_retires_legacy_paths(tmp_path) -> None:
@@ -132,6 +137,8 @@ def test_production_mainline_uses_runnables_and_retires_legacy_paths(tmp_path) -
         tmp_path,
         run_id="phase5_production_runnable_takeover",
     )
+    from bca014_i10_capacity_fixtures import assert_native_publication
+    assert_native_publication(summary,factory.engines[0])
     assert summary["status"] in {"success", "partial_success"}
     assert summary["deliverable_final_result"] is not None
     model_facade = factory.model_facades[0]
@@ -155,14 +162,49 @@ def test_production_mainline_uses_runnables_and_retires_legacy_paths(tmp_path) -
 def test_runnable_facades_preserve_canonical_ports() -> None:
     assert hasattr(LangChainModelGatewayFacade, "generate")
     assert hasattr(LangChainRAGServiceFacade, "retrieve")
-    model_source = inspect.getsource(LangChainModelGatewayFacade.generate)
-    rag_source = inspect.getsource(LangChainRAGServiceFacade.retrieve)
+    model_source = inspect.getsource(LangChainModelGatewayFacade.invoke)
     assert ".runnable.invoke(" in model_source
-    assert ".runnable.invoke(" in rag_source
+
+    class _RunnableSpy:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.result = object()
+
+        def invoke(self, request, *, config=None, **kwargs):
+            self.calls += 1
+            return self.result
+
+    spy = _RunnableSpy()
+    rag_facade = LangChainRAGServiceFacade(
+        delegate=object(),
+        runnable=spy,
+    )
+    request = SimpleNamespace(
+        task_id="phase5-port-task",
+        run_id="phase5-port-run",
+        agent_name="Phase5PortTest",
+        retrieval_trace_id="phase5-port-trace",
+        retrieval_scope="document",
+    )
+    assert rag_facade.invoke(request) is spy.result
+    assert spy.calls == 1
+
     assert "ModelRequestSchema" in inspect.getsource(
         LangChainModelGatewayFacade
     )
     assert "RAGToolInputSchema" in inspect.getsource(LangChainRAGServiceFacade)
+    for facade in (
+        LangChainModelGatewayFacade,
+        LangChainRAGServiceFacade,
+    ):
+        assert facade.capabilities.invoke is True
+        assert facade.capabilities.ainvoke is True
+        assert facade.capabilities.batch is True
+        assert facade.capabilities.stream_final_response is True
+        assert facade.capabilities.token_streaming is False
+        assert facade.capabilities.native_async_provider is False
+        assert facade.supports_token_streaming is False
+        assert facade.supports_native_async is False
 
 
 def test_production_graph_no_longer_depends_on_legacy_topology_interpreter() -> None:

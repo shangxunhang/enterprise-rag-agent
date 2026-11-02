@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from agent.runtime.shared_state_schema import SharedStateSchema
 from schemas.agent import AgentResultSchema
+from apps.enterprise_document.services.release_publication import (
+    ReleasePublicationService,
+)
 
 from .capture_service import SchemeCaptureService
 from .document_assembler import DocumentAssembler
@@ -36,8 +39,11 @@ class SchemeGenerationUseCase:
         agent_name: str,
         agent_type: str,
         rag_service_name: str,
+        section_retrieval_default_enabled: bool,
         enable_semantic_gate: bool,
+        section_max_concurrency: int = 1,
         stage_service: SchemeGenerationStageService | None = None,
+        release_publication_service: ReleasePublicationService | None = None,
     ) -> None:
         # Keep the stable public seams used by compatibility tests and callers.
         self.input_service = input_service
@@ -62,7 +68,10 @@ class SchemeGenerationUseCase:
             agent_name=agent_name,
             agent_type=agent_type,
             rag_service_name=rag_service_name,
+            section_retrieval_default_enabled=section_retrieval_default_enabled,
             enable_semantic_gate=enable_semantic_gate,
+            section_max_concurrency=section_max_concurrency,
+            release_publication_service=release_publication_service,
         )
 
     def run(self, shared_state: SharedStateSchema) -> AgentResultSchema:

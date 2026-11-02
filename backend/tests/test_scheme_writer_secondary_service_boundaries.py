@@ -79,6 +79,7 @@ def test_legacy_evidence_adapter_upgrades_chunks_into_canonical_contract() -> No
         tool_name="LegacyRAGTool",
         success=True,
         result={
+            "schema_version": "rag_tool_output_v1",
             "query": "安全设计",
             "retrieved_chunks": [chunk.model_dump()],
             "citations": [],
@@ -87,14 +88,18 @@ def test_legacy_evidence_adapter_upgrades_chunks_into_canonical_contract() -> No
         created_at="2026-07-22T00:00:00+00:00",
     )
 
+    shared_state = _shared_state()
+    contract = LegacyEvidenceAdapter.upgrade(shared_state, result)
     context, chunks, citations, normalized = LegacyEvidenceAdapter.extract(
-        _shared_state(), result
+        shared_state, result
     )
 
+    assert contract.schema_version == "rag_evidence_contract_v1"
+    assert contract.extra["compatibility_upgrade"] is True
+    assert contract.extra["upgraded_by"] == "LegacyEvidenceAdapter"
     assert context.context_item_count == 1
     assert [item.matched_chunk_id for item in chunks] == ["child_1"]
     assert len(citations) == 1
     assert citations[0].extra["rebuilt_from_retrieved_chunk"] is True
-    assert normalized["evidence"]["schema_version"] == "rag_evidence_contract_v1"
-    assert normalized["evidence"]["extra"]["compatibility_upgrade"] is True
-    assert normalized["evidence"]["extra"]["upgraded_by"] == "LegacyEvidenceAdapter"
+    assert "evidence" not in normalized
+    assert "evidence_contract" not in normalized

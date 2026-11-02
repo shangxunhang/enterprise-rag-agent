@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 import traceback
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -26,6 +26,10 @@ from agent.runtime.workflow_observer import WorkflowObserver
 from agent.runtime.workflow_schema import WorkflowDefinitionSchema, WorkflowStepSchema
 from agent.runtime.workflow_state import WorkflowStateController
 from contracts.observability import TraceSink
+from contracts.workflow_engine import (
+    UnsupportedWorkflowCapabilityError,
+    WorkflowEngineCapabilities,
+)
 from core.error_factory import ErrorFactory
 from core.retry_policy import RetryDecisionPolicy, classify_failure
 from core.runtime.clock import Clock, SystemClock
@@ -55,12 +59,13 @@ class LangGraphWorkflowEngine:
     - write paths are validated before commit;
     - retry attempts never commit business state;
     - failure commit policy remains explicit;
-    - timeout workers cannot mutate canonical state after the deadline;
+    - aggregate elapsed time is observation only; canceled workers cannot commit;
     - node input/output, revision and trace schemas stay unchanged.
     """
 
     engine_name = "langgraph_workflow_engine"
     engine_version = "v1"
+    capabilities = WorkflowEngineCapabilities()
     _END_ROUTE = "__workflow_end__"
 
     def __init__(
@@ -140,6 +145,49 @@ class LangGraphWorkflowEngine:
         """
 
         return self.node_execution_runner.defer_until_idle(callback)
+
+    def resume(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        resume_value: dict[str, Any],
+    ) -> WorkflowEngineResultSchema:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support durable resume"
+        )
+
+    def inspect(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        *,
+        run_id: str,
+    ) -> dict[str, Any]:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support checkpoint inspection"
+        )
+
+    def cancel(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        reason: str = "workflow_cancelled",
+    ) -> WorkflowEngineResultSchema:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support durable workflow cancellation"
+        )
+
+    def stream_events(
+        self,
+        workflow: WorkflowDefinitionSchema,
+        graph_state: GraphStateSchema,
+        *,
+        resume_value: dict[str, Any] | None = None,
+        runnable_config: dict[str, Any] | None = None,
+    ) -> Iterable[Any]:
+        raise UnsupportedWorkflowCapabilityError(
+            f"{self.engine_name} does not support workflow event streaming"
+        )
 
     def execute(
         self,
@@ -248,7 +296,7 @@ class LangGraphWorkflowEngine:
                 ),
                 "write_contract_enforced": True,
                 "failure_commit_policy_enforced": True,
-                "timeout_guard": "cooperative_cancel_tracked_worker_v2",
+                "timeout_guard": "aggregate_observation_explicit_cancel_v1",
                 "active_background_workers": self.active_worker_count,
                 "cooperative_cancellation": True,
                 "langgraph_state_contract": "serializable_partial_update_v1",
@@ -742,7 +790,7 @@ class LangGraphWorkflowEngine:
             output.metadata.update(
                 {
                     "timeout_seconds": step.timeout_seconds,
-                    "timeout_guard": "cooperative_cancel_tracked_worker_v2",
+                    "timeout_guard": "aggregate_observation_explicit_cancel_v1",
                     "execution_control": (
                         outcome.execution_control.metadata()
                     ),
@@ -786,7 +834,11 @@ class LangGraphWorkflowEngine:
         execution_control: WorkflowExecutionControl,
         worker_still_active: bool,
     ) -> GraphNodeOutputSchema:
-        """Build a timeout result while preventing overlap with a live worker."""
+        """Transport a retained terminal timeout without enabling overlapping retry.
+
+        The shared runner does not create this outcome from aggregate elapsed
+        time. Historical typed outcomes retain their terminal disposition.
+        """
 
         return self._build_failure_output(
             step=step,
@@ -799,12 +851,9 @@ class LangGraphWorkflowEngine:
                 f"timeout_seconds={step.timeout_seconds}"
             ),
             user_message=f"工作流节点 {step.step_name} 执行超时。",
-            # A workflow-node deadline is a terminal execution-boundary fact.
-            # Python threads cannot be safely preempted, so retrying this same
-            # node inside the workflow could overlap the timed-out attempt.
-            # Provider/HTTP timeouts may still be retryable elsewhere; this
-            # boundary is intentionally non-retryable regardless of whether
-            # the worker happens to exit a few microseconds before inspection.
+            # Preserve an already terminal typed timeout and its no-overlap
+            # guard; aggregate threshold observations never enter this mapper.
+            # Concrete Provider/HTTP timeout policy remains with those owners.
             retryable=False,
             failure_category=FailureCategory.TIMEOUT,
             started_at=started_at,
@@ -946,7 +995,7 @@ class LangGraphWorkflowEngine:
     ) -> bool:
         error = node_output.result.error
         if error is not None and error.error_code == "WORKFLOW_NODE_TIMEOUT":
-            # Node-deadline timeout is terminal at this execution boundary.
+            # A retained terminal timeout remains non-retryable at this boundary.
             # Physical worker timing is diagnostic only and cannot enable retry.
             return False
         if error is None:

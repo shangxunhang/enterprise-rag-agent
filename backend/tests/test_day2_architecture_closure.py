@@ -15,6 +15,11 @@ from pydantic import ValidationError
 import run_demo as run_demo_script
 
 from apps.enterprise_document.quality.plugins import SelfRAGLiteGenerationCheckerPlugin
+from apps.enterprise_document.schemas.gate_decision import (
+    ClaimRiskLevel,
+    DeliveryMode,
+    GateDecisionSchema,
+)
 from apps.enterprise_document.schemas.project_input_schema import ProjectInputSchema
 from apps.enterprise_document.schemas.scheme_writer_schema import (
     DocumentAssemblyRequestSchema,
@@ -27,7 +32,11 @@ from apps.enterprise_document.services.document_gate import evaluate_scheme_draf
 from apps.enterprise_document.services.scheme_writer.capture_service import SchemeCaptureService
 from apps.enterprise_document.services.scheme_writer.document_assembler import DocumentAssembler
 from apps.enterprise_document.services.scheme_writer.citation_service import CitationService
+from apps.enterprise_document.schemas.writer_governance import WriterGateBindingSchema
 from apps.enterprise_document.services.scheme_writer.use_case import SchemeGenerationUseCase
+from apps.enterprise_document.services.scheme_writer.writer_governance import (
+    WriterClaimAuditor,
+)
 from core.retry_policy import RetryDecisionPolicy, classify_failure
 from data_capture.lifecycle import DataCaptureLifecycleStore, DataCaptureTransitionService
 from eval.rag.capture.rag_eval_runner import RAGEvalRunner
@@ -44,7 +53,21 @@ from model_gateway.model_contract import ModelProfile, ModelSelection, Residency
 from model_gateway.usage_ledger import ModelUsageLedger
 from rag.chunker.cleaned_text_unit_chunker import row_to_unit
 from rag.plugins.evidence_assessors.plugin import CRAGEvidenceAssessorPlugin
+from rag.schema.evidence_assessment_v2 import EvidenceStatus
+from rag.evidence.eligibility_policy import (
+    EVIDENCE_USE_ELIGIBILITY_POLICY_ID,
+    EVIDENCE_USE_ELIGIBILITY_POLICY_VERSION,
+)
+from contracts.evidence import build_evidence_bundle
 from schemas.citation import CitationSchema
+from schemas.claim import ClaimType
+from schemas.evidence_assessment import EvidenceAssessmentV2Schema, EvidenceRelevance
+from schemas.evidence_source import (
+    AuthorityLevel,
+    DocumentType,
+    EvidenceRole,
+    ProjectRelation,
+)
 from rag.retriever.milvus_child_retriever import MilvusChildRetriever
 from rag.runtime.resource_pool import ParentChildResourcePool
 from rag.services.rag_service import RAGService
@@ -58,12 +81,83 @@ from schemas.data_capture import DataCaptureRecordSchema
 from schemas.eval_schema import RAGEvalSampleSchema
 from schemas.failure import FailureCategory
 from schemas.model import ModelResponseSchema
-from schemas.rag import RAGToolInputSchema
+from schemas.rag import (
+    RAGEvidenceAssessmentSchema,
+    RAGToolInputSchema,
+    RetrievalAccessScopeSchema,
+    RetrievedChunkSchema,
+)
 from schemas.status import ExecutionStatus
 from core.error_factory import ErrorFactory, FIXED_FAILURE_CATEGORY_BY_ERROR_CODE
 
 
 NOW = "2026-07-23T00:00:00+00:00"
+
+
+def _canonical_quality_bundle(*, quality_mode_degraded: bool):
+    chunk = RetrievedChunkSchema(
+        rank=1,
+        matched_chunk_id="day2-quality-child",
+        context_chunk_id="day2-quality-parent",
+        child_chunk_id="day2-quality-child",
+        parent_chunk_id="day2-quality-parent",
+        doc_id="day2-quality-doc",
+        match_text="quality evidence",
+        context_text="quality evidence",
+    )
+    citation = CitationSchema(
+        citation_id="day2-quality-source",
+        source_type="document",
+        source_document_id=chunk.doc_id,
+        doc_id=chunk.doc_id,
+        child_chunk_id=chunk.child_chunk_id,
+        parent_chunk_id=chunk.parent_chunk_id,
+        quote_text="quality evidence",
+    )
+    bundle = build_evidence_bundle(
+        query="day2 quality degradation",
+        rewritten_queries=[],
+        selected_chunks=[chunk],
+        dropped_chunks=[],
+        citations=[citation],
+        trace=None,
+        max_context_chars=6000,
+    )
+    assessment = RAGEvidenceAssessmentSchema(
+        assessment_state="completed",
+        status=EvidenceStatus.SUFFICIENT,
+        coverage_ratio=1.0,
+        required_topics=["quality"],
+        covered_topics=["quality"],
+        authoritative_evidence_present=True,
+        details={
+            "verification_mode": "degraded_deterministic_fallback",
+            "quality_mode_degraded": quality_mode_degraded,
+        },
+    )
+    item_assessment = EvidenceAssessmentV2Schema(
+        evidence_id=bundle.selected_evidence_ids[0],
+        document_id=chunk.doc_id,
+        document_type=DocumentType.CURRENT_PROJECT_REQUIREMENT,
+        evidence_role=EvidenceRole.PROJECT_FACT,
+        project_relation=ProjectRelation.CURRENT_PROJECT,
+        authority_level=AuthorityLevel.AUTHORITATIVE,
+        eligibility_semantic_policy_id=EVIDENCE_USE_ELIGIBILITY_POLICY_ID,
+        eligibility_semantic_policy_version=EVIDENCE_USE_ELIGIBILITY_POLICY_VERSION,
+        semantic_relevance=1.0,
+        eligibility=True,
+        relevance=EvidenceRelevance.RELEVANT,
+        supported_topics=["quality"],
+        supported_claim_types=[ClaimType.GENERAL_METHOD],
+        reason_codes=["DAY2_QUALITY_FIXTURE_ELIGIBLE"],
+    )
+    return bundle.model_copy(
+        update={
+            "assessment": assessment,
+            "item_assessments": [item_assessment],
+        },
+        deep=True,
+    )
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -108,20 +202,65 @@ def _binding(
     )
 
 
+def _with_writer_governance(section: SchemeSectionSchema) -> SchemeSectionSchema:
+    binding = WriterGateBindingSchema(
+        section_id=section.section_id,
+        section_title=section.section_title,
+        section_order=section.section_order,
+        document_id="doc_day2",
+        run_id="run_day2",
+        gate_decision=GateDecisionSchema(
+            policy_id="day2_writer_fixture_v1",
+            evidence_status=EvidenceStatus.SUFFICIENT,
+            delivery_mode=DeliveryMode.GROUNDED,
+            claim_risk_level=ClaimRiskLevel.LOW,
+            allowed_claim_types=["general_method", "style_guidance"],
+            forbidden_claim_types=[],
+            required_qualifiers=[],
+            covered_topics=[section.section_title],
+            missing_topics=[],
+            human_review_required=False,
+            reason_codes=["day2_writer_fixture"],
+        ),
+        generation_allowed=True,
+        evidence_contract_sha256="a" * 64,
+        prompt_evidence_contract_sha256="b" * 64,
+    )
+    audit = WriterClaimAuditor().audit(section.content, binding=binding)
+    return section.model_copy(
+        update={
+            "extra": {
+                **dict(section.extra or {}),
+                "writer_gate_binding": binding.model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "writer_execution_status": binding.execution_status.value,
+                "claim_audit": audit.model_dump(mode="json", exclude_none=True),
+                "required_qualifiers_applied": [],
+                "formal_deliverable_eligible": audit.passed,
+                "need_human_review": False,
+            }
+        },
+        deep=True,
+    )
+
+
 def _draft_with_citations(
     content: str,
     bindings: list[CitationBindingSchema],
 ) -> SchemeDraftSchema:
-    section = SchemeSectionSchema(
-        section_id="s1",
-        section_title="项目概述",
-        section_order=1,
-        content=content,
-        status=ExecutionStatus.SUCCESS,
-        citation_ids=[item.citation_id for item in bindings],
-        citation_bindings=list(bindings),
-        truncation=TruncationCheckSchema(truncated=False),
-        eval_result=SectionEvalSchema(passed=True),
+    section = _with_writer_governance(
+        SchemeSectionSchema(
+            section_id="s1",
+            section_title="项目概述",
+            section_order=1,
+            content=content,
+            status=ExecutionStatus.SUCCESS,
+            citation_ids=[item.citation_id for item in bindings],
+            citation_bindings=list(bindings),
+            truncation=TruncationCheckSchema(truncated=False),
+            eval_result=SectionEvalSchema(passed=True),
+        )
     )
     return SchemeDraftSchema(
         draft_id="draft_day2",
@@ -733,14 +872,9 @@ def test_document_level_crag_degradation_is_aggregated() -> None:
             document_title="测试方案",
             required_sections=["项目概述"],
             sections=[section],
-            document_evidence_available=True,
-            document_assessment_status="sufficient",
-            document_evidence_assessment={
-                "details": {
-                    "verification_mode": "degraded_deterministic_fallback",
-                    "quality_mode_degraded": True,
-                }
-            },
+            document_evidence_bundle=_canonical_quality_bundle(
+                quality_mode_degraded=True
+            ),
             created_at=NOW,
             updated_at=NOW,
         )
@@ -749,20 +883,22 @@ def test_document_level_crag_degradation_is_aggregated() -> None:
 
 
 def test_degraded_quality_is_aggregated_but_does_not_decide_delivery() -> None:
-    section = SchemeSectionSchema(
-        section_id="s1",
-        section_title="项目概述",
-        section_order=1,
-        content="限定性输出。",
-        status=ExecutionStatus.SUCCESS,
-        truncation=TruncationCheckSchema(truncated=False),
-        eval_result=SectionEvalSchema(passed=True),
-        extra={
-            "generation_check": {
-                "verification_mode": "degraded_deterministic_fallback",
-                "quality_mode_degraded": True,
-            }
-        },
+    section = _with_writer_governance(
+        SchemeSectionSchema(
+            section_id="s1",
+            section_title="项目概述",
+            section_order=1,
+            content="采用限定性输出方法，并保留降级质量标记。",
+            status=ExecutionStatus.SUCCESS,
+            truncation=TruncationCheckSchema(truncated=False),
+            eval_result=SectionEvalSchema(passed=True),
+            extra={
+                "generation_check": {
+                    "verification_mode": "degraded_deterministic_fallback",
+                    "quality_mode_degraded": True,
+                }
+            },
+        )
     )
     assembled = DocumentAssembler().assemble(
         DocumentAssemblyRequestSchema(
@@ -1188,6 +1324,45 @@ def test_cleaned_text_unit_legacy_migration_is_explicit_and_preserves_facts() ->
         migrate_legacy_cleaned_text_unit_payload({**legacy, "extra": "not-a-dict"})
 
 
+def test_cleaned_text_unit_spark_metadata_moves_to_extra_without_hiding_unknowns() -> None:
+    spark_record = {
+        "schema_version": "cleaned_text_unit_v1",
+        "unit_id": "u1",
+        "doc_id": "doc1",
+        "source_type": "offline",
+        "text": "正文",
+        "unit_order": 1,
+        "text_length": 2,
+        "cleaning_version": "spark_document_clean_v2.0",
+        "should_index": True,
+        "is_gold_reference": False,
+        "parser_name": "word_parser",
+        "source_backend": "word",
+        "source_sha256": "abc",
+        "structure_quality": "high",
+        "table_uri": None,
+        "can_enter_spark_cleaning": True,
+        "source_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "extra": {},
+    }
+
+    migrated = migrate_legacy_cleaned_text_unit_payload(spark_record)
+    projected = row_to_unit(migrated)
+    producer_extensions = projected["extra"]["producer_top_level_extensions"]
+    assert producer_extensions["should_index"] is True
+    assert producer_extensions["is_gold_reference"] is False
+    assert producer_extensions["parser_name"] == "word_parser"
+    assert producer_extensions["source_backend"] == "word"
+    assert "should_index" not in projected
+
+    with pytest.raises(ValidationError):
+        row_to_unit(
+            migrate_legacy_cleaned_text_unit_payload(
+                {**spark_record, "unexpected_spark_field": "typo"}
+            )
+        )
+
+
 class _Closable:
     def __init__(self) -> None:
         self.closed = 0
@@ -1542,9 +1717,11 @@ def test_real_runtime_preflight_preserves_active_index_reproducibility_identity(
         "embedding_dim": 768,
     }
 
+    resolved_pointer_paths: list[Path] = []
+
     class _Resolver:
         def resolve(self, pointer_path: Path) -> dict:
-            del pointer_path
+            resolved_pointer_paths.append(Path(pointer_path))
             return dict(index_info)
 
     monkeypatch.setattr(
@@ -1560,13 +1737,49 @@ def test_real_runtime_preflight_preserves_active_index_reproducibility_identity(
         project_root=tmp_path,
     )
 
+    external_rag_root = tmp_path / "external-rag-runtime"
+    monkeypatch.setenv("RAG_PROJECT_ROOT", str(external_rag_root))
+
     preflight = run_demo_script._preflight_real_runtime(settings)
+    assert resolved_pointer_paths == [
+        external_rag_root.resolve()
+        / "data"
+        / "processed"
+        / "indexes"
+        / "active_index.json"
+    ]
+    assert preflight["rag_project_root"] == str(external_rag_root.resolve())
     assert preflight["active_index_manifest_path"] == index_info["manifest_path"]
     assert preflight["active_index_manifest_sha256"] == "manifest-sha"
     assert preflight["active_index_dataset_version"] == "dataset-v1"
     assert preflight["active_index_config_sha256"] == "config-sha"
     assert preflight["active_index_reproducibility_sha256"] == "repro-sha"
     assert preflight["embedding_dim"] == 768
+
+
+def test_run_demo_forwards_trusted_retrieval_access_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_mainline(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return {}
+
+    scope = RetrievalAccessScopeSchema(
+        tenant_id="tenant-gov",
+        authorized_kb_ids=["policy_standard_kb", "technical_reference_kb"],
+    )
+    monkeypatch.setattr(run_demo_script, "run_mainline", fake_run_mainline)
+
+    run_demo_script.run_demo(
+        project_input={"tenant_id": "tenant-gov"},
+        allow_demo_defaults=False,
+        retrieval_access_scope=scope,
+    )
+
+    assert captured["retrieval_access_scope"] == scope
+    assert captured["allow_demo_defaults"] is False
 
 
 def test_run_demo_applies_experiment_seed_to_actual_execution(

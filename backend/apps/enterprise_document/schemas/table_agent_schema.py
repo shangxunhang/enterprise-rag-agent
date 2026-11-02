@@ -1,8 +1,4 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：StructuredFactSchema、TableAgentInputSchema、TableAnalysisSchema、TableAgentOutputSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""TableAgent input/output schemas."""
+"""项目输入规范化阶段的表格分析、结构化事实和兼容输出协议。"""
 
 from __future__ import annotations
 
@@ -16,9 +12,8 @@ from schemas.status import ExecutionStatus
 from .project_input_schema import ProjectInputSchema
 
 
-# 阅读注释（类）：封装 structured fact Schema，定义跨模块传递的数据结构与字段约束。
 class StructuredFactSchema(SchemaBase):
-    """封装 structured fact Schema，定义跨模块传递的数据结构与字段约束。"""
+    """带来源和置信度的单条业务事实，供检索过滤和章节生成引用。"""
     schema_version: str = "structured_fact_v1"
 
     fact_id: str
@@ -38,9 +33,8 @@ class StructuredFactSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 table Agent 输入 Schema，定义跨模块传递的数据结构与字段约束。
 class TableAgentInputSchema(SchemaBase):
-    """封装 table Agent 输入 Schema，定义跨模块传递的数据结构与字段约束。"""
+    """旧 TableAgent 接口的输入快照；当前主链由 ProjectInput 规范化用例消费。"""
     schema_version: str = "table_agent_input_v1"
 
     task_id: str
@@ -68,9 +62,8 @@ class TableAgentInputSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 table analysis Schema，定义跨模块传递的数据结构与字段约束。
 class TableAnalysisSchema(SchemaBase):
-    """封装 table analysis Schema，定义跨模块传递的数据结构与字段约束。"""
+    """表格解析后的设备、规模、资源、投资摘要和风险结构。"""
     table_summary: Optional[str] = None
     device_summary: Optional[str] = None
     project_scale: Dict[str, Any] = Field(default_factory=dict)
@@ -81,9 +74,8 @@ class TableAnalysisSchema(SchemaBase):
     extra: Dict[str, Any] = Field(default_factory=dict)
 
 
-# 阅读注释（类）：封装 table Agent 输出 Schema，定义跨模块传递的数据结构与字段约束。
 class TableAgentOutputSchema(SchemaBase):
-    """封装 table Agent 输出 Schema，定义跨模块传递的数据结构与字段约束。"""
+    """规范化阶段的统一输出；ProjectInput 是事实源，旧表格字段仅用于迁移兼容。"""
     schema_version: str = "table_agent_output_v1"
 
     task_id: str

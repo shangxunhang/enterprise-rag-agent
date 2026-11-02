@@ -1,8 +1,8 @@
-# =============================================================================
-# 中文阅读说明：端口与协议定义模块，用于约束模块间依赖边界。
-# 主要定义：BaseLLMClient。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Base LLM client interface."""
+"""定义底层大语言模型客户端的抽象基类。
+
+该抽象面向具体模型供应商适配器，例如本地模型、OpenAI 兼容接口或其他远程
+推理服务。上层业务不应依赖供应商 SDK，而应通过标准请求和响应模型调用实现类。
+"""
 
 from __future__ import annotations
 
@@ -11,14 +11,30 @@ from abc import ABC, abstractmethod
 from schemas.model import ModelRequestSchema, ModelResponseSchema
 
 
-# 阅读注释（类）：封装 base llmclient，集中封装相关状态、依赖和行为。
 class BaseLLMClient(ABC):
-    """Base class for all LLM clients."""
+    """约束所有底层 LLM 客户端必须提供的最小能力。
+
+    Attributes:
+        model_name: 当前客户端实际调用的模型名称，用于日志、路由和用量归因。
+
+    实现类负责把统一请求转换成供应商协议、执行调用并重新封装为统一响应；它们
+    不应把供应商特有对象泄漏到上层。
+    """
 
     model_name: str
 
-    # 阅读注释（函数）：生成 BaseLLMClient。
     @abstractmethod
     def generate(self, request: ModelRequestSchema) -> ModelResponseSchema:
-        """Generate text from model request."""
+        """根据标准模型请求执行一次同步文本生成。
+
+        Args:
+            request: 已完成参数校验的统一模型请求，包含提示词、生成参数和调用
+                上下文。
+
+        Returns:
+            统一模型响应，供网关、Agent 和数据采集模块继续处理。
+
+        实现类应在该边界内完成协议转换和错误归一化；基类不提供默认行为。
+        """
+
         raise NotImplementedError

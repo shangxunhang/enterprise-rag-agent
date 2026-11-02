@@ -1,29 +1,26 @@
-# =============================================================================
-# 中文阅读说明：离线评测模块，用于执行实验、评分、对比和报告生成。
-# 主要定义：clamp、tokenize、token_set、jaccard、coverage、extract_text_from_chunk、extract_context_text、extract_answer、extract_query、_chunk_relevance_scores等。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""RAGAS-style lightweight proxy metrics.
+"""计算不依赖模型裁判的轻量 RAG 代理指标。
 
-This module intentionally does not depend on official ragas or an LLM judge.
-It consumes the task-level capture record produced by the agent project and
-returns deterministic proxy scores. Later, each function can be replaced by
-official RAGAS metrics or LLM-as-judge without changing the runner/report layer.
+本模块直接消费 Agent 项目产生的任务级 DataCapture 记录，通过稳定的中英文词法
+特征估算检索相关性、上下文覆盖、回答忠实度、回答相关性、引用覆盖和结构完整度。
+这些分数适合低成本回归和样本筛选，不等价于官方 RAGAS、语义模型或人工判断。
+每个公开指标都返回统一 ``RAGEvalMetricSchema``，因此以后可以替换内部算法而不改
+Runner 和报告协议。
 """
 
 from __future__ import annotations
 
 import math
 import re
-from collections import Counter
 from typing import Any, Dict, Iterable, List, Sequence, Set
 
 from .schemas import RAGEvalMetricSchema
 
 
+# 中文按单个 CJK 字符退化切分，英文和数字按连续词单元切分。
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
 
-
+# 停用词用于削弱高频功能词对词法覆盖率的虚假贡献。
 STOPWORDS: Set[str] = {
     "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "with",
     "is", "are", "was", "were", "be", "by", "as", "from", "that", "this",
@@ -32,166 +29,180 @@ STOPWORDS: Set[str] = {
 }
 
 
-# 阅读注释（函数）：处理 clamp 相关逻辑。
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    """处理 clamp 相关逻辑。
+    """把数值限制在指定闭区间内。
 
-    参数:
-        value: value，具体约束请结合类型标注和调用方确认。
-        low: low，具体约束请结合类型标注和调用方确认。
-        high: high，具体约束请结合类型标注和调用方确认。
+    Args:
+        value: 待限制的数值。
+        low: 区间下界。
+        high: 区间上界。
 
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：max, min, float。
+    Returns:
+        转换为 ``float`` 后位于 ``[low, high]`` 的值。
     """
+
+    # 统一限制所有代理分数，防止组合公式或异常输入越过报告约定范围。
     return max(low, min(high, float(value)))
 
 
-# 阅读注释（函数）：处理 tokenize 相关逻辑。
 def tokenize(text: str) -> List[str]:
-    """Small mixed Chinese/English tokenizer.
+    """对中英文混合文本执行稳定的轻量词法切分。
 
-    For Chinese, use individual CJK characters as a coarse fallback.
-    For English/numbers, use regex words.
+    Args:
+        text: 待分析文本。
+
+    Returns:
+        已转小写、去空值并过滤停用词的 token 列表。中文使用单字作为粗粒度
+        fallback，英文、数字和下划线标识符按正则词单元切分。
+
+    该实现追求跨环境确定性，不依赖外部分词模型；因此不能表达同义词和短语语义。
     """
 
+    # 空文本没有可比较特征，直接返回空列表。
     if not text:
         return []
 
+    # 先提取英文/数字词并转小写，再追加中文字符。
     tokens: List[str] = []
-    tokens.extend(x.lower() for x in _WORD_RE.findall(text))
+    tokens.extend(item.lower() for item in _WORD_RE.findall(text))
     tokens.extend(_CJK_RE.findall(text))
-    return [x for x in tokens if x and x not in STOPWORDS]
+
+    # 最后过滤空 token 和预定义停用词，降低通用词造成的虚假命中。
+    return [item for item in tokens if item and item not in STOPWORDS]
 
 
-# 阅读注释（函数）：处理 Token set 相关逻辑。
 def token_set(text: str) -> Set[str]:
-    """处理 Token set 相关逻辑。
+    """返回文本去重后的词法特征集合。"""
 
-    参数:
-        text: 待处理文本。
-
-    返回:
-        Set[str]
-
-    阅读提示:
-        主要直接调用：set, tokenize。
-    """
+    # 集合形式适合计算交并比，不保留词频和原始顺序。
     return set(tokenize(text))
 
 
-# 阅读注释（函数）：处理 jaccard 相关逻辑。
 def jaccard(a: Iterable[str], b: Iterable[str]) -> float:
-    """处理 jaccard 相关逻辑。
+    """计算两个 token 集合的 Jaccard 相似度。
 
-    参数:
-        a: a，具体约束请结合类型标注和调用方确认。
-        b: b，具体约束请结合类型标注和调用方确认。
+    Args:
+        a: 第一组 token。
+        b: 第二组 token。
 
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：set, len。
+    Returns:
+        交集大小除以并集大小；任一集合为空时返回 ``0.0``。
     """
-    sa = set(a)
-    sb = set(b)
-    if not sa or not sb:
+
+    # 将任意可迭代输入归一化为集合，消除重复 token 的影响。
+    left = set(a)
+    right = set(b)
+    if not left or not right:
         return 0.0
-    return len(sa & sb) / len(sa | sb)
+
+    # Jaccard 对长短接近的文本较直观，但对长回答会偏严格。
+    return len(left & right) / len(left | right)
 
 
-# 阅读注释（函数）：处理 coverage 相关逻辑。
-def coverage(source_tokens: Sequence[str], target_tokens: Sequence[str]) -> float:
-    """How much of target is covered by source."""
+def coverage(
+    source_tokens: Sequence[str],
+    target_tokens: Sequence[str],
+) -> float:
+    """计算目标 token 中有多少被来源 token 覆盖。
 
-    ss = set(source_tokens)
-    ts = set(target_tokens)
-    if not ts:
+    Args:
+        source_tokens: 被视为证据或承载文本的 token。
+        target_tokens: 希望被覆盖的 token。
+
+    Returns:
+        ``|source ∩ target| / |target|``；目标为空时返回 ``0.0``。
+    """
+
+    # 覆盖率方向是非对称的，分母始终使用目标集合。
+    source_set = set(source_tokens)
+    target_set = set(target_tokens)
+    if not target_set:
         return 0.0
-    return len(ss & ts) / len(ts)
+    return len(source_set & target_set) / len(target_set)
 
 
-# 阅读注释（函数）：提取 文本 from 文本块。
 def extract_text_from_chunk(chunk: Dict[str, Any]) -> str:
-    """提取 文本 from 文本块。
+    """从不同版本的召回块中提取首个可用文本字段。
 
-    参数:
-        chunk: 文本块，具体约束请结合类型标注和调用方确认。
+    Args:
+        chunk: RAG 召回块或证据块字典。
 
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：chunk.get, isinstance, value.strip。
+    Returns:
+        按上下文优先级找到的首个非空字符串；没有文本时返回空字符串。
     """
-    for key in ("context_text", "match_text", "text", "content", "quote_text", "summary"):
+
+    # 优先完整父级上下文，其次匹配片段和通用兼容字段。
+    for key in (
+        "context_text",
+        "match_text",
+        "text",
+        "content",
+        "quote_text",
+        "summary",
+    ):
         value = chunk.get(key)
         if isinstance(value, str) and value.strip():
             return value
     return ""
 
 
-# 阅读注释（函数）：提取 上下文 文本。
 def extract_context_text(sample: Dict[str, Any]) -> str:
-    """提取 上下文 文本。
+    """从新旧采集记录中提取已打包的 RAG 上下文文本。
 
-    参数:
-        sample: sample，具体约束请结合类型标注和调用方确认。
+    Args:
+        sample: DataCaptureRecord 风格样本。
 
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：sample.get, isinstance, rag_context.get, eval_sample.get, nested.get。
+    Returns:
+        顶层 ``rag_context.context_text``，或旧版
+        ``eval_sample.rag_context.context_text``；均缺失时返回空字符串。
     """
+
+    # 新版记录以顶层 rag_context 为事实来源。
     rag_context = sample.get("rag_context") or {}
     if isinstance(rag_context, dict):
         text = rag_context.get("context_text")
         if isinstance(text, str):
             return text
 
+    # 旧版评测样本可能把上下文嵌套在 eval_sample 中，作为单向兼容回退。
     eval_sample = sample.get("eval_sample") or {}
     if isinstance(eval_sample, dict):
         nested = eval_sample.get("rag_context") or {}
-        if isinstance(nested, dict) and isinstance(nested.get("context_text"), str):
+        if isinstance(nested, dict) and isinstance(
+            nested.get("context_text"),
+            str,
+        ):
             return nested["context_text"]
 
     return ""
 
 
-# 阅读注释（函数）：提取 answer。
 def extract_answer(sample: Dict[str, Any]) -> str:
-    """提取 answer。
+    """按交付优先级从采集记录中提取回答文本。
 
-    参数:
-        sample: sample，具体约束请结合类型标注和调用方确认。
+    Args:
+        sample: DataCaptureRecord 风格样本。
 
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：sample.get, isinstance, value.strip, eval_sample.get。
+    Returns:
+        优先返回正式交付物，其次生成草稿和原始模型输出；顶层缺失时对旧版
+        ``eval_sample`` 使用相同顺序回退。
     """
-    for key in (
+
+    # 新记录优先评价真正交付给用户的文本，而不是中间模型输出。
+    answer_keys = (
         "deliverable_output",
         "generated_draft_output",
         "model_output",
-    ):
+    )
+    for key in answer_keys:
         value = sample.get(key)
         if isinstance(value, str) and value.strip():
             return value
 
+    # 兼容旧记录中的嵌套评测字段。
     eval_sample = sample.get("eval_sample") or {}
     if isinstance(eval_sample, dict):
-        for key in (
-            "deliverable_output",
-            "generated_draft_output",
-            "model_output",
-        ):
+        for key in answer_keys:
             value = eval_sample.get(key)
             if isinstance(value, str) and value.strip():
                 return value
@@ -199,24 +210,24 @@ def extract_answer(sample: Dict[str, Any]) -> str:
     return ""
 
 
-# 阅读注释（函数）：提取 查询。
 def extract_query(sample: Dict[str, Any]) -> str:
-    """提取 查询。
+    """从采集记录中提取触发本次 RAG 的原始查询。
 
-    参数:
-        sample: sample，具体约束请结合类型标注和调用方确认。
+    Args:
+        sample: DataCaptureRecord 风格样本。
 
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：sample.get, isinstance, value.strip, eval_sample.get。
+    Returns:
+        顶层 ``user_input``、``query``、``input`` 中首个非空字符串；若缺失，
+        回退到旧版 ``eval_sample.input``。
     """
+
+    # 顶层字段按当前协议到通用兼容字段排序。
     for key in ("user_input", "query", "input"):
         value = sample.get(key)
         if isinstance(value, str) and value.strip():
             return value
 
+    # 旧版 eval_sample 只约定 input 字段。
     eval_sample = sample.get("eval_sample") or {}
     if isinstance(eval_sample, dict):
         value = eval_sample.get("input")
@@ -226,54 +237,65 @@ def extract_query(sample: Dict[str, Any]) -> str:
     return ""
 
 
-# 阅读注释（函数）：处理 文本块 relevance scores 相关逻辑。
-def _chunk_relevance_scores(query: str, chunks: List[Dict[str, Any]]) -> List[float]:
-    """处理 文本块 relevance scores 相关逻辑。
+def _chunk_relevance_scores(
+    query: str,
+    chunks: List[Dict[str, Any]],
+) -> List[float]:
+    """为每个召回块计算查询相关性代理分数。
 
-    参数:
-        query: 当前检索或生成查询。
-        chunks: chunks，具体约束请结合类型标注和调用方确认。
+    Args:
+        query: 原始查询文本。
+        chunks: 按检索或重排顺序排列的召回块。
 
-    返回:
-        List[float]
+    Returns:
+        与 ``chunks`` 一一对应的 ``[0, 1]`` 分数列表。
 
-    阅读提示:
-        主要直接调用：tokenize, extract_text_from_chunk, coverage, chunk.get, isinstance, math.exp, float, scores.append。
+    词法覆盖是主信号；存在数值 ``rerank_score`` 时，将其经过 sigmoid 压缩后只
+    作为 25% 的弱加成，避免不同重排模型的原始 logit 尺度直接主导结果。
     """
-    q_tokens = tokenize(query)
+
+    # 第一步：查询只分词一次，供所有块复用。
+    query_tokens = tokenize(query)
     scores: List[float] = []
 
+    # 第二步：逐块提取文本并计算其对查询 token 的覆盖率。
     for chunk in chunks:
-        text = extract_text_from_chunk(chunk)
-        c_tokens = tokenize(text)
-        lexical = coverage(c_tokens, q_tokens)
+        chunk_text = extract_text_from_chunk(chunk)
+        chunk_tokens = tokenize(chunk_text)
+        lexical_score = coverage(chunk_tokens, query_tokens)
 
+        # 第三步：可选重排分数经过 sigmoid 映射，兼容可能为负的 BGE logit。
         rerank_score = chunk.get("rerank_score")
         rerank_bonus = 0.0
         if isinstance(rerank_score, (int, float)):
-            # bge-reranker scores can be negative. Use a soft squashing only as a weak bonus.
             rerank_bonus = 1.0 / (1.0 + math.exp(-float(rerank_score)))
 
-        score = 0.75 * lexical + 0.25 * rerank_bonus if rerank_bonus else lexical
+        # 第四步：有重排信号时采用 75/25 混合，否则保留纯词法分数。
+        score = (
+            0.75 * lexical_score + 0.25 * rerank_bonus
+            if rerank_bonus
+            else lexical_score
+        )
         scores.append(clamp(score))
 
     return scores
 
 
-# 阅读注释（函数）：处理 上下文 precision 相关逻辑。
-def context_precision(query: str, retrieved_chunks: List[Dict[str, Any]]) -> RAGEvalMetricSchema:
-    """处理 上下文 precision 相关逻辑。
+def context_precision(
+    query: str,
+    retrieved_chunks: List[Dict[str, Any]],
+) -> RAGEvalMetricSchema:
+    """估算排序后召回结果与查询的相关程度。
 
-    参数:
-        query: 当前检索或生成查询。
-        retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
+    Args:
+        query: 原始查询文本。
+        retrieved_chunks: 按最终检索顺序排列的召回块。
 
-    返回:
-        RAGEvalMetricSchema
-
-    阅读提示:
-        主要直接调用：RAGEvalMetricSchema, _chunk_relevance_scores, sum, enumerate, clamp, len。
+    Returns:
+        采用倒数排名权重的相关性均值，越靠前的块对结果影响越大。
     """
+
+    # 没有召回块时明确记零，并保留数量诊断。
     if not retrieved_chunks:
         return RAGEvalMetricSchema(
             name="context_precision",
@@ -282,19 +304,24 @@ def context_precision(query: str, retrieved_chunks: List[Dict[str, Any]]) -> RAG
             details={"retrieved_chunk_num": 0},
         )
 
-    scores = _chunk_relevance_scores(query=query, chunks=retrieved_chunks)
-    relevant_count = sum(1 for x in scores if x > 0.0)
+    # 第一步：计算每个块的词法/重排混合相关性代理。
+    scores = _chunk_relevance_scores(
+        query=query,
+        chunks=retrieved_chunks,
+    )
+    relevant_count = sum(1 for score in scores if score > 0.0)
 
-    # Rank-aware precision: earlier chunks get larger weights.
+    # 第二步：使用 1/rank 权重，让头部低质量结果受到更强惩罚。
     weighted_sum = 0.0
     weight_total = 0.0
-    for idx, score in enumerate(scores, start=1):
-        weight = 1.0 / idx
+    for rank, score in enumerate(scores, start=1):
+        weight = 1.0 / rank
         weighted_sum += score * weight
         weight_total += weight
 
     final_score = weighted_sum / weight_total if weight_total else 0.0
 
+    # 第三步：返回分数以及逐块分数，便于定位具体低相关召回。
     return RAGEvalMetricSchema(
         name="context_precision",
         score=clamp(final_score),
@@ -307,70 +334,66 @@ def context_precision(query: str, retrieved_chunks: List[Dict[str, Any]]) -> RAG
     )
 
 
-# 阅读注释（函数）：处理 上下文 recall proxy 相关逻辑。
-def context_recall_proxy(query: str, context_text: str, retrieved_chunks: List[Dict[str, Any]]) -> RAGEvalMetricSchema:
-    """处理 上下文 recall proxy 相关逻辑。
+def context_recall_proxy(
+    query: str,
+    context_text: str,
+    retrieved_chunks: List[Dict[str, Any]],
+) -> RAGEvalMetricSchema:
+    """估算打包上下文对查询关键 token 的覆盖程度。
 
-    参数:
-        query: 当前检索或生成查询。
-        context_text: 上下文 文本，具体约束请结合类型标注和调用方确认。
-        retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        RAGEvalMetricSchema
-
-    阅读提示:
-        主要直接调用：tokenize, coverage, RAGEvalMetricSchema, clamp, len, set。
+    该指标没有使用黄金证据，因此只能称为 recall proxy。它回答“查询中可识别的
+    词法信息有多少进入最终上下文”，不能证明真正相关证据是否全部召回。
     """
-    q_tokens = tokenize(query)
+
+    # 第一步：分别切分查询和最终送入生成链的上下文。
+    query_tokens = tokenize(query)
     context_tokens = tokenize(context_text)
 
-    if not q_tokens:
+    # 第二步：为空输入提供明确退化原因；正常情况计算查询 token 覆盖率。
+    if not query_tokens:
         score = 0.0
         reason = "Empty query tokens."
     elif not context_tokens:
         score = 0.0
         reason = "Empty context."
     else:
-        score = coverage(context_tokens, q_tokens)
+        score = coverage(context_tokens, query_tokens)
         reason = "Proxy recall: how much query evidence appears in packed context."
 
+    # 第三步：召回块数量只用于诊断，不直接参与该上下文级分数。
     return RAGEvalMetricSchema(
         name="context_recall_proxy",
         score=clamp(score),
         reason=reason,
         details={
-            "query_token_num": len(set(q_tokens)),
+            "query_token_num": len(set(query_tokens)),
             "context_token_num": len(set(context_tokens)),
             "retrieved_chunk_num": len(retrieved_chunks),
         },
     )
 
 
-# 阅读注释（函数）：处理 faithfulness proxy 相关逻辑。
-def faithfulness_proxy(answer: str, context_text: str) -> RAGEvalMetricSchema:
-    """处理 faithfulness proxy 相关逻辑。
+def faithfulness_proxy(
+    answer: str,
+    context_text: str,
+) -> RAGEvalMetricSchema:
+    """估算回答 token 是否能在证据上下文中找到词法支持。
 
-    参数:
-        answer: answer，具体约束请结合类型标注和调用方确认。
-        context_text: 上下文 文本，具体约束请结合类型标注和调用方确认。
+    Returns:
+        上下文对回答 token 的覆盖率，并附带最多 30 个未支持 token 预览。
 
-    返回:
-        RAGEvalMetricSchema
-
-    阅读提示:
-        主要直接调用：tokenize, RAGEvalMetricSchema, coverage, sorted, set, clamp, len。
+    该代理无法识别否定、数值关系或逻辑矛盾，只适合筛查明显脱离上下文的回答。
     """
+
+    # 第一步：切分回答和上下文；任一为空都无法建立忠实度支持。
     answer_tokens = tokenize(answer)
     context_tokens = tokenize(context_text)
-
     if not answer_tokens:
         return RAGEvalMetricSchema(
             name="faithfulness_proxy",
             score=0.0,
             reason="Empty answer.",
         )
-
     if not context_tokens:
         return RAGEvalMetricSchema(
             name="faithfulness_proxy",
@@ -378,8 +401,10 @@ def faithfulness_proxy(answer: str, context_text: str) -> RAGEvalMetricSchema:
             reason="Empty context.",
         )
 
+    # 第二步：计算上下文对回答 token 的覆盖率。
     score = coverage(context_tokens, answer_tokens)
 
+    # 第三步：提取未被上下文覆盖的 token 作为人工诊断线索。
     unsupported = sorted(set(answer_tokens) - set(context_tokens))[:30]
 
     return RAGEvalMetricSchema(
@@ -394,29 +419,26 @@ def faithfulness_proxy(answer: str, context_text: str) -> RAGEvalMetricSchema:
     )
 
 
-# 阅读注释（函数）：处理 answer relevance proxy 相关逻辑。
-def answer_relevance_proxy(query: str, answer: str) -> RAGEvalMetricSchema:
-    """处理 answer relevance proxy 相关逻辑。
+def answer_relevance_proxy(
+    query: str,
+    answer: str,
+) -> RAGEvalMetricSchema:
+    """估算最终回答是否覆盖查询中的关键 token。
 
-    参数:
-        query: 当前检索或生成查询。
-        answer: answer，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        RAGEvalMetricSchema
-
-    阅读提示:
-        主要直接调用：tokenize, coverage, RAGEvalMetricSchema, clamp, len, set。
+    长回答会天然包含额外 token，因此这里使用“回答覆盖查询”的非对称覆盖率，
+    而不是对长文本惩罚更强的 Jaccard 相似度。
     """
-    q_tokens = tokenize(query)
-    a_tokens = tokenize(answer)
 
-    if not q_tokens or not a_tokens:
+    # 第一步：切分查询和回答。
+    query_tokens = tokenize(query)
+    answer_tokens = tokenize(answer)
+
+    # 第二步：空查询或空回答无法判断相关性；否则计算查询 token 覆盖率。
+    if not query_tokens or not answer_tokens:
         score = 0.0
         reason = "Empty query or answer tokens."
     else:
-        # Query terms should be represented in answer; Jaccard is too harsh for long answers.
-        score = coverage(a_tokens, q_tokens)
+        score = coverage(answer_tokens, query_tokens)
         reason = "Proxy answer relevance: query token coverage by answer."
 
     return RAGEvalMetricSchema(
@@ -424,58 +446,87 @@ def answer_relevance_proxy(query: str, answer: str) -> RAGEvalMetricSchema:
         score=clamp(score),
         reason=reason,
         details={
-            "query_token_num": len(set(q_tokens)),
-            "answer_token_num": len(set(a_tokens)),
+            "query_token_num": len(set(query_tokens)),
+            "answer_token_num": len(set(answer_tokens)),
         },
     )
 
 
-# 阅读注释（函数）：处理 引用 coverage 相关逻辑。
-def citation_coverage(answer: str, citations: List[Dict[str, Any]], retrieved_chunks: List[Dict[str, Any]]) -> RAGEvalMetricSchema:
-    """处理 引用 coverage 相关逻辑。
+def citation_coverage(
+    answer: str,
+    citations: List[Dict[str, Any]],
+    retrieved_chunks: List[Dict[str, Any]],
+) -> RAGEvalMetricSchema:
+    """估算引用数量及其与召回块身份的一致性。
 
-    参数:
-        answer: answer，具体约束请结合类型标注和调用方确认。
-        citations: 引用信息集合。
-        retrieved_chunks: retrieved chunks，具体约束请结合类型标注和调用方确认。
+    Args:
+        answer: 最终回答文本。
+        citations: 回答输出的结构化引用列表。
+        retrieved_chunks: 本次运行的召回块列表。
 
-    返回:
-        RAGEvalMetricSchema
-
-    阅读提示:
-        主要直接调用：len, answer.strip, RAGEvalMetricSchema, set, c.get, cited_chunk_ids.add, str, chunk.get。
+    Returns:
+        引用数量饱和分和引用块身份重叠率的加权组合。该指标不验证引用是否绑定到
+        每个具体声明，也不判断引用内容是否真正支持该声明。
     """
+
+    # 第一步：记录回答长度，并为无回答或无引用提供明确零分原因。
     answer_chars = len(answer or "")
-
     if not answer.strip():
-        return RAGEvalMetricSchema(name="citation_coverage", score=0.0, reason="Empty answer.")
-
+        return RAGEvalMetricSchema(
+            name="citation_coverage",
+            score=0.0,
+            reason="Empty answer.",
+        )
     if not citations:
         return RAGEvalMetricSchema(
             name="citation_coverage",
             score=0.0,
             reason="No citations returned.",
-            details={"citation_num": 0, "retrieved_chunk_num": len(retrieved_chunks)},
+            details={
+                "citation_num": 0,
+                "retrieved_chunk_num": len(retrieved_chunks),
+            },
         )
 
-    cited_chunk_ids = set()
-    for c in citations:
+    # 第二步：从引用中收集各种兼容粒度的块标识。
+    cited_chunk_ids: Set[str] = set()
+    for citation in citations:
         for key in ("chunk_id", "child_chunk_id", "parent_chunk_id"):
-            value = c.get(key)
+            value = citation.get(key)
             if value:
                 cited_chunk_ids.add(str(value))
 
-    retrieved_ids = set()
+    # 第三步：从召回结果中收集匹配块和上下文块标识。
+    retrieved_ids: Set[str] = set()
     for chunk in retrieved_chunks:
-        for key in ("matched_chunk_id", "context_chunk_id", "child_chunk_id", "parent_chunk_id", "chunk_id"):
+        for key in (
+            "matched_chunk_id",
+            "context_chunk_id",
+            "child_chunk_id",
+            "parent_chunk_id",
+            "chunk_id",
+        ):
             value = chunk.get(key)
             if value:
                 retrieved_ids.add(str(value))
 
-    citation_chunk_overlap = len(cited_chunk_ids & retrieved_ids) / len(cited_chunk_ids) if cited_chunk_ids else 0.0
-    count_score = min(1.0, len(citations) / max(1, min(3, len(retrieved_chunks) or 3)))
+    # 第四步：计算引用标识中有多少确实来自本次召回结果。
+    citation_chunk_overlap = (
+        len(cited_chunk_ids & retrieved_ids) / len(cited_chunk_ids)
+        if cited_chunk_ids
+        else 0.0
+    )
 
-    score = 0.7 * count_score + 0.3 * citation_chunk_overlap if cited_chunk_ids else count_score
+    # 第五步：引用数量最多按三个有效引用饱和，避免堆叠引用无限抬高分数。
+    expected_count = max(1, min(3, len(retrieved_chunks) or 3))
+    count_score = min(1.0, len(citations) / expected_count)
+
+    # 第六步：有块身份时数量占 70%、血缘一致性占 30%；否则只能使用数量代理。
+    score = (
+        0.7 * count_score + 0.3 * citation_chunk_overlap
+        if cited_chunk_ids
+        else count_score
+    )
 
     return RAGEvalMetricSchema(
         name="citation_coverage",
@@ -491,28 +542,35 @@ def citation_coverage(answer: str, citations: List[Dict[str, Any]], retrieved_ch
     )
 
 
-# 阅读注释（函数）：处理 completeness proxy 相关逻辑。
-def completeness_proxy(answer: str, required_sections: List[str] | None = None) -> RAGEvalMetricSchema:
-    """处理 completeness proxy 相关逻辑。
+def completeness_proxy(
+    answer: str,
+    required_sections: List[str] | None = None,
+) -> RAGEvalMetricSchema:
+    """估算回答对必需章节标题的覆盖程度。
 
-    参数:
-        answer: answer，具体约束请结合类型标注和调用方确认。
-        required_sections: required sections，具体约束请结合类型标注和调用方确认。
+    Args:
+        answer: 最终回答文本。
+        required_sections: 黄金样本要求出现的章节标题。
 
-    返回:
-        RAGEvalMetricSchema
-
-    阅读提示:
-        主要直接调用：answer.strip, RAGEvalMetricSchema, min, len, clamp, hit.append, miss.append。
+    Returns:
+        有章节要求时返回标题字面命中比例；没有要求时退化为最多 800 字符饱和的
+        长度代理。长度代理只能排除明显空洞回答，不代表内容完整。
     """
+
+    # 第一步：归一化可选章节和回答值。
     required_sections = required_sections or []
     answer = answer or ""
 
+    # 第二步：空回答直接记零。
     if not answer.strip():
-        return RAGEvalMetricSchema(name="completeness_proxy", score=0.0, reason="Empty answer.")
+        return RAGEvalMetricSchema(
+            name="completeness_proxy",
+            score=0.0,
+            reason="Empty answer.",
+        )
 
+    # 第三步：无黄金章节时按非平凡回答长度给出弱代理分数。
     if not required_sections:
-        # Fallback: non-trivial answer length.
         score = min(1.0, len(answer) / 800)
         return RAGEvalMetricSchema(
             name="completeness_proxy",
@@ -521,37 +579,43 @@ def completeness_proxy(answer: str, required_sections: List[str] | None = None) 
             details={"answer_chars": len(answer)},
         )
 
-    hit = []
-    miss = []
+    # 第四步：逐一检查章节标题是否在回答中出现，并保留命中/缺失清单。
+    hit: List[str] = []
+    miss: List[str] = []
     for section in required_sections:
         if section and section in answer:
             hit.append(section)
         else:
             miss.append(section)
 
+    # 第五步：使用黄金章节总数作为分母计算覆盖率。
     score = len(hit) / len(required_sections) if required_sections else 0.0
 
     return RAGEvalMetricSchema(
         name="completeness_proxy",
         score=clamp(score),
         reason="Required section coverage.",
-        details={"required_sections": required_sections, "hit": hit, "miss": miss},
+        details={
+            "required_sections": required_sections,
+            "hit": hit,
+            "miss": miss,
+        },
     )
 
 
-# 阅读注释（函数）：处理 weighted overall 相关逻辑。
-def weighted_overall(metrics: Dict[str, RAGEvalMetricSchema]) -> float:
-    """处理 weighted overall 相关逻辑。
+def weighted_overall(
+    metrics: Dict[str, RAGEvalMetricSchema],
+) -> float:
+    """按固定指标配置计算归一化总分。
 
-    参数:
-        metrics: 指标，具体约束请结合类型标注和调用方确认。
+    Args:
+        metrics: 以稳定指标名称为键的指标映射。缺失指标会从分子和分母同时排除。
 
-    返回:
-        float
-
-    阅读提示:
-        主要直接调用：weights.items, metrics.get, clamp。
+    Returns:
+        已按实际参与权重重新归一化并限制在 ``[0, 1]`` 的总分。
     """
+
+    # 忠实度权重最高，检索精度和回答相关性次之；引用与结构各占 10%。
     weights = {
         "context_precision": 0.20,
         "context_recall_proxy": 0.15,
@@ -561,6 +625,7 @@ def weighted_overall(metrics: Dict[str, RAGEvalMetricSchema]) -> float:
         "completeness_proxy": 0.10,
     }
 
+    # 第一步：只累计实际存在的指标，允许渐进替换或裁剪指标集合。
     total = 0.0
     weight_total = 0.0
     for name, weight in weights.items():
@@ -570,4 +635,5 @@ def weighted_overall(metrics: Dict[str, RAGEvalMetricSchema]) -> float:
         total += metric.score * weight
         weight_total += weight
 
+    # 第二步：按参与权重归一化；完全没有指标时返回零。
     return clamp(total / weight_total if weight_total else 0.0)

@@ -1,0 +1,1308 @@
+{
+  "schema_version": "publication_local_archive_test_inventory_v1",
+  "generated_date_client": "2026-11-02",
+  "scope": {
+    "python_files_under_backend_tests": 462,
+    "docs_fixture_paths_directly_resolved": 19,
+    "docs_fixture_bytes_at_source": 85837715,
+    "method": "AST/static path and source inspection; no tests, providers or historical runs executed to generate this inventory.",
+    "source_mutations": "Inventory agent changed no source; original workspace unchanged by this inventory.",
+    "test_semantics_mutations": "Isolated publication copy only: three test files externalize private config/filename/project identity through explicit environment inputs and skip when required original inputs are absent; no synthetic historical identity or replacement data."
+  },
+  "interpretation": {
+    "collection": "Collectability is not a runnable/PASS verdict. Ordinary imports may collect even when a fixture fails at setup/run. Full clean-clone collection was not proven by this inventory.",
+    "exclusions": "All test source is retained. Three publication-copy test files externalize sensitive original values; original business predicates remain. No historical payload is invented or normalized.",
+    "snapshot_availability": "DOC-04 and DOC-05 are included public synthetic fixtures. Other 17 identified docs fixtures are excluded. Actual final publication manifest remains authoritative.",
+    "private_data": "Historical request/response/checkpoint/body/catalog inputs remain local unless separately approved.",
+    "source_epoch": "Some observer tests pin exact source hashes; later source maintenance can require a separate explicit compatibility decision."
+  },
+  "resources": [
+    {
+      "id": "DOC-01",
+      "kind": "technical-fixture",
+      "locator": "docs/fpbca_bcd_closure_design_v0_2_20261007/03_D_VERIFICATION_DESIGN_V0_2.md",
+      "bytes_at_source": 7999,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen verification contract text; one native observation test validates the declared measurement boundary.",
+      "references": [
+        {
+          "module": "backend/tests/test_fpbca_bcd_rec_sv_native_measurements.py",
+          "line": 583
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-02",
+      "kind": "requires-history",
+      "locator": "docs/fpbca_bcd_unified_implementation_20261008/receipts/nonclock_n_source_blocker_02.json",
+      "bytes_at_source": 115820,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Historical source-error receipt; the test follows its sealed preserved_path entries to original input/result envelopes and source bytes.",
+      "references": [
+        {
+          "module": "backend/tests/test_fpbca_budget_graph_native_replays.py",
+          "line": 29
+        },
+        {
+          "module": "backend/tests/test_fpbca_budget_graph_native_replays.py",
+          "line": 52
+        },
+        {
+          "module": "backend/tests/test_fpbca_budget_graph_native_replays.py",
+          "line": 58
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-03",
+      "kind": "explicit-harness",
+      "locator": "docs/fpbca_budget_topup_implementation_20261008/final_campaign_evidence_recorder.py",
+      "bytes_at_source": 30785,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Historical recorder source loaded only by the explicitly configured verification mapping plugin; not required by ordinary pytest startup.",
+      "references": [
+        {
+          "module": "backend/tests/fpbca_current_verification_case_mapping.py",
+          "line": 15
+        },
+        {
+          "module": "backend/tests/fpbca_current_verification_case_mapping.py",
+          "line": 70
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-04",
+      "kind": "synthetic-fixture",
+      "locator": "docs/full8_r04_launch_preparation_20261026_r01/32_FULL8_FAKE_BUSINESS_COVERAGE_20261028_R01/01_COVERAGE_MATRIX.json",
+      "bytes_at_source": 21290,
+      "snapshot_policy": "INCLUDED_PUBLIC_SYNTHETIC_FIXTURE",
+      "reason": "Locally synthetic business coverage matrix; no real model result is implied.",
+      "references": [
+        {
+          "module": "backend/tests/test_full8_business_coverage_contract_20261028.py",
+          "line": 19
+        },
+        {
+          "module": "backend/tests/test_full8_fake_business_synth_matrix_20261028.py",
+          "line": 43
+        },
+        {
+          "module": "backend/tests/test_full8_fake_business_synth_matrix_20261028.py",
+          "line": 52
+        }
+      ],
+      "present_in_publication_tree": true,
+      "run_status_without_resource": "PUBLIC_FIXTURE_PRESENT; original Gold/reference limitations still apply"
+    },
+    {
+      "id": "DOC-05",
+      "kind": "synthetic-fixture",
+      "locator": "docs/full8_r04_launch_preparation_20261026_r01/32_FULL8_FAKE_BUSINESS_COVERAGE_20261028_R01/02_SYNTHETIC_FACT_SCENARIOS.json",
+      "bytes_at_source": 13333,
+      "snapshot_policy": "INCLUDED_PUBLIC_SYNTHETIC_FIXTURE",
+      "reason": "Explicit deterministic synthetic business scenarios; not reviewed Gold or business E2E acceptance.",
+      "references": [
+        {
+          "module": "backend/tests/test_full8_business_coverage_contract_20261028.py",
+          "line": 23
+        }
+      ],
+      "present_in_publication_tree": true,
+      "run_status_without_resource": "PUBLIC_FIXTURE_PRESENT; original Gold/reference limitations still apply"
+    },
+    {
+      "id": "DOC-06",
+      "kind": "technical-fixture",
+      "locator": "docs/post_r13_business_improvements_audits/CH1_WRITER_MINIMAL_FIX_20261012_V1/01_CH1_METHOD_CONFIG.json",
+      "bytes_at_source": 2854,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen section writing instruction configuration; required by the named instruction identity tests.",
+      "references": [
+        {
+          "module": "backend/tests/test_ch1_writer_minimal_section_method_20261012.py",
+          "line": 23
+        },
+        {
+          "module": "backend/tests/test_ch1_writer_minimal_section_method_20261012.py",
+          "line": 24
+        },
+        {
+          "module": "backend/tests/test_ch1_writer_minimal_section_method_20261012.py",
+          "line": 75
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-07",
+      "kind": "requires-history",
+      "locator": "docs/post_r13_business_improvements_audits/POST_BCA014_REAL_BUSINESS_E2E_20261003_161008_c0090159/real_business_worker.py",
+      "bytes_at_source": 21356,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Historical worker source imported or inspected by launcher/Fake test helpers; source preservation does not authorize running the worker.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 192
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 193
+        },
+        {
+          "module": "backend/tests/test_pwa004_native_full8_fake_e2e.py",
+          "line": 332
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-08",
+      "kind": "requires-history",
+      "locator": "docs/rc1_ch1_consistency_correction_v2_implementation_20261019_r01/12_PROFILE_INVENTORY_READONLY.json",
+      "bytes_at_source": 144126,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen inventory of historical native instruction profiles and input identities; used by observed_profiles fixture.",
+      "references": [
+        {
+          "module": "backend/tests/test_rc1_ch1_consistency_correction_v2_guards.py",
+          "line": 33
+        },
+        {
+          "module": "backend/tests/test_rc1_ch1_consistency_correction_v2_guards.py",
+          "line": 34
+        },
+        {
+          "module": "backend/tests/test_rc1_ch1_consistency_correction_v2_guards.py",
+          "line": 42
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-09",
+      "kind": "technical-fixture",
+      "locator": "docs/rc1_full8_budget_phase1_read_consolidation_implementation_20261021_r01/raw/settlement_oracle_a.py",
+      "bytes_at_source": 4596,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen old settlement algorithm read and AST-extracted as an independent comparison oracle; required only by phase1_settlement_a cases.",
+      "references": [
+        {
+          "module": "backend/tests/test_local_verifier_recovery_composition.py",
+          "line": 318
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-10",
+      "kind": "technical-fixture",
+      "locator": "docs/rc1_full8_dotenv_source_policy_20261022_r01/evidence/before_config.py",
+      "bytes_at_source": 26425,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen prior configuration source for compatibility comparisons.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 247
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-11",
+      "kind": "requires-history",
+      "locator": "docs/rc1_full8_real_e2e_acceptance_20261020_r01/evidence/EXACT_VALIDATE_DOCUMENT_ASSEMBLY_PREDECESSOR.json",
+      "bytes_at_source": 76462510,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Real historical checkpoint export with business/context/model text; test additionally opens the original read-only source_db declared inside it.",
+      "references": [
+        {
+          "module": "backend/tests/test_writer_review_copy_snapshot_set_order_20261020.py",
+          "line": 31
+        },
+        {
+          "module": "backend/tests/test_writer_review_copy_snapshot_set_order_20261020.py",
+          "line": 49
+        },
+        {
+          "module": "backend/tests/test_writer_review_copy_snapshot_set_order_20261020.py",
+          "line": 48
+        },
+        {
+          "module": "backend/tests/test_writer_review_copy_snapshot_set_order_20261020.py",
+          "line": 50
+        },
+        {
+          "module": "backend/tests/test_writer_review_copy_snapshot_set_order_20261020.py",
+          "line": 100
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-12",
+      "kind": "requires-history",
+      "locator": "docs/rc1_full8_real_e2e_acceptance_20261020_r01/evidence/PLAN.json",
+      "bytes_at_source": 3107,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen historical launch plan used by offline launcher layout; its input references are part of the original authority.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 182
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-13",
+      "kind": "requires-history",
+      "locator": "docs/rc1_full8_real_e2e_acceptance_20261020_r01/evidence/PROJECT_INPUT_V3.json",
+      "bytes_at_source": 2846,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Real historical task input; cannot be reconstructed or replaced while claiming original fixture identity.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 176
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 2850
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 173
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 1028
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 2717
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 2839
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-14",
+      "kind": "requires-history",
+      "locator": "docs/rc1_full8_real_e2e_acceptance_20261020_r01/evidence/REAL_E2E_POLICY.json",
+      "bytes_at_source": 1152,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen historical run budget/policy used by launcher fixtures.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 177
+        },
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py",
+          "line": 174
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-15",
+      "kind": "technical-fixture",
+      "locator": "docs/rwp_prod_002_independent_problem_solution_audit_20261006_s06459926/phase_a_probe.py",
+      "bytes_at_source": 11081,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Historical probe source; D15 extracts only its synthetic results() input builder via AST, without executing the probe main routine.",
+      "references": [
+        {
+          "module": "backend/tests/test_rag_lost_in_middle_priority_admission.py",
+          "line": 31
+        },
+        {
+          "module": "backend/tests/test_rag_lost_in_middle_priority_admission.py",
+          "line": 32
+        },
+        {
+          "module": "backend/tests/test_rag_lost_in_middle_priority_admission.py",
+          "line": 482
+        },
+        {
+          "module": "backend/tests/test_rag_lost_in_middle_priority_admission.py",
+          "line": 487
+        },
+        {
+          "module": "backend/tests/test_rag_lost_in_middle_priority_admission.py",
+          "line": 505
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-16",
+      "kind": "requires-history",
+      "locator": "docs/sdc_stage2_deterministic_review_report_implementation_20261017_r01/10_HISTORICAL_CANONICAL_FACTS.json",
+      "bytes_at_source": 8629934,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Historical canonical/SQLite capture with encoded payloads and business text; original byte identity is pinned.",
+      "references": [
+        {
+          "module": "backend/tests/test_deterministic_review_report_contract_20261017.py",
+          "line": 33
+        },
+        {
+          "module": "backend/tests/test_deterministic_review_report_contract_20261017.py",
+          "line": 71
+        },
+        {
+          "module": "backend/tests/test_deterministic_review_report_contract_20261017.py",
+          "line": 128
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-17",
+      "kind": "local-fixture-locator",
+      "locator": "docs/sdc_stage2_deterministic_review_report_implementation_20261017_r01/14_TEST_ROOT.json",
+      "bytes_at_source": 269,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Saved local protected test-root locator; contains no substitute for creating an admissible fresh root.",
+      "references": [
+        {
+          "module": "backend/tests/test_deterministic_review_report_contract_20261017.py",
+          "line": 77
+        },
+        {
+          "module": "backend/tests/test_deterministic_review_report_contract_20261017.py",
+          "line": 78
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-18",
+      "kind": "technical-fixture",
+      "locator": "docs/sdc_stage2_formal_guard_v2_d1a_archive_only_20261018_r02/frozen_prechange/consistency_v1.py.txt",
+      "bytes_at_source": 42347,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Frozen prechange source identity used for AST comparison; does not recreate a historical execution environment.",
+      "references": [
+        {
+          "module": "backend/tests/test_formal_guard_v2_matrix_20261018.py",
+          "line": 81
+        },
+        {
+          "module": "backend/tests/test_sdc_stage2_guard_v2_identity_20261018.py",
+          "line": 42
+        },
+        {
+          "module": "backend/tests/test_sdc_stage2_guard_v2_identity_20261018.py",
+          "line": 49
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "DOC-19",
+      "kind": "requires-history",
+      "locator": "docs/sdc_stage2_formal_guard_v2_d1a_archive_only_20261018_r02/historical_fixed_input.json",
+      "bytes_at_source": 295885,
+      "snapshot_policy": "EXCLUDED_LOCAL_ONLY",
+      "reason": "Saved historical formal consistency input and original model reply; exact replay is a local archive test.",
+      "references": [
+        {
+          "module": "backend/tests/test_formal_guard_v2_matrix_20261018.py",
+          "line": 101
+        }
+      ],
+      "present_in_publication_tree": false,
+      "run_status_without_resource": "RELATED_FIXTURE_NODES_REQUIRE_LOCAL_RESOURCE; collection and unrelated synthetic nodes may still be possible"
+    },
+    {
+      "id": "HISTORY-ATTEMPT4",
+      "kind": "requires-history",
+      "locator": {
+        "repository_metadata": [
+          "docs/git_baseline_closure_20261005/MECHANICAL_RECEIPT.json",
+          "docs/post_r13_business_improvements_audits/LOCAL_VERIFIER_RECOVERY_DESIGN_20261004_01a10514/ARTIFACT_MANIFEST.json"
+        ],
+        "external_root": "Source mirror archive declared by the pinned closure receipt; optional relocation via RAG_AGENT_BASELINE_SOURCE_MIRROR_ROOT",
+        "members": [
+          "candidate_exact_artifact_envelope.json",
+          "EXACT_SOURCE_GUARD_OWNER_COUNTEREXAMPLE.json",
+          "input_exact_artifact_envelope.json",
+          "m6_binding_facts_exact_event.jsonl",
+          "m6_claim_records_exact_event.jsonl",
+          "request_exact_observed_record.jsonl",
+          "response_exact_observed_record.jsonl",
+          "shared_support_exact_event.jsonl"
+        ]
+      },
+      "reason": "Strict original-eight-file archive admission; relocation must preserve the pinned manifest/move receipt and original bytes. No fallback fixture is admitted.",
+      "references": [
+        {
+          "module": "backend/tests/test_historical_fixture_locator.py"
+        },
+        {
+          "module": "backend/tests/test_local_verifier_recovery_integration.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes",
+      "node_scope": {
+        "backend/tests/test_historical_fixture_locator.py": [
+          "test_canonical_original_eight_files_match_frozen_manifest_without_mutation"
+        ],
+        "backend/tests/test_local_verifier_recovery_integration.py": [
+          "test_A_attempt4_original_members_still_rejected_readonly",
+          "test_negative_historical_attempt4_root_is_not_prospectively_registered"
+        ]
+      }
+    },
+    {
+      "id": "HISTORY-CH1-064923",
+      "kind": "requires-history",
+      "locator": {
+        "external_root": "D:/MyCode/_FPBCA_REAL_E2E_20261009_20261009T064923Z",
+        "members": [
+          "audit/PROJECT_INPUT_V3.json",
+          "business-runtime/observed_calls.jsonl"
+        ]
+      },
+      "reason": "Original input and observed provider calls are consumed by only the historical nodes in this module.",
+      "references": [
+        {
+          "module": "backend/tests/test_fpbca_real_e2e_offline_section_contract_20261009.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes"
+    },
+    {
+      "id": "HISTORY-CH1-112450",
+      "kind": "requires-history",
+      "locator": {
+        "external_root": "D:/MyCode/_FPBCA_REAL_E2E_20261009_20261009T112450Z",
+        "members": [
+          "audit/PROJECT_INPUT_V3.json",
+          "audit/REAL_E2E_POLICY.json",
+          "audit/PROCESS_RECEIPT.json",
+          "business-runtime/execution.json",
+          "business-runtime/runs/claim_verification.jsonl"
+        ]
+      },
+      "reason": "Historical task/policy/process/lifecycle/claim evidence; Fake test names do not eliminate these original-input dependencies.",
+      "references": [
+        {
+          "module": "backend/tests/test_fpbca_e2e_semantic_convergence_verifier_20261009.py"
+        },
+        {
+          "module": "backend/tests/test_fpbca_e2e_single_section_target_fake_20261009.py"
+        },
+        {
+          "module": "backend/tests/test_fpbca_v6_indeterminate_verifier_real_badcase_20261009.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes"
+    },
+    {
+      "id": "HISTORY-FCE-CH1",
+      "kind": "requires-history",
+      "locator": "E:/rag-agent-evaluation/REAL_CH1_5STEP_FCE_20261009_20261009T140419Z/formal_full_chain_report/evaluation_report.json",
+      "reason": "Original saved single-chapter evaluation observation; not reconstructed from current code.",
+      "references": [
+        {
+          "module": "backend/tests/test_fpbca_real_ch1_fce_x14_fact_basis_20261009.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes"
+    },
+    {
+      "id": "HISTORY-ISOLATION",
+      "kind": "requires-history",
+      "locator": "E:/rag-agent-evaluation/POSTWRITE_RUNTIME_ISOLATION_20261011T080600Z/mechanical/test_isolation.py",
+      "reason": "The isolation fixture loads a preserved external exact-source/network-denial runner. Module instructs use through its preserved mechanical runner.",
+      "references": [
+        {
+          "module": "backend/tests/test_postwrite_a_minimal_instruction.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes"
+    },
+    {
+      "id": "HISTORY-GOLD",
+      "kind": "requires-history",
+      "locator": {
+        "external_root": "E:/rag-agent-evaluation/MULTI_AGENT_V3_RC1_20261013/gold_dataset_v1",
+        "members": [
+          "04_GOLD_DATASET_VERIFIED.jsonl",
+          "05_GOLD_REVIEW_REQUIRED.jsonl"
+        ]
+      },
+      "reason": "Original reviewed/review-required Gold provenance only; synthetic matrix cases are distinct.",
+      "references": [
+        {
+          "module": "backend/tests/test_full8_business_coverage_contract_20261028.py"
+        }
+      ],
+      "run_status_without_resource": "ORIGINAL_TEST_EXPLICITLY_SKIPS_GOLD_NODE_WHEN_ROOT_IS_ABSENT; other module nodes still require the synthetic matrix fixtures",
+      "node_scope": {
+        "backend/tests/test_full8_business_coverage_contract_20261028.py": [
+          "test_all_gold_case_references_exist_and_only_verified_subset_is_gold"
+        ]
+      }
+    },
+    {
+      "id": "NATIVE-RAG-FULL8",
+      "kind": "native-RAG",
+      "locator": "E:/RC1_FULL8_RAG_20261020_R01/data/processed/indexes/idx_type_aware_parent_child_v2_m3e_base_local_m3e_base_profiled_v2_fd73dfd6ca2d/index_manifest.json",
+      "reason": "Launcher native-resource layout reads the original frozen index manifest and projects an isolated test copy; further resource/model dependencies are derived from this manifest.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes"
+    },
+    {
+      "id": "HISTORY-OVERLAY-SOURCE",
+      "kind": "requires-history",
+      "locator": "E:/rag-agent-tmp/post-step7-real-provider-hardening-20260913-session/observer/native_overlay_startup.py",
+      "reason": "Some launcher source-admission cases hash the historical helper source; not all launcher nodes use it.",
+      "references": [
+        {
+          "module": "backend/tests/test_post_phase1_full8_launcher.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes"
+    },
+    {
+      "id": "PRIVATE-DOCUMENT-CATALOG",
+      "kind": "catalog",
+      "locator": {
+        "repository_members": [
+          "data/parsed/document_full_v1/document_manifest.jsonl",
+          "data/catalog/document_profile_seeds_v1.jsonl",
+          "data/catalog/document_profiles_v1.jsonl",
+          "data/catalog/document_profile_catalog_audit_v1.json",
+          "data/raw/jsonl/cleaned_text_unit_v1_batch_20260803.jsonl"
+        ]
+      },
+      "reason": "Real parsed document inventory/profile/source-text assets. Stage B validates frozen coverage and Stage C real-data nodes consume these files. They are separate from the public evaluator engineering catalog.",
+      "references": [
+        {
+          "module": "backend/tests/test_stage_b_document_catalog.py"
+        },
+        {
+          "module": "backend/tests/test_stage_c_profile_aware_indexing.py"
+        },
+        {
+          "module": "backend/tests/test_stage_c_profile_lineage.py"
+        }
+      ],
+      "run_status_without_resource": "REQUIRES_LOCAL_RESOURCE; partial modules may contain independently runnable synthetic nodes",
+      "node_scope": {
+        "backend/tests/test_stage_c_profile_aware_indexing.py": [
+          "test_real_stage_b_catalog_projects_exactly_30_indexable_documents"
+        ],
+        "backend/tests/test_stage_c_profile_lineage.py": [
+          "test_real_0618_profile_projection_keeps_authority_and_taxonomy"
+        ]
+      }
+    },
+    {
+      "id": "PUBLIC-EVALUATOR-CATALOG",
+      "kind": "public-engineering-catalog",
+      "locator": "data/eval/full_chain/unit_edge_catalog.json",
+      "reason": "Default load_catalog()/observe() requires this frozen unit/edge/case definition; it is an engineering schema/catalog, not private document content.",
+      "references": [
+        {
+          "module": "backend/tests/test_full_chain_eval_core.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_correction_iia_ingress_fanin.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_correction_iia_ir.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_correction_iia_memory.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_correction_iia_native_remaining.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_correction_iia_package.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_correction_iia_references.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_iia_native_pw.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_integration.py"
+        },
+        {
+          "module": "backend/tests/test_full_chain_eval_runtime_iia_correction.py"
+        }
+      ],
+      "run_status_without_resource": "RUNNABLE_CANDIDATE_WHEN_PUBLIC_ENGINEERING_CATALOG_IS_PRESENT; other node prerequisites still apply",
+      "snapshot_policy": "RETAIN_AFTER_NORMAL_SECURITY_REVIEW",
+      "source_owner": "backend/eval/full_chain/runner.py:13"
+    },
+    {
+      "id": "LOCAL-PRIVATE-IDENTITY",
+      "kind": "local-private-test-input",
+      "locator": {
+        "environment_names": [
+          "RAG_LOCAL_WORD_FULL_V2_CONFIG",
+          "RAG_LOCAL_HISTORICAL_SCHEME_FILENAME",
+          "RAG_LOCAL_HISTORICAL_PROJECT_ID"
+        ],
+        "config_origin": "Original local document_ingestion/configs/word_full_v2.document-config.json; this private config is excluded from the publication tree."
+      },
+      "reason": "Sensitive original configuration/filename/project identity is read only from explicitly supplied local inputs in the isolated publication copy. No default identity or synthetic substitute is generated.",
+      "references": [
+        {
+          "module": "backend/tests/test_document_ingestion_text_normalizer.py"
+        },
+        {
+          "module": "backend/tests/test_stage_b_document_catalog.py"
+        },
+        {
+          "module": "backend/tests/test_stage_c_profile_lineage.py"
+        }
+      ],
+      "node_scope": {
+        "backend/tests/test_document_ingestion_text_normalizer.py": [
+          "test_word_full_v2_config_excludes_gold_reference_from_index"
+        ],
+        "backend/tests/test_stage_b_document_catalog.py": [
+          "test_current_project_scope_is_limited_to_local_project",
+          "test_runtime_whitelist_keeps_matching_project_sources_and_all_reference_roles"
+        ],
+        "backend/tests/test_stage_c_profile_lineage.py": [
+          "test_milvus_extra_json_preserves_canonical_profile_and_chunking"
+        ]
+      },
+      "run_status_without_resource": "Normalizer historical-config node skips if config/filename inputs are absent. Identity helper skips when original project identity is absent, if execution reaches it; Stage B/C nodes may first fail on missing private catalog/source files.",
+      "pure_public_nodes": [
+        "backend/tests/test_document_ingestion_text_normalizer.py::test_word_caption_separator_and_controls_are_normalized",
+        "backend/tests/test_document_ingestion_text_normalizer.py::test_word_cell_markers_and_zero_width_characters_are_removed"
+      ],
+      "publication_copy_only": true,
+      "original_workspace_test_files_modified": false
+    }
+  ],
+  "modules": [
+    {
+      "path": "backend/tests/fpbca_current_verification_case_mapping.py",
+      "kinds": [
+        "explicit-harness"
+      ],
+      "resource_ids": [
+        "DOC-03"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_ch1_writer_minimal_section_method_20261012.py",
+      "kinds": [
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-06"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_deterministic_review_report_contract_20261017.py",
+      "kinds": [
+        "local-fixture-locator",
+        "requires-history"
+      ],
+      "resource_ids": [
+        "DOC-16",
+        "DOC-17"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_document_ingestion_text_normalizer.py",
+      "kinds": [
+        "local-private-test-input"
+      ],
+      "resource_ids": [
+        "LOCAL-PRIVATE-IDENTITY"
+      ],
+      "collection_status": "NOT_EXECUTED_BY_INVENTORY_AGENT",
+      "run_status": "Two pure normalizer nodes are self-contained; one original-config node explicitly requires local originals."
+    },
+    {
+      "path": "backend/tests/test_formal_guard_v2_matrix_20261018.py",
+      "kinds": [
+        "requires-history",
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-18",
+        "DOC-19"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_bcd_rec_sv_native_measurements.py",
+      "kinds": [
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-01"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_budget_graph_native_replays.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "DOC-02"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_e2e_semantic_convergence_verifier_20261009.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-CH1-112450"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_e2e_single_section_target_fake_20261009.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-CH1-112450"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_real_ch1_fce_x14_fact_basis_20261009.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-FCE-CH1"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_real_e2e_offline_section_contract_20261009.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-CH1-064923"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_fpbca_v6_indeterminate_verifier_real_badcase_20261009.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-CH1-112450"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full8_business_coverage_contract_20261028.py",
+      "kinds": [
+        "requires-history",
+        "synthetic-fixture"
+      ],
+      "resource_ids": [
+        "DOC-04",
+        "DOC-05",
+        "HISTORY-GOLD"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full8_fake_business_synth_matrix_20261028.py",
+      "kinds": [
+        "synthetic-fixture"
+      ],
+      "resource_ids": [
+        "DOC-04"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_core.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_correction_iia_ingress_fanin.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_correction_iia_ir.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_correction_iia_memory.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_correction_iia_native_remaining.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_correction_iia_package.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_correction_iia_references.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_iia_native_pw.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_integration.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_full_chain_eval_runtime_iia_correction.py",
+      "kinds": [
+        "public-engineering-catalog"
+      ],
+      "resource_ids": [
+        "PUBLIC-EVALUATOR-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_historical_fixture_locator.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-ATTEMPT4"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_local_verifier_recovery_composition.py",
+      "kinds": [
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-09"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_local_verifier_recovery_integration.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-ATTEMPT4"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_post_phase1_full8_launcher.py",
+      "kinds": [
+        "native-RAG",
+        "requires-history",
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-07",
+        "DOC-10",
+        "DOC-12",
+        "DOC-13",
+        "DOC-14",
+        "HISTORY-OVERLAY-SOURCE",
+        "NATIVE-RAG-FULL8"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_postwrite_a_minimal_instruction.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "HISTORY-ISOLATION"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_pwa004_native_full8_fake_e2e.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "DOC-07"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_rag_lost_in_middle_priority_admission.py",
+      "kinds": [
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-15"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_rc1_ch1_consistency_correction_v2_guards.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "DOC-08"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_sdc_stage2_guard_v2_identity_20261018.py",
+      "kinds": [
+        "technical-fixture"
+      ],
+      "resource_ids": [
+        "DOC-18"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_stage_b_document_catalog.py",
+      "kinds": [
+        "catalog",
+        "local-private-test-input"
+      ],
+      "resource_ids": [
+        "PRIVATE-DOCUMENT-CATALOG",
+        "LOCAL-PRIVATE-IDENTITY"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_stage_c_profile_aware_indexing.py",
+      "kinds": [
+        "catalog"
+      ],
+      "resource_ids": [
+        "PRIVATE-DOCUMENT-CATALOG"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_stage_c_profile_lineage.py",
+      "kinds": [
+        "catalog",
+        "local-private-test-input"
+      ],
+      "resource_ids": [
+        "PRIVATE-DOCUMENT-CATALOG",
+        "LOCAL-PRIVATE-IDENTITY"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    },
+    {
+      "path": "backend/tests/test_writer_review_copy_snapshot_set_order_20261020.py",
+      "kinds": [
+        "requires-history"
+      ],
+      "resource_ids": [
+        "DOC-11"
+      ],
+      "collection_status": "NOT_EXECUTED_STATIC_INVENTORY_ONLY",
+      "run_status": "See resource/node scope; module-level exclusion is conservative and does not mean every node requires archives."
+    }
+  ],
+  "services": [
+    {
+      "id": "POSTGRES",
+      "kind": "local-service",
+      "modules": [
+        "backend/tests/test_step7_durable_memory_postgres.py",
+        "backend/tests/test_step7_combined_integration.py",
+        "backend/tests/test_step7_resource_terminal_transport.py"
+      ],
+      "requirement": "Explicit isolated test PostgreSQL database and durable-memory extra; fixture creates a unique schema.",
+      "activation_environment_names": [
+        "LANE351_TEST_PG_DSN"
+      ],
+      "without_prerequisite": "pg_store fixture explicitly skips when DSN is absent; only nodes using pg_store are affected.",
+      "collection_status": "NOT_EXECUTED; imports are separate from pg_store connection setup."
+    },
+    {
+      "id": "MILVUS-LITE",
+      "kind": "local-service",
+      "modules": [
+        "backend/tests/test_milvus_child_chunk_record_compat.py",
+        "backend/tests/test_p1_trust_semantic_payload_closure.py"
+      ],
+      "requirement": "Native Milvus Lite / pymilvus in a compatible environment; tests create isolated local stores using synthetic rows. No private historical RAG root is required for these selected Milvus probes.",
+      "helper": "backend/tests/helpers/milvus_scope_probe.py",
+      "without_prerequisite": "Native integration nodes cannot run; pure record/schema tests in the same modules are independent. One compatibility node has an existing Windows-only skip.",
+      "collection_status": "NOT_EXECUTED; optional driver import or platform differences may also matter."
+    },
+    {
+      "id": "WORD-COM",
+      "kind": "local-application",
+      "modules": [
+        "backend/tests/test_document_ingestion_word_parser.py"
+      ],
+      "requirement": "Windows, Microsoft Word COM, pywin32; opt-in node only.",
+      "activation_environment_names": [
+        "RUN_WORD_COM_TESTS"
+      ],
+      "without_prerequisite": "Existing word_com node skips unless Windows and RUN_WORD_COM_TESTS=1; other parser tests use controlled fixtures."
+    },
+    {
+      "id": "LOOPBACK-PROTOCOL",
+      "kind": "local-service-created-by-test",
+      "modules": [
+        "backend/tests/test_provider_protocol_hardening.py"
+      ],
+      "requirement": "Permission to bind an ephemeral 127.0.0.1 HTTP test server.",
+      "without_prerequisite": "Protocol tests cannot run if all socket operations are denied. No remote provider or model is called."
+    },
+    {
+      "id": "REAL-PROVIDER",
+      "kind": "explicit-external-provider",
+      "modules": [
+        "backend/tests/test_real_provider_acceptance.py"
+      ],
+      "requirement": "Explicit opt-in credentials and remote provider; excluded from publication verification.",
+      "activation_environment_names": [
+        "REAL_PROVIDER_ACCEPTANCE"
+      ],
+      "without_prerequisite": "Existing real_provider marker and skipif keep the acceptance node disabled by default. No activation is authorized by this inventory."
+    }
+  ],
+  "explicit_native_fixtures": [
+    {
+      "modules": [
+        "backend/tests/test_formal_guard_v2_isolation_native_20261018.py",
+        "backend/tests/test_formal_guard_v2_scopes_native_20261018.py"
+      ],
+      "kind": "explicit-native-fixture",
+      "environment_names": [
+        "GUARD_V2_NATIVE_ROOT",
+        "GUARD_V2_EVIDENCE_DIR"
+      ],
+      "requirement": "Fresh protected Windows NTFS E: root with the exact UUID/path admission contract; Fake model only.",
+      "without_prerequisite": "Environment lookup/assertion fails; these nodes do not generally auto-skip."
+    },
+    {
+      "modules": [
+        "backend/tests/test_deterministic_review_report_native_20261017.py"
+      ],
+      "kind": "explicit-native-fixture",
+      "environment_names": [
+        "RPT_TEST_ROOT",
+        "RPT_EVIDENCE_DIR"
+      ],
+      "requirement": "Fresh protected Windows NTFS E: root with independent evidence destination; Fake model only.",
+      "without_prerequisite": "Existing test explicitly skips when either environment name is absent."
+    },
+    {
+      "modules": [
+        "backend/tests/test_writer_review_copy_c3_production_20261017_r03.py",
+        "backend/tests/test_writer_review_copy_c3_volume_root_20261017_r04.py",
+        "backend/tests/test_writer_review_copy_compat_20261017_r03.py"
+      ],
+      "kind": "platform-native-fixture",
+      "requirement": "Windows NTFS ACL/native handle semantics and protected isolated directories; inspect exact per-node admission before running.",
+      "without_prerequisite": "Do not assume generic cross-platform pytest execution is supported."
+    },
+    {
+      "modules": [
+        "backend/tests/fpbca_current_verification_case_mapping.py"
+      ],
+      "kind": "explicit-harness",
+      "environment_names": [
+        "FPBCA_CURRENT_CASE_MAPPING_GATE",
+        "FPBCA_CURRENT_CASE_MAPPING_GATE_SHA256"
+      ],
+      "requirement": "Explicit pytest plugin activation plus pinned mapping gate, recorder and referenced contract/authority files.",
+      "without_prerequisite": "Not loaded by ordinary pytest; explicitly activating this historical plugin without the gate fails during pytest_configure."
+    }
+  ],
+  "recommended_additional_public_regression": {
+    "status": "SOURCE_REVIEWED_NOT_RUN_BY_INVENTORY_AGENT",
+    "runtime": "Intended to take tens of seconds; duration is unmeasured and depends on the installed environment.",
+    "nodes": [
+      "backend/tests/test_post_step7_deepseek_output_binding.py",
+      "backend/tests/test_stage3_g2_g5_reference_semantics_20261018.py",
+      "backend/tests/test_multi_agent_v3_writer_input_boundary.py::test_r1_task_semantics_are_explicitly_projected",
+      "backend/tests/test_multi_agent_v3_writer_input_boundary.py::test_r1_language_tone_and_section_boundaries_are_not_lost",
+      "backend/tests/test_bca014_verifier_reply_ref_normalization.py::test_duplicate_refs_are_not_deduplicated_and_remain_strictly_rejected",
+      "backend/tests/test_document_ingestion_text_normalizer.py::test_word_caption_separator_and_controls_are_normalized",
+      "backend/tests/test_document_ingestion_text_normalizer.py::test_word_cell_markers_and_zero_width_characters_are_removed"
+    ],
+    "preconditions": {
+      "RAG_CONFIG_SOURCE_POLICY": "process_env_defaults_v1",
+      "REAL_PROVIDER_ACCEPTANCE": "0",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+      "PYTHONDONTWRITEBYTECODE": "1"
+    },
+    "reason": "Actual SDK wire tests use MockTransport plus socket/DNS denial; evaluator tests use explicit synthetic observations; selected writer/ref-validation nodes use local synthetic fixtures. No real model, private history or native RAG store is needed."
+  },
+  "coverage_limits": [
+    "Static resolution covers simple Path/constant/global joins; function-generated paths, imported resource maps, strings encoded inside envelopes and arbitrary loaders are not a complete dependency closure.",
+    "The 19 docs resources are a static lower bound. The preserved predecessor source_db and sealed receipt preserved_path dependencies are dynamic and intentionally not dereferenced here.",
+    "Fixture references can identify mixed modules. Select nodes after source inspection rather than assuming a whole module is archive-dependent or self-contained.",
+    "Local model paths in test_post_step7_deepseek_output_binding.py are controlled routing configuration constants; the module uses mocked provider transport and network denial, so they are not classified as real local-weight requirements.",
+    "Synthetic schema values such as source_uri=data/raw/... and tmp_path-generated catalog paths are not by themselves evidence of a dependency on real private data."
+  ],
+  "publication_privacy_adjustments": {
+    "test_files": [
+      "backend/tests/test_document_ingestion_text_normalizer.py",
+      "backend/tests/test_stage_b_document_catalog.py",
+      "backend/tests/test_stage_c_profile_lineage.py"
+    ],
+    "required_inputs": "Original authorized local values only. Do not publish the environment values, private config or historical filename.",
+    "scope": "Isolated publication copy; production logic and original working-tree test bytes are preserved.",
+    "missing_inputs": "Explicit SKIPPED or missing-file failure, never historical PASS.",
+    "node_scope": {
+      "backend/tests/test_document_ingestion_text_normalizer.py": [
+        "test_word_full_v2_config_excludes_gold_reference_from_index"
+      ],
+      "backend/tests/test_stage_b_document_catalog.py": [
+        "test_current_project_scope_is_limited_to_local_project",
+        "test_runtime_whitelist_keeps_matching_project_sources_and_all_reference_roles"
+      ],
+      "backend/tests/test_stage_c_profile_lineage.py": [
+        "test_milvus_extra_json_preserves_canonical_profile_and_chunking"
+      ]
+    }
+  },
+  "dependency_installation_note": "pyproject.toml pins uv==0.11.32. When host uv differs, root publication verification uses uvx --from uv==0.11.32 uv sync --frozen with the documented extras; installation and validation results belong in the separate root verification receipt."
+}

@@ -1,25 +1,9 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# 中文阅读说明：RAG 核心模块，负责查询变换、召回、融合、重排、证据评估和上下文组装。
-# 主要定义：_row_to_dict、row_to_unit、should_skip_unit、expand_long_units、pick_language、compute_chunk_type、avg_quality_score、collect_quality_flags、_first_non_empty、_last_non_empty等。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""
-rag_template/chunker/cleaned_text_unit_chunker.py
-=================================================
+"""把 canonical ``cleaned_text_unit_v1`` 聚合为平面 ``chunk_v1`` 的策略层。
 
-cleaned_text_unit_v1 -> flat chunk_v1 的 chunk 策略层。
-
-职责边界：
-1. 读取 Spark Row / dict 形式的 cleaned_text_unit_v1 记录并转换成内部 unit。
-2. 过滤不应参与文本检索的 unit，例如 image、极短噪声 other。
-3. 对超长 unit 做兜底切分。
-4. 按 doc_id 内 unit_order 顺序聚合成 flat chunk。
-5. 调用 rag_template.schema.Chunk_Schema.build_chunk_v1() 生成标准 chunk_v1。
-
-注意：
-- 本文件是 chunk 策略层，不定义 schema。
-- 本文件直接调用 schema/Chunk_Schema.py，不调用 util/schema_builder.py。
-- Spark job 只负责读写和 mapPartitions 编排，具体策略放在这里。
+处理顺序：严格校验 Spark Row/dict → 内部文本规范化 → 跳过图片与极短噪声 → 拆分超长
+Unit → 按文档和 ``unit_order`` 聚合 → 通过 ``build_chunk_v1`` 构造标准记录。本文件不定义
+Schema，也不承担 Spark 读写；Spark Job 只负责排序与 ``mapPartitions`` 编排。
 """
 
 from __future__ import annotations
@@ -50,19 +34,8 @@ from rag.util.text_utils import (
 # =========================================================
 
 
-# 阅读注释（函数）：处理 row to 字典 相关逻辑。
 def _row_to_dict(row: Any) -> Dict[str, Any]:
-    """处理 row to 字典 相关逻辑。
-
-    参数:
-        row: row，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Dict[str, Any]
-
-    阅读提示:
-        主要直接调用：isinstance, hasattr, row.asDict, TypeError, type。
-    """
+    """接受普通 dict 或 Spark Row；其他类型在生产边界直接拒绝。"""
     if isinstance(row, dict):
         return row
     if hasattr(row, "asDict"):
@@ -70,13 +43,11 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     raise TypeError(f"Unsupported row type: {type(row)!r}")
 
 
-# 阅读注释（函数）：处理 row to unit 相关逻辑。
 def row_to_unit(row: Any) -> Dict[str, Any]:
-    """Validate a canonical cleaned unit before applying chunk-only normalization.
+    """先严格校验 canonical Unit，再执行仅供 Chunk 聚合使用的内部规范化。
 
-    ``row_to_unit`` is a canonical production boundary, not a compatibility
-    mapper.  Required defaults, type coercion, unknown-field dropping and
-    legacy migration must never happen before this validation step.
+    这里不是历史兼容映射器：字段补缺、类型强转、未知字段丢弃和旧协议迁移都不得发生在
+    Pydantic 校验之前。校验通过后才允许规范正文、派生长度和读取来源解析单元 ID。
     """
     d = _row_to_dict(row)
     validated = CleanedTextUnitSchema.model_validate(d)
@@ -98,9 +69,8 @@ def row_to_unit(row: Any) -> Dict[str, Any]:
 # =========================================================
 
 
-# 阅读注释（函数）：判断是否应当执行 skip unit。
 def should_skip_unit(unit: Dict[str, Any]) -> bool:
-    """判断 cleaned text unit 是否应该跳过。"""
+    """过滤空文本、图片块和不足十字符的 ``other/short_text`` 噪声。"""
     text = unit.get("text") or ""
     unit_type = unit.get("unit_type") or "other"
     quality_flags = set(unit.get("quality_flags") or [])
@@ -119,9 +89,12 @@ def should_skip_unit(unit: Dict[str, Any]) -> bool:
     return False
 
 
-# 阅读注释（函数）：处理 expand long units 相关逻辑。
 def expand_long_units(units: List[Dict[str, Any]], chunk_size: int, overlap: int) -> List[Dict[str, Any]]:
-    """对超长 unit 做兜底拆分，避免单个 unit 直接撑爆 chunk_size。"""
+    """按字符窗拆分超长 Unit，并生成稳定 part ID 与质量标记。
+
+    该兜底只在单个来源 Unit 已超过最终 Chunk 上限时发生，避免后续聚合器永远无法满足
+    预算。原 Unit 的其他来源和质量字段完整复制。
+    """
     expanded: List[Dict[str, Any]] = []
 
     for unit in units:
@@ -152,19 +125,8 @@ def expand_long_units(units: List[Dict[str, Any]], chunk_size: int, overlap: int
 # =========================================================
 
 
-# 阅读注释（函数）：处理 pick language 相关逻辑。
 def pick_language(units: List[Dict[str, Any]]) -> str:
-    """处理 pick language 相关逻辑。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：u.get, counts.get, sorted, counts.items。
-    """
+    """以 Unit 数量众数选择 Chunk 语言；无输入时返回 ``unknown``。"""
     counts: Dict[str, int] = {}
     for u in units:
         lang = u.get("language") or "unknown"
@@ -174,19 +136,8 @@ def pick_language(units: List[Dict[str, Any]]) -> str:
     return sorted(counts.items(), key=lambda x: x[1], reverse=True)[0][0]
 
 
-# 阅读注释（函数）：计算 文本块 类型。
 def compute_chunk_type(units: List[Dict[str, Any]]) -> str:
-    """计算 文本块 类型。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        str
-
-    阅读提示:
-        主要直接调用：set, u.get。
-    """
+    """根据 Unit 类型集合判定纯表格、混合或普通文本 Chunk。"""
     unit_types = set([u.get("unit_type") or "other" for u in units])
     if unit_types == {"table"}:
         return "table"
@@ -195,40 +146,16 @@ def compute_chunk_type(units: List[Dict[str, Any]]) -> str:
     return "text"
 
 
-# 阅读注释（函数）：处理 avg 质量 score 相关逻辑。
 def avg_quality_score(units: List[Dict[str, Any]]) -> Optional[float]:
-    """处理 avg 质量 score 相关逻辑。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Optional[float]
-
-    阅读提示:
-        主要直接调用：u.get, round, sum, float, len。
-    """
+    """对存在的 Unit 质量分求平均；全缺失时保持 ``None``。"""
     scores = [u.get("quality_score") for u in units if u.get("quality_score") is not None]
     if not scores:
         return None
     return round(sum(scores) / float(len(scores)), 4)
 
 
-# 阅读注释（函数）：收集 质量 flags。
 def collect_quality_flags(units: List[Dict[str, Any]], text_length: int, min_chunk_size: int) -> List[Any]:
-    """收集 质量 flags。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-        text_length: 文本 length，具体约束请结合类型标注和调用方确认。
-        min_chunk_size: min 文本块 size，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        List[Any]
-
-    阅读提示:
-        主要直接调用：flags.extend, u.get, unique_keep_order, flags.append。
-    """
+    """稳定去重来源质量标记，并为过短聚合结果追加 ``short_chunk``。"""
     flags: List[Any] = []
     for u in units:
         flags.extend(u.get("quality_flags") or [])
@@ -239,21 +166,8 @@ def collect_quality_flags(units: List[Dict[str, Any]], text_length: int, min_chu
     return flags
 
 
-# 阅读注释（函数）：处理 first non empty 相关逻辑。
 def _first_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) -> Any:
-    """处理 first non empty 相关逻辑。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-        key: key，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Any
-
-    阅读提示:
-        主要直接调用：u.get。
-    """
+    """取首个非空来源字段，常用于文档级静态属性。"""
     for u in units:
         v = u.get(key)
         if v not in (None, ""):
@@ -261,21 +175,8 @@ def _first_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None)
     return default
 
 
-# 阅读注释（函数）：处理 last non empty 相关逻辑。
 def _last_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) -> Any:
-    """处理 last non empty 相关逻辑。
-
-    参数:
-        units: units，具体约束请结合类型标注和调用方确认。
-        key: key，具体约束请结合类型标注和调用方确认。
-        default: default，具体约束请结合类型标注和调用方确认。
-
-    返回:
-        Any
-
-    阅读提示:
-        主要直接调用：reversed, u.get。
-    """
+    """取最后一个非空字段，适合当前章节标题和层级。"""
     for u in reversed(units):
         v = u.get(key)
         if v not in (None, ""):
@@ -288,13 +189,10 @@ def _last_non_empty(units: List[Dict[str, Any]], key: str, default: Any = None) 
 # =========================================================
 
 
-# 阅读注释（函数）：处理 overlap tail 相关逻辑。
 def overlap_tail(units: List[Dict[str, Any]], overlap: int) -> List[Dict[str, Any]]:
-    """
-    基于 unit 粒度实现 overlap。
+    """从当前 Chunk 尾部保留完整 Unit，直到累计正文长度达到 overlap。
 
-    注意：这里不是字符级截断 overlap，而是保留尾部若干 unit，使得尾部文本长度 >= overlap。
-    这样能尽量避免把一个 cleaned_text_unit 拦腰切开。
+    overlap 参数以字符目标表达，但边界保持 Unit 完整，因此实际重叠可能略大于配置值。
     """
     if overlap <= 0:
         return []
@@ -309,7 +207,6 @@ def overlap_tail(units: List[Dict[str, Any]], overlap: int) -> List[Dict[str, An
     return tail
 
 
-# 阅读注释（函数）：构建 flat 文本块 v1。
 def build_flat_chunk_v1(
     *,
     doc_id: str,
@@ -320,7 +217,7 @@ def build_flat_chunk_v1(
     chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
     chunk_version: str = DEFAULT_CHUNK_VERSION,
 ) -> Dict[str, Any]:
-    """根据聚合后的 units 调用 Chunk_Schema.build_chunk_v1() 生成标准 chunk_v1。"""
+    """聚合 Unit 正文、页码、章节、质量和清洗版本，并构造标准 ``chunk_v1``。"""
     texts = [u.get("text") or "" for u in units if u.get("text")]
     text = "\n".join(texts).strip()
     text_length = len(text)
@@ -370,7 +267,6 @@ def build_flat_chunk_v1(
     )
 
 
-# 阅读注释（函数）：处理 文本块 units for doc 相关逻辑。
 def chunk_units_for_doc(
     doc_id: str,
     units: List[Dict[str, Any]],
@@ -381,7 +277,11 @@ def chunk_units_for_doc(
     chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
     chunk_version: str = DEFAULT_CHUNK_VERSION,
 ) -> List[Dict[str, Any]]:
-    """对单个 doc_id 下的 cleaned units 构造 flat chunk_v1。"""
+    """对单个文档按顺序贪心聚合 Unit，并在提交后保留 Unit 级 overlap。
+
+    超长 Unit 会先被拆分；每次加入下一个 Unit 将超过字符上限时提交当前 Chunk。最后一个
+    Buffer 即使低于 ``min_chunk_size`` 也会保留，并通过质量标记暴露而不是静默丢弃。
+    """
     units = [u for u in units if not should_skip_unit(u)]
     units = expand_long_units(units, chunk_size=chunk_size, overlap=overlap)
 
@@ -430,7 +330,6 @@ def chunk_units_for_doc(
     return chunks
 
 
-# 阅读注释（函数）：处理 文本块 partition 相关逻辑。
 def chunk_partition(
     rows_iter: Iterable[Any],
     chunk_size: int,
@@ -440,11 +339,10 @@ def chunk_partition(
     chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
     chunk_version: str = DEFAULT_CHUNK_VERSION,
 ) -> Iterator[str]:
-    """
-    Spark mapPartitions 使用的入口。
+    """Spark ``mapPartitions`` 入口：流式处理已按 doc_id/unit_order 排序的 Row。
 
-    输入：同一 partition 内已按 doc_id / unit_order 排好序的 rows。
-    输出：JSONL 字符串，每行一个 chunk_v1。
+    文档 ID 变化时立即提交前一文档，避免把整个分区全部载入内存；输出每行一个 JSONL
+    ``chunk_v1``。调用方必须保证同一文档记录不会跨 Partition。
     """
     current_doc_id: Optional[str] = None
     current_units: List[Dict[str, Any]] = []
@@ -490,7 +388,6 @@ def chunk_partition(
             yield json.dumps(chunk, ensure_ascii=False)
 
 
-# 阅读注释（函数）：处理 文本块 记录集合 for doc 相关逻辑。
 def chunk_records_for_doc(
     records: List[Dict[str, Any]],
     chunk_size: int,
@@ -500,9 +397,7 @@ def chunk_records_for_doc(
     chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
     chunk_version: str = DEFAULT_CHUNK_VERSION,
 ) -> List[Dict[str, Any]]:
-    """
-    非 Spark 测试入口：输入一个 doc 的 cleaned_text_unit_v1 dict 列表，输出 chunk_v1 dict 列表。
-    """
+    """非 Spark 测试入口：严格校验并排序一个文档的 Unit，再复用生产聚合逻辑。"""
     units = [row_to_unit(r) for r in records]
     units = sorted(units, key=lambda u: safe_int(u.get("unit_order"), 0) or 0)
     doc_id = units[0].get("doc_id") if units else None

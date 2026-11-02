@@ -15,7 +15,7 @@ from apps.enterprise_document.services.scheme_writer.evidence_service import (
     SchemeEvidenceService,
 )
 from rag.context.context_packer import ContextPacker
-from rag.evidence.contract import RAGEvidenceContractBuilder
+from contracts.evidence import build_evidence_bundle
 from rag.services.rag_service import RAGService
 from schemas.citation import CitationSchema
 from schemas.rag import (
@@ -31,6 +31,12 @@ from schemas.rag import (
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
 from schemas.tool import ToolCallSchema, ToolResultSchema
 from tools.fake_rag_tool import FakeRAGTool
+
+
+class RAGEvidenceContractBuilder:
+    """Test-local call-shape adapter for historical regression bodies."""
+
+    build = staticmethod(build_evidence_bundle)
 
 
 # 阅读注释（函数）：处理 文本块 相关逻辑。
@@ -212,7 +218,8 @@ def test_presence_does_not_claim_semantic_sufficiency() -> None:
     )
 
     assert contract.assessment.evidence_available is True
-    assert contract.assessment.status == EvidenceAssessmentStatus.NOT_ASSESSED
+    assert contract.assessment.assessment_state == "pending"
+    assert contract.assessment.status is None
     assert contract.assessment.details["presence_is_not_semantic_sufficiency"] is True
 
 
@@ -318,6 +325,29 @@ class _LegacyContractToolStub:
         返回:
             未显式标注；请结合调用方和实际返回语句理解。
         """
+        profile = {
+            "schema_version": "document_profile_v1",
+            "document_id": "doc_1",
+            "document_type": "current_project_requirement",
+            "evidence_role": "project_fact",
+            "kb_id": "project_fact_kb",
+            "tenant_id": "default",
+            "project_relation": "current_project",
+            "project_id": "project-step12",
+            "authority": {
+                "level": "authoritative",
+                "version": "v1",
+                "issuer": "step12-test",
+                "effective_date": None,
+                "expiration_date": None,
+            },
+            "content_capabilities": {
+                "allowed_claim_types": ["general_method", "current_project_fact"],
+                "forbidden_claim_types": [],
+            },
+            "profile_sha256": "a" * 64,
+            "source_sha256": "b" * 64,
+        }
         selected = {
             "rank": 1,
             "score": 0.8,
@@ -325,10 +355,21 @@ class _LegacyContractToolStub:
             "child_chunk_id": "child_selected",
             "parent_chunk_id": "parent_selected",
             "doc_id": "doc_1",
+            "tenant_id": "default",
+            "kb_id": "project_fact_kb",
+            "document_type": "current_project_requirement",
+            "evidence_role": "project_fact",
+            "project_relation": "current_project",
+            "project_id": "project-step12",
+            "authority_level": "authoritative",
             "child_text": "JWT认证。",
             "parent_text": "安全设计采用JWT认证。",
+            "text": "安全设计采用JWT认证。",
             "title": "安全设计",
-            "metadata": {"retrieval_sources": ["dense"]},
+            "metadata": {
+                "document_profile": profile,
+                "retrieval_sources": ["dense"],
+            },
         }
         dropped = {
             "rank": 2,
@@ -494,49 +535,18 @@ def test_scheme_layer_trusts_contract_not_poisoned_legacy_fields() -> None:
     assert "JWT认证" in context.context_text
     assert len(chunks) == 1
     assert [item.citation_id for item in citations] == ["C1"]
-    assert normalized["evidence"]["schema_version"] == "rag_evidence_contract_v1"
+    assert "evidence" not in normalized
+    assert "evidence_contract" not in context.extra
+    assert normalized["evidence_contract_sha256"]
 
 
 
-# 阅读注释（函数）：处理 测试 shared 状态 stores contract without claiming sufficiency 相关逻辑。
-def test_shared_state_stores_contract_without_claiming_sufficiency() -> None:
-    """处理 测试 shared 状态 stores contract without claiming sufficiency 相关逻辑。
-
-    返回:
-        None
-
-    阅读提示:
-        主要直接调用：_chunk, RAGEvidenceContractBuilder.build, _citation, _trace, _shared_state, set_evidence_context, SharedStateWriter, contract.model_dump。
-    """
-    selected = _chunk(rank=1, child="child_1", parent="parent_1")
-    contract = RAGEvidenceContractBuilder.build(
-        query="安全设计",
-        rewritten_queries=[],
-        selected_chunks=[selected],
-        dropped_chunks=[],
-        citations=[_citation(selected)],
-        trace=_trace(),
-        max_context_chars=6000,
-    )
+# Phase 4C: SharedState is no longer an Evidence carrier.
+def test_shared_state_evidence_carrier_is_retired() -> None:
     state = _shared_state()
-    SharedStateWriter().set_evidence_context(
-        state,
-        query=contract.query,
-        evidence_contract=contract.model_dump(),
-        context_text=contract.context.context_text,
-        retrieved_chunks=[],
-        citations=[item.model_dump() for item in contract.citations],
-        used_doc_ids=contract.context.used_doc_ids,
-        evidence_available=True,
-        assessment_status="not_assessed",
-        evidence_sufficient=None,
-    )
-
-    assert state.context_bundle.evidence.contract["schema_version"] == "rag_evidence_contract_v1"
-    assert state.context_bundle.evidence.evidence_available is True
-    assert state.context_bundle.evidence.assessment_status == "not_assessed"
-    assert state.context_bundle.evidence.evidence_sufficient is None
-    assert state.context_bundle.evidence.metadata["context_is_projection"] is True
+    writer = SharedStateWriter()
+    assert "evidence" not in state.context_bundle.__class__.model_fields
+    assert not hasattr(writer, "set_evidence_context")
 
 # 阅读注释（函数）：处理 测试 fake RAG 工具 also uses step 12 contract 相关逻辑。
 def test_fake_rag_tool_also_uses_step_12_contract() -> None:

@@ -1,18 +1,14 @@
-# =============================================================================
-# 中文阅读说明：企业文档生成业务模块，负责方案规划、检索、章节生成、引用和验收。
-# 主要定义：SchemeWriterOutputSchema。建议先从公开入口函数开始，再沿调用关系向下阅读。
-# =============================================================================
-"""Top-level scheme writer output contract."""
+"""方案生成用例的顶层输出及草稿生命周期约束。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict, Field, model_validator
 
+from apps.enterprise_document.schemas.release_publication import PublishedReleaseSchema
 from apps.enterprise_document.schemas.scheme_writer.document import SchemeDraftSchema
 from apps.enterprise_document.schemas.scheme_writer.evaluation import HardGateResultSchema
 from apps.enterprise_document.schemas.scheme_writer.planning import DocumentPlanSchema
-from apps.enterprise_document.schemas.scheme_writer.evidence import SectionEvidenceBundleSchema
 from schemas.citation import CitationSchema
 from schemas.common import ErrorSchema, SchemaBase, WarningSchema
 from schemas.rag import RAGContextSchema, RetrievedChunkSchema
@@ -20,7 +16,7 @@ from schemas.status import ExecutionStatus
 
 
 class RejectedDraftArtifactSchema(SchemaBase):
-    """A generated draft retained only for diagnostics/review after rejection."""
+    """硬门禁拒绝后仅供诊断或人工复核的草稿包装。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -32,18 +28,18 @@ class RejectedDraftArtifactSchema(SchemaBase):
 
 
 class DeliverableFinalResultSchema(SchemaBase):
-    """The only business deliverable exposed after the document hard gate."""
+    """通过文档硬门禁后唯一允许作为业务结果暴露的交付物。"""
 
     model_config = ConfigDict(extra="forbid")
 
     artifact_type: str = "deliverable_final_result"
     draft: SchemeDraftSchema
     output_format: str = "markdown"
+    release_publication: Optional[PublishedReleaseSchema] = None
 
 
-# 阅读注释（类）：封装 scheme writer 输出 Schema，定义跨模块传递的数据结构与字段约束。
 class SchemeWriterOutputSchema(SchemaBase):
-    """封装 scheme writer 输出 Schema，定义跨模块传递的数据结构与字段约束。"""
+    """汇总规划、草稿、证据、门禁和最终产物，并强制状态与产物一致。"""
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = "scheme_writer_output_v2"
@@ -57,7 +53,8 @@ class SchemeWriterOutputSchema(SchemaBase):
     rag_context: Optional[RAGContextSchema] = None
     retrieved_chunks: List[RetrievedChunkSchema] = Field(default_factory=list)
     citations: List[CitationSchema] = Field(default_factory=list)
-    section_evidence: List[SectionEvidenceBundleSchema] = Field(default_factory=list)
+    # Lightweight final Evidence summaries only; canonical section Bundles stay in lifecycle state.
+    section_evidence: List[Dict[str, Any]] = Field(default_factory=list)
     hard_gate: Optional[HardGateResultSchema] = None
     warnings: List[WarningSchema] = Field(default_factory=list)
     error: Optional[ErrorSchema] = None
@@ -66,6 +63,7 @@ class SchemeWriterOutputSchema(SchemaBase):
 
     @model_validator(mode="after")
     def validate_artifact_lifecycle(self) -> "SchemeWriterOutputSchema":
+        """禁止把被拒草稿与可交付结果同时暴露，并校验状态和草稿引用关系。"""
         if self.rejected_artifact is not None and self.deliverable_final_result is not None:
             raise ValueError("rejected artifact and deliverable are mutually exclusive")
         if self.rejected_artifact is not None:
@@ -81,6 +79,17 @@ class SchemeWriterOutputSchema(SchemaBase):
                 != self.generated_draft.draft_id
             ):
                 raise ValueError("deliverable must reference generated_draft")
+            publication = self.deliverable_final_result.release_publication
+            if publication is not None:
+                manifest = publication.manifest
+                if manifest.task_id != self.task_id or manifest.run_id != self.run_id:
+                    raise ValueError("release publication task/run identity mismatch")
+                if manifest.document_id != self.generated_draft.document_id:
+                    raise ValueError("release publication document identity mismatch")
+                if manifest.draft_id != self.generated_draft.draft_id:
+                    raise ValueError("release publication draft identity mismatch")
+                if self.need_human_review:
+                    raise ValueError("published release cannot require human review")
 
         successful = self.status in {
             ExecutionStatus.SUCCESS,
