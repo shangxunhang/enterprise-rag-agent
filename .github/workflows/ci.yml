@@ -33,6 +33,8 @@ jobs:
           version: '0.11.32'
           python-version: '3.10.20'
           enable-cache: true
+      - name: Install pinned Python before offline checks
+        run: uv python install 3.10.20
       - name: Validate frozen dependency lock
         run: uv lock --check --offline
       - name: Install public check dependencies

@@ -54,6 +54,9 @@ The eight tested modules are exactly the README/CI subset: citation association,
 context packing, source bootstrap, Artifact, FactSnapshot, SectionPlan, BudgetManager
 and text normalizer. CI checks the same subset on Linux and Windows. The local
 result above was obtained on Windows; hosted CI results remain separate evidence.
+The first hosted run stopped before tests because the cold runner lacked Python
+3.10.20 while the initial check was offline. CI now explicitly installs that pinned
+interpreter before the unchanged lock check; see PUB-PKG-014 and the PR check history.
 
 Process-only configuration was selected before application imports. Provider
 acceptance, plugin autoload, bytecode/cache generation and tracing were disabled.

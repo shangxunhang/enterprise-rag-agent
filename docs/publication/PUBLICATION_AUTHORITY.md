@@ -35,3 +35,7 @@ Source baseline: `41aba4ab03670173ef316c122c4747811a70ab5a` plus its existing di
 engineering files. Public base: `07dda2e80645cac67f8b5f5e30002d21c2ab01eb`.
 Validation, local-data requirements and known problems are separate documents in
 this directory; successful publication does not close business acceptance.
+
+Hosted bootstrap correction: install the pinned Python interpreter before offline
+lock validation on cold runners. This deterministic CI fix leaves the frozen lock,
+production code, test selection and acceptance boundary unchanged (PUB-PKG-014).
