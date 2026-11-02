@@ -1,0 +1,15 @@
+{
+  "schema_version": "independent_reference_review_schema_v1",
+  "required": [
+    "reviewer_id",
+    "reviewer",
+    "method",
+    "source_sha256",
+    "labels_sha256",
+    "match_rules_sha256",
+    "verdict",
+    "source_refs"
+  ],
+  "method": "INDEPENDENT_HUMAN_REVIEW",
+  "implementation_may_self_sign": false
+}

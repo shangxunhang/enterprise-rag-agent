@@ -748,9 +748,9 @@ def test_retry_discards_previous_attempt_candidate_and_commits_only_success(tmp_
     assert [row["user_input"] for row in rows] == ["attempt-2"]
 
 
-# 阅读注释（函数）：处理 测试 timeout returns structured failure and late 状态 is not committed 相关逻辑。
-def test_timeout_returns_structured_failure_and_late_state_is_not_committed() -> None:
-    """处理 测试 timeout returns structured failure and late 状态 is not committed 相关逻辑。
+# 阅读注释（函数）：aggregate elapsed只观察；健康迟到结果正常提交。
+def test_aggregate_elapsed_accepts_actual_late_state() -> None:
+    """健康迟到结果保持真实SUCCESS并按既有delta合同提交。
 
     返回:
         None
@@ -817,22 +817,19 @@ def test_timeout_returns_structured_failure_and_late_state_is_not_committed() ->
     engine = LangGraphWorkflowEngine(registry)
     execution = engine.execute(workflow, state)
 
-    assert execution.status == ExecutionStatus.FAILED
-    assert state.final_result is None
+    assert execution.status == ExecutionStatus.SUCCESS
+    assert state.final_result == {"late": True}
     error = execution.node_results[0].error
-    assert error is not None
-    assert error.error_code == "WORKFLOW_NODE_TIMEOUT"
-    assert execution.node_outputs[0].metadata["commit_decision"] == "failure_discarded"
+    assert error is None
+    assert execution.node_outputs[0].metadata["commit_decision"] == "success_commit"
     assert engine.wait_for_idle(timeout_seconds=0.5)
-    assert state.final_result is None
-    assert error.failure_category.value == "timeout"
-    assert error.retryable is False
+    assert state.final_result == {"late": True}
     assert execution.metadata["retry_count"] == 0
-    assert execution.node_outputs[0].metadata["timeout_retry_policy"] == "workflow_node_deadline_terminal_v1"
+    assert execution.node_outputs[0].metadata["execution_control"]["cancel_requested"] is False
 
 
-def test_near_deadline_outcome_never_changes_timeout_failure_semantics() -> None:
-    """Scheduling may decide success-vs-timeout, but never timeout taxonomy/retry semantics."""
+def test_near_aggregate_threshold_always_preserves_actual_success() -> None:
+    """Scheduling changes elapsed diagnostics, never the actual success outcome."""
 
     import time
 
@@ -853,7 +850,6 @@ def test_near_deadline_outcome_never_changes_timeout_failure_semantics() -> None
                 result={},
             )
 
-    observed_timeout = False
     for _ in range(30):
         registry = AgentRegistry()
         registry.register(_BoundaryAgent())
@@ -877,23 +873,14 @@ def test_near_deadline_outcome_never_changes_timeout_failure_semantics() -> None
         )
         engine = LangGraphWorkflowEngine(registry)
         execution = engine.execute(workflow, _state())
-        assert execution.status in {ExecutionStatus.SUCCESS, ExecutionStatus.FAILED}
-        assert execution.status != ExecutionStatus.RETRYABLE_FAILED
+        assert execution.status == ExecutionStatus.SUCCESS
         assert execution.metadata["retry_count"] == 0
-        if execution.status == ExecutionStatus.FAILED:
-            observed_timeout = True
-            error = execution.node_results[0].error
-            assert error is not None
-            assert error.error_code == "WORKFLOW_NODE_TIMEOUT"
-            assert error.failure_category.value == "timeout"
-            assert error.retryable is False
-            assert execution.node_outputs[0].metadata["timeout_retry_policy"] == "workflow_node_deadline_terminal_v1"
+        assert execution.node_results[0].error is None
         assert engine.wait_for_idle(timeout_seconds=0.5)
-    assert observed_timeout is True
 
 
-def test_timeout_aborts_candidate_registered_before_attempt_completion(tmp_path) -> None:
-    """A candidate created by a later-timed-out attempt never reaches durable storage."""
+def test_explicit_cancel_aborts_candidate_registered_before_attempt_completion(tmp_path) -> None:
+    """Explicit cancellation revokes a deferred native candidate before completion."""
 
     import threading
     import time
@@ -947,17 +934,33 @@ def test_timeout_aborts_candidate_registered_before_attempt_completion(tmp_path)
     )
     engine = LangGraphWorkflowEngine(registry)
 
-    execution = engine.execute(workflow, _state())
+    executions = []
+    controller = threading.Thread(target=lambda: executions.append(engine.execute(workflow, _state())), daemon=True)
+    controller.start()
+    try:
+        assert candidate_registered.wait(0.5)
+        assert engine.node_execution_runner.cancel_active_workers("explicit_user_cancel") == 1
+        controller.join(0.5)
+        assert executions[0].status == ExecutionStatus.FAILED
+        output = executions[0].node_outputs[0]
+        assert output.error is not None
+        assert output.error.error_code == "WORKFLOW_NODE_CANCELLED"
+        assert output.error.error_type == "WorkflowExecutionCancelled"
+        assert output.error.failure_category.value == "cancelled"
+        assert output.error.retryable is False
+        assert output.metadata["execution_control"]["cancel_requested"] is True
+        assert output.metadata["retry_suppressed_after_cancellation"] is True
+        assert engine.wait_for_idle(timeout_seconds=0.5)
+        candidate_path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
+        assert not candidate_path.exists()
+    finally:
+        engine.node_execution_runner.cancel_active_workers("explicit_test_cleanup")
+        controller.join(1)
+        assert engine.wait_for_idle(1)
 
-    assert candidate_registered.is_set()
-    assert execution.status == ExecutionStatus.FAILED
-    assert engine.wait_for_idle(timeout_seconds=0.5)
-    candidate_path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
-    assert not candidate_path.exists()
 
-
-def test_timeout_blocks_candidate_written_after_deadline(tmp_path) -> None:
-    """A non-cooperative late worker loses commit authority before it can append."""
+def test_aggregate_elapsed_keeps_authority_for_late_native_candidate(tmp_path) -> None:
+    """A healthy late worker retains exact deferred capture commit authority."""
 
     import time
 
@@ -1010,19 +1013,21 @@ def test_timeout_blocks_candidate_written_after_deadline(tmp_path) -> None:
 
     execution = engine.execute(workflow, _state())
 
-    assert execution.status == ExecutionStatus.FAILED
+    assert execution.status == ExecutionStatus.SUCCESS
     assert engine.wait_for_idle(timeout_seconds=0.5)
     candidate_path = tmp_path / "captures" / "eval_samples" / "run_1_eval_samples.jsonl"
-    assert not candidate_path.exists()
+    assert candidate_path.exists()
+    assert len(candidate_path.read_text(encoding="utf-8").splitlines()) == 1
 
 
-def test_timeout_requests_cooperative_cancel_and_never_retries_live_worker() -> None:
-    """A timed-out worker is terminal, even when the step declares retries."""
+def test_explicit_cancel_is_cooperative_and_never_retries_live_worker() -> None:
+    """Actual cancellation stays terminal even when the step declares retries."""
 
     import threading
     import time
 
     cancelled = threading.Event()
+    started = threading.Event()
 
     class _CooperativeAgent(BaseAgent):
         agent_name = "CooperativeAgent"
@@ -1035,8 +1040,8 @@ def test_timeout_requests_cooperative_cancel_and_never_retries_live_worker() -> 
             self.calls += 1
             control = current_execution_control()
             assert control is not None
-            # Wait for the engine's explicit timeout signal.  Providers may
-            # also use ``should_stop`` to enforce the deadline themselves.
+            started.set()
+            # Only the explicit test cancellation supplies this signal.
             while not control.is_cancelled:
                 time.sleep(0.001)
             cancelled.set()
@@ -1075,22 +1080,36 @@ def test_timeout_requests_cooperative_cancel_and_never_retries_live_worker() -> 
     )
     engine = LangGraphWorkflowEngine(registry)
 
-    execution = engine.execute(workflow, _state())
+    executions = []
+    controller = threading.Thread(target=lambda: executions.append(engine.execute(workflow, _state())), daemon=True)
+    controller.start()
+    try:
+        assert started.wait(0.5)
+        controller.join(0.04)
+        assert controller.is_alive() and not cancelled.is_set()
+        assert engine.node_execution_runner.cancel_active_workers("explicit_user_cancel") == 1
+        controller.join(0.5)
+        execution = executions[0]
+        assert execution.status == ExecutionStatus.FAILED
+        assert execution.metadata["retry_count"] == 0 and agent.calls == 1
+        output = execution.node_outputs[0]
+        assert output.error is not None
+        assert output.error.error_code == "WORKFLOW_NODE_CANCELLED"
+        assert output.error.error_type == "WorkflowExecutionCancelled"
+        assert output.error.failure_category.value == "cancelled"
+        assert output.metadata["retry_suppressed_after_cancellation"] is True
+        assert output.metadata["execution_control"]["cancel_requested"] is True
+        assert output.result.error is not None and output.result.error.retryable is False
+        assert cancelled.wait(timeout=0.5)
+        assert engine.wait_for_idle(timeout_seconds=0.5)
+    finally:
+        engine.node_execution_runner.cancel_active_workers("explicit_test_cleanup")
+        controller.join(1)
+        assert engine.wait_for_idle(1)
 
-    assert execution.status == ExecutionStatus.FAILED
-    assert execution.metadata["retry_count"] == 0
-    assert agent.calls == 1
-    output = execution.node_outputs[0]
-    assert output.metadata["retry_suppressed_after_timeout"] is True
-    assert output.metadata["cooperative_cancel_requested"] is True
-    assert output.result.error is not None
-    assert output.result.error.retryable is False
-    assert cancelled.wait(timeout=0.5)
-    assert engine.wait_for_idle(timeout_seconds=0.5)
 
-
-def test_resource_close_can_be_deferred_until_timed_out_worker_exits() -> None:
-    """Shutdown callbacks cannot race a non-cooperative in-flight dependency call."""
+def test_resource_close_waits_for_canceled_worker_and_has_closed_postcondition() -> None:
+    """Shutdown waits boundedly and returns only after dependency ownership closes."""
 
     import threading
 
@@ -1147,17 +1166,30 @@ def test_resource_close_can_be_deferred_until_timed_out_worker_exits() -> None:
         owned_resources=(_Resource(),),
     )
 
-    execution = engine.execute(workflow, _state())
-
-    assert execution.status == ExecutionStatus.FAILED
-    assert worker_started.is_set()
-    assert engine.active_worker_count == 1
-    supervisor.close()
-    assert not resource_closed.is_set()
-
-    release_worker.set()
-    assert engine.wait_for_idle(timeout_seconds=0.5)
-    assert resource_closed.is_set()
+    executions = []
+    controller = threading.Thread(target=lambda: executions.append(engine.execute(workflow, _state())), daemon=True)
+    controller.start()
+    try:
+        assert worker_started.wait(0.5)
+        assert engine.node_execution_runner.cancel_active_workers("explicit_user_cancel") == 1
+        controller.join(0.5)
+        assert executions[0].status == ExecutionStatus.FAILED
+        output = executions[0].node_outputs[0]
+        assert output.error is not None
+        assert output.error.error_code == "WORKFLOW_NODE_CANCELLED"
+        assert output.error.error_type == "WorkflowExecutionCancelled"
+        assert output.error.failure_category.value == "cancelled"
+        assert output.error.retryable is False
+        assert output.metadata["execution_control"]["cancel_requested"] is True
+        assert output.metadata["retry_suppressed_after_cancellation"] is True
+        assert engine.active_worker_count == 1 and not resource_closed.is_set()
+        supervisor.close()
+        assert engine.active_worker_count == 0 and resource_closed.is_set()
+        supervisor.close()
+    finally:
+        release_worker.set()
+        controller.join(1)
+        assert engine.wait_for_idle(1)
 
 
 # 阅读注释（函数）：处理 测试 business failure can commit only declared partial outputs 相关逻辑。

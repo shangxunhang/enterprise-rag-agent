@@ -43,6 +43,7 @@ def main(root: Path) -> None:
                     "file_id": "fileA",
                     "doc_id": "docA",
                     "text": "authorized row",
+                    "extra": {},
                 },
                 np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
                 embedding_model="test",
@@ -60,6 +61,7 @@ def main(root: Path) -> None:
                     "file_id": "fileB",
                     "doc_id": "docB",
                     "text": "unauthorized row",
+                    "extra": {},
                 },
                 np.asarray([1.0, 0.01, 0.0, 0.0], dtype=np.float32),
                 embedding_model="test",
@@ -68,7 +70,12 @@ def main(root: Path) -> None:
                 max_text_chars=1024,
             ),
         ]
-        insert_child_chunk_records(client, collection, records, batch_size=2)
+        insert_child_chunk_records(
+            client=client,
+            collection_name=collection,
+            records=records,
+            batch_size=2,
+        )
     finally:
         client.close()
 

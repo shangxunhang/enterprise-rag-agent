@@ -139,7 +139,64 @@ def test_builder_validates_source_before_scope_enrichment(tmp_path: Path) -> Non
         OfflineIndexBuilder(project_root=tmp_path).build(config)
 
 
-def test_registry_contains_four_chunkers() -> None:
+def test_builder_reads_source_directory_and_excludes_non_indexable_gold(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "raw" / "jsonl"
+    old_record = dict(SAMPLE_RECORDS[0])
+    indexable_record = {
+        **SAMPLE_RECORDS[1],
+        "unit_id": "d2_u1",
+        "doc_id": "d2",
+        "source_uri": "test://d2",
+        "source_name": "D2",
+        "title": "D2",
+        "should_index": True,
+        "is_gold_reference": False,
+        "parser_name": "word_parser",
+        "source_backend": "word",
+        "source_sha256": "sha-d2",
+        "structure_quality": "high",
+        "table_uri": None,
+        "can_enter_spark_cleaning": True,
+        "source_content_type": "application/msword",
+    }
+    gold_record = {
+        **indexable_record,
+        "unit_id": "d3_u1",
+        "doc_id": "d3",
+        "source_uri": "test://d3",
+        "source_name": "D3",
+        "title": "D3",
+        "should_index": False,
+        "is_gold_reference": True,
+        "source_sha256": "sha-d3",
+    }
+    _write_jsonl(source_dir / "cleaned_text_unit_all.jsonl", [old_record])
+    _write_jsonl(
+        source_dir / "cleaned_text_unit_v1_batch.jsonl",
+        [indexable_record, gold_record],
+    )
+
+    base_config = _config(tmp_path)
+    config = base_config.model_copy(
+        update={
+            "dataset_version": "directory_dataset_v1",
+            "source": SourceDatasetConfig(path=str(source_dir)),
+        }
+    )
+    result = OfflineIndexBuilder(project_root=tmp_path).build(config)
+
+    assert result.document_count == 2
+    manifest = IndexManifest.model_validate_json(
+        Path(result.manifest_path).read_text(encoding="utf-8")
+    )
+    parents = load_jsonl_dicts(manifest.artifacts["parent_chunks"].path)
+    assert {item["doc_id"] for item in parents} == {"d1", "d2"}
+    assert all(item["doc_id"] != "d3" for item in parents)
+
+
+def test_registry_contains_profile_aware_chunkers() -> None:
     """处理 测试 注册表 contains four chunkers 相关逻辑。
 
     返回:
@@ -149,12 +206,17 @@ def test_registry_contains_four_chunkers() -> None:
         主要直接调用：build_default_component_registry, registry.list_components。
     """
     registry = build_default_component_registry()
-    names = [item.name for item in registry.list_components(category="chunker")]
-    assert names == [
-        "fixed_parent_child",
-        "heading_parent_child",
-        "paragraph_parent_child",
-        "recursive_parent_child",
+    identities = [
+        f"{item.name}@{item.version}"
+        for item in registry.list_components(category="chunker")
+    ]
+    assert identities == [
+        "fixed_parent_child@v1",
+        "heading_parent_child@v1",
+        "paragraph_parent_child@v1",
+        "recursive_parent_child@v1",
+        "type_aware_parent_child@v1",
+        "type_aware_parent_child@v2",
     ]
 
 

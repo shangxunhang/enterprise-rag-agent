@@ -9,6 +9,8 @@ import os
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from apps.enterprise_document.services.scheme_writer.document_citation_registry import (
     DocumentCitationRegistry,
 )
@@ -155,7 +157,8 @@ def test_insufficient_evidence_section_blocks_normal_generation() -> None:
     assert section.eval_result.checks["evidence_sufficient"] is False
 
 
-def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -> None:
+@pytest.mark.parametrize("missing_dependency", ("provider", "budget"))
+def test_fake_mainline_section_aware_retrieval_fails_closed_without_canonical_tool_gateway(tmp_path, monkeypatch, missing_dependency) -> None:
     """处理 测试 fake 主链 can explicitly enable 章节 aware 检索 相关逻辑。
 
     参数:
@@ -167,6 +170,31 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
     阅读提示:
         主要直接调用：os.environ.get, get_settings, replace, model_dump, build_project_input, update, run_demo, old_env.items。
     """
+    import bootstrap.supervisor_factory as factory_module
+
+    build_adapter = factory_module.build_round5_section_agent_adapter
+
+    def without_provider(**kwargs):
+        configured = kwargs.get("canonical_tool_gateway_provider")
+
+        def without_budget(context):
+            gateway = configured(context)
+            gateway.budget_runtime = None
+            return gateway
+
+        kwargs["canonical_tool_gateway_provider"] = (
+            None if missing_dependency == "provider" else without_budget
+        )
+        return build_adapter(**kwargs)
+
+    expected_message = (
+        "canonical ToolGateway provider is not configured"
+        if missing_dependency == "provider"
+        else "canonical Research ToolGateway requires canonical Budget runtime"
+    )
+
+    # Deliberate fault injection, independent of the production factory wiring.
+    monkeypatch.setattr(factory_module, "build_round5_section_agent_adapter", without_provider)
     old_env = {
         key: os.environ.get(key)
         for key in (
@@ -220,18 +248,8 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
                 os.environ[key] = value
         get_settings(reload=True)
 
-    output = summary["scheme_writer_output"]
-    bundles = output["section_evidence"]
-    required = set(project_input["generation_requirements"]["citation_required_sections"])
-    by_title = {item["section_title"]: item for item in bundles}
-
-    assert output["extra"]["section_aware_retrieval_enabled"] is True
-    assert len(bundles) == len(project_input["generation_requirements"]["required_sections"])
-    assert required
-    assert all(by_title[title]["retrieval_scope"] == "section" for title in required)
-    assert all(len(by_title[title]["tool_call_ids"]) == 2 for title in required)
-    assert [item["citation_id"] for item in output["citations"]] == ["C1"]
-
+    assert summary["deliverable_final_result"] is None
+    assert summary.get("release_publication") is None
     trace_events = [
         json.loads(line)
         for line in (tmp_path / "runs" / "run_section_aware_trace.jsonl")
@@ -239,10 +257,44 @@ def test_fake_mainline_can_explicitly_enable_section_aware_retrieval(tmp_path) -
         .splitlines()
         if line.strip()
     ]
-    rag_started = [
-        item for item in trace_events if item.get("event_type") == "rag_started"
+    research_failures = [
+        item
+        for item in trace_events
+        if item.get("event_type") == "agent_finished"
+        and item.get("component_name") == "ResearchAgent"
+        and item.get("status") == "failed"
     ]
-    assert len(rag_started) == 1 + len(required)
+    assert research_failures
+    assert any(
+        expected_message in str(item.get("error_message") or "")
+        for item in research_failures
+    )
+    # W15-S02: an earlier Research trace alone must not hide a later transport
+    # failure that overwrites the final structured error.
+    original_error = research_failures[-1]["error"]
+    assert original_error["error_code"] == "RESEARCH_TOOL_CONFIGURATION_ERROR"
+    assert original_error["failure_category"] == "configuration"
+    assert original_error["retryable"] is False
+    assert original_error["details"]["workflow_error"]["failure_origin"] == "tool_runtime"
+    assert summary["status"] == (
+        ExecutionStatus.RETRYABLE_FAILED.value
+        if original_error["retryable"]
+        else ExecutionStatus.FAILED.value
+    )
+    terminal_record = json.loads(
+        (tmp_path / "tasks" / "task_section_aware_state.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    terminal_error = terminal_record["error"]
+    for key in (
+        "error_code", "error_type", "message", "failure_category",
+        "retryable", "failed_node", "source", "details",
+    ):
+        assert terminal_error[key] == original_error[key]
+    assert expected_message in terminal_error["message"]
+    assert "__traceback__" not in terminal_error["message"]
+    assert terminal_error["error_type"] != "FrozenInstanceError"
 
 
 # 阅读注释（函数）：处理 minimal Trace events 相关逻辑。
@@ -334,6 +386,104 @@ def test_console_validation_allows_only_business_gate_failure(tmp_path) -> None:
     )
     assert result["business_gate_passed"] is False
     assert result["business_gate_failure"] is True
+
+
+def test_validation_model_name_uses_single_primary_routed_model() -> None:
+    """The validator must follow a run-wide routing override such as all-DeepSeek."""
+    from run_demo import _resolve_validation_model_name
+
+    runtime_preflight = {
+        "model_profiles": [
+            {"profile_id": "local_1_5b", "model_name": "local_qwen2_5_1_5b"},
+            {"profile_id": "deepseek", "model_name": "deepseek_api"},
+        ],
+        "model_routing_policies": [
+            {"role": "general", "candidates": ["deepseek"]},
+            {"role": "section_generation", "candidates": ["deepseek"]},
+            {"role": "retrieval_judge", "candidates": ["deepseek"]},
+        ],
+    }
+
+    assert (
+        _resolve_validation_model_name(
+            runtime_preflight,
+            fallback_model_name="local_qwen2_5_1_5b",
+        )
+        == "deepseek_api"
+    )
+
+
+def test_validation_model_name_falls_back_for_mixed_primary_routing() -> None:
+    """Mixed-role routing cannot be represented by one routed expected model."""
+    from run_demo import _resolve_validation_model_name
+
+    runtime_preflight = {
+        "model_profiles": [
+            {"profile_id": "local_1_5b", "model_name": "local_qwen2_5_1_5b"},
+            {"profile_id": "deepseek", "model_name": "deepseek_api"},
+        ],
+        "model_routing_policies": [
+            {"role": "general", "candidates": ["local_1_5b"]},
+            {"role": "section_generation", "candidates": ["deepseek"]},
+        ],
+    }
+
+    assert (
+        _resolve_validation_model_name(
+            runtime_preflight,
+            fallback_model_name="local_qwen2_5_1_5b",
+        )
+        == "local_qwen2_5_1_5b"
+    )
+
+
+def test_console_validation_treats_shadow_success_as_business_gate_failure(
+    tmp_path,
+) -> None:
+    """Shadow-mode workflow success must not be reinterpreted as Hard Gate pass."""
+    from run_demo import _validate_end_to_end
+
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        "\n".join(json.dumps(item, ensure_ascii=False) for item in _minimal_trace_events()),
+        encoding="utf-8",
+    )
+    task_state = tmp_path / "task.jsonl"
+    task_state.write_text("{}\n", encoding="utf-8")
+    summary = {
+        "status": "success",
+        "generated_draft": {"full_text": "Shadow 模式下保留的被拒绝方案正文"},
+        "rejected_artifact": {
+            "artifact_type": "rejected_draft",
+            "rejection_code": "DOCUMENT_HARD_GATE_FAILED",
+        },
+        "deliverable_final_result": None,
+        "scheme_writer_output": {
+            "hard_gate": {
+                "passed": False,
+                "enforcement_mode": "shadow",
+                "enforcement_action": "continue",
+                "would_block_in_strict": True,
+            },
+            "error": {"error_code": "DOCUMENT_HARD_GATE_FAILED"},
+        },
+        "paths": {"trace": str(trace_path), "task_state": str(task_state)},
+    }
+
+    result = _validate_end_to_end(
+        summary,
+        expected_model_name="fake_llm",
+        expected_real_rag=False,
+        allow_business_failure=True,
+    )
+
+    assert result["status"] == "success"
+    assert result["execution_integrity"] == "passed"
+    assert result["business_quality"] == "failed"
+    assert result["business_gate_passed"] is False
+    assert result["business_gate_failure"] is True
+    assert result["artifact_lifecycle"]["rejected_artifact"] is True
+    assert result["artifact_lifecycle"]["deliverable_final_result"] is False
 
 
 # 阅读注释（函数）：处理 测试 console validation rejects technical failure even in interactive mode 相关逻辑。

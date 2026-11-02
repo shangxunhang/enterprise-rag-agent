@@ -152,6 +152,56 @@ def test_context_pack_honors_small_character_budget_exactly() -> None:
     assert packed.used_chars <= 96
 
 
+def test_historical_evidence_uses_governed_prompt_projection_instead_of_parent_text() -> None:
+    packer = DefaultContextPacker(max_context_chars=4000, max_items=1)
+    result = {
+        "rank": 1,
+        "doc_id": "history-doc",
+        "chunk_id": "history-child",
+        "child_chunk_id": "history-child",
+        "parent_chunk_id": "history-parent",
+        "title": "4.3.2.3 XSSD块存储建设方案",
+        "child_text": "本期工程AZ1节点需求为324.2TB。",
+        "parent_text": (
+            "本期工程AZ1节点需求为324.2TB，新增8台XSSD服务器，"
+            "CPU采用Kunpeng 920 7260。"
+        ),
+        "text": (
+            "本期工程AZ1节点需求为324.2TB，新增8台XSSD服务器，"
+            "CPU采用Kunpeng 920 7260。"
+        ),
+        "metadata": {
+            "evidence_assessment_v2": {
+                "evidence_role": "historical_case",
+                "project_relation": "other_project",
+                "supported_claim_types": [
+                    "general_method",
+                    "reference_case",
+                    "typical_architecture",
+                ],
+                "forbidden_claim_types": [
+                    "current_project_configuration",
+                    "current_project_quantity",
+                ],
+            }
+        },
+    }
+
+    packed = packer.pack([result], token_budget=1024)
+
+    visible = packed.items[0]["prompt_visible_text"]
+    assert "历史案例" in visible
+    assert "仅供参考" in visible
+    assert "324.2TB" not in visible
+    assert "8台" not in visible
+    assert "Kunpeng 920" not in visible
+    assert packed.items[0]["context_text"] == visible
+    assert packed.items[0]["metadata"]["prompt_projection_mode"] == (
+        "historical_reference_restricted"
+    )
+    assert packed.items[0]["metadata"]["raw_fact_visibility"] == "restricted"
+
+
 def test_unknown_context_packer_fails_during_composition() -> None:
     with pytest.raises(ValueError, match="unknown RAG component"):
         build_default_component_registry().build(

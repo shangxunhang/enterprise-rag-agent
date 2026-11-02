@@ -22,9 +22,27 @@ from rag.plugins.retrievers import (
 )
 from rag.registry.default_registrations import build_default_component_registry
 from rag.schema.candidate import CandidateSet, RetrievalRequest
+from test_support.stage_d_fixtures import document_profile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _retrieval_fixture_profile() -> dict:
+    # Match the existing full-chain capture's controlled historical source.
+    profile = document_profile(
+        document_id="doc-1",
+        kb_id="historical_case_kb",
+        document_type="historical_feasibility_study",
+        evidence_role="historical_case",
+        project_relation="other_project",
+        authority_level="reference",
+        allowed_claim_types=["general_method", "reference_case"],
+        forbidden_claim_types=["current_project_cost"],
+        source_document_form="test",
+    )
+    profile["authority"]["issuer"] = "test"
+    return profile
 
 
 # 阅读注释（类）：封装 fake dense 后端实现，集中封装相关状态、依赖和行为。
@@ -70,8 +88,16 @@ class _FakeDenseBackend:
                     "child_chunk_id": child_id,
                     "parent_chunk_id": parent_id,
                     "doc_id": "doc-1",
+                    "tenant_id": "default",
+                    "kb_id": "historical_case_kb",
+                    "document_profile": _retrieval_fixture_profile(),
                     "text": f"dense evidence {child_id}",
                     "title": "title",
+                    "section": None,
+                    "page_start": None,
+                    "page_end": None,
+                    "file_id": None,
+                    "type_aware_chunking": {},
                     "source_unit_ids": [f"unit-{child_id}"],
                 },
             }
@@ -127,8 +153,16 @@ class _FakeKeywordBackend:
                     "child_chunk_id": child_id,
                     "parent_chunk_id": parent_id,
                     "doc_id": "doc-1",
+                    "tenant_id": "default",
+                    "kb_id": "historical_case_kb",
+                    "document_profile": _retrieval_fixture_profile(),
                     "text": f"keyword evidence {child_id}",
                     "title": "title",
+                    "section": None,
+                    "page_start": None,
+                    "page_end": None,
+                    "file_id": None,
+                    "type_aware_chunking": {},
                     "source_unit_ids": [f"unit-{child_id}"],
                 },
             }
@@ -156,12 +190,20 @@ class _FakeParentStore:
             "parent-1": {
                 "parent_chunk_id": "parent-1",
                 "doc_id": "doc-1",
+                "tenant_id": "default",
+                "kb_id": "historical_case_kb",
+                "document_profile": _retrieval_fixture_profile(),
+                "child_chunk_ids": ["child-1", "child-2"],
                 "text": "parent context one",
                 "title": "parent one",
             },
             "parent-2": {
                 "parent_chunk_id": "parent-2",
                 "doc_id": "doc-1",
+                "tenant_id": "default",
+                "kb_id": "historical_case_kb",
+                "document_profile": _retrieval_fixture_profile(),
+                "child_chunk_ids": ["child-3"],
                 "text": "parent context two",
                 "title": "parent two",
             },

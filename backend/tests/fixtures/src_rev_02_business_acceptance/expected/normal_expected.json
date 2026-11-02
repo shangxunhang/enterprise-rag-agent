@@ -1,0 +1,98 @@
+{
+  "classification": "TEST_EXPECTATION_ONLY",
+  "marker": "TEST_EXPECTATION_ONLY_SRCREV02_20260928",
+  "fixture_variant": "normal",
+  "purpose": "Pre-generation deterministic assertions, never a model source",
+  "input_identity": {
+    "schema_version": "project_input_v3",
+    "task_id": "task_sr02_sim_normal",
+    "expected_fact_normalization_version": "project-input-normalization-v2",
+    "expected_task_execution_profile": "project-input-v3-execution-v1"
+  },
+  "source_policy": {
+    "source_materials_allowlist": [],
+    "evidence_path": "NOT_APPLICABLE_FOR_THIS_DETERMINISTIC_FIXTURE",
+    "forbidden_model_input_marker": "TEST_EXPECTATION_ONLY_SRCREV02_20260928",
+    "forbidden_model_input_path_fragment": "src_rev_02_business_acceptance/expected"
+  },
+  "checks": [
+    {
+      "check_id": "N-01",
+      "kind": "INPUT_AND_NORMALIZED_FACT",
+      "field_path": "/hardware_resources/0/server_count",
+      "expected_value": 18,
+      "expected_fact_key": "project_input.hardware_resources",
+      "expected_fact_content_fragment": "18台SIM-MX900",
+      "expected_writer_context_fragment": "18台SIM-MX900",
+      "method": "strict factory, canonical normalization, FactSnapshot, Writer Context"
+    },
+    {
+      "check_id": "N-02",
+      "kind": "INPUT_AND_NORMALIZED_FACT",
+      "field_path": "/hardware_resources/0/device_model",
+      "expected_value": "SIM-MX900",
+      "expected_fact_key": "project_input.hardware_resources",
+      "expected_fact_content_fragment": "18台SIM-MX900",
+      "expected_writer_context_fragment": "SIM-MX900",
+      "method": "strict factory, canonical normalization, FactSnapshot, Writer Context"
+    },
+    {
+      "check_id": "N-03",
+      "kind": "INPUT_AND_NORMALIZED_FACT",
+      "field_path": "/hardware_resources/0/access_mode",
+      "source_present": true,
+      "expected_value": "双链路政务专网接入",
+      "expected_fact_key": "project_input.hardware_resources",
+      "expected_fact_content_fragment": "访问方式为双链路政务专网接入",
+      "expected_writer_context_fragment": "双链路政务专网接入",
+      "method": "strict factory, canonical normalization, FactSnapshot, Writer Context"
+    },
+    {
+      "check_id": "N-04",
+      "kind": "INPUT_AND_NORMALIZED_FACT",
+      "field_path": "/total_staff",
+      "expected_value": 640,
+      "expected_fact_key": "project_input.organization_scale",
+      "expected_fact_content_fragment": "总人数640人",
+      "expected_writer_context_fragment": "总人数640人",
+      "method": "strict factory, canonical normalization, FactSnapshot, Writer Context"
+    },
+    {
+      "check_id": "N-05",
+      "kind": "MISSING_DECLARATION",
+      "field_path": "/missing_information",
+      "expected_value": [],
+      "method": "strict factory and missing_information Fact projection"
+    },
+    {
+      "check_id": "N-06",
+      "kind": "SOFT_TARGET",
+      "field_path": "/generation_requirements/target_section_chars",
+      "expected_value": 3000,
+      "expected_writer_initial_message_fragment": "3000",
+      "expected_requirement_role": "ADVISORY",
+      "forbidden_requirement_kind": "target_chars_hard_obligation",
+      "method": "final Writer messages, ordinary/Target initial ModelRequest, Requirement source catalog"
+    },
+    {
+      "check_id": "N-07",
+      "kind": "TECHNICAL_ORTHOGONALITY",
+      "max_tokens_per_section": 1024,
+      "technical_recovery_base_chars": 1024,
+      "technical_max_section_chars": 1536,
+      "compact_retry_target_chars": 696,
+      "compression_max_tokens": 640,
+      "method": "compare pure technical policy with start-HEAD formulas; vary only business target"
+    },
+    {
+      "check_id": "N-08",
+      "kind": "SOURCE_ISOLATION",
+      "forbidden_in_context": [
+        "TEST_EXPECTATION_ONLY_SRCREV02_20260928",
+        "src_rev_02_business_acceptance/expected"
+      ],
+      "method": "inspect final ContextPackage and ModelRequest messages"
+    }
+  ],
+  "real_business_text_outcome": "NOT_PREDICTED_BY_THIS_EXPECTATION"
+}

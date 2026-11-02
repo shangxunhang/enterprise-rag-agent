@@ -1,0 +1,54 @@
+name: Public offline checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      RAG_CONFIG_SOURCE_POLICY: process_env_defaults_v1
+      REAL_PROVIDER_ACCEPTANCE: '0'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      LANGSMITH_TRACING: 'false'
+      LANGCHAIN_TRACING_V2: 'false'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install pinned uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.11.32'
+          python-version: '3.10.20'
+          enable-cache: true
+      - name: Validate frozen dependency lock
+        run: uv lock --check --offline
+      - name: Install public check dependencies
+        run: uv sync --frozen --extra test --extra providers
+      - name: Validate imports and versions
+        run: uv run --frozen --no-sync python -B scripts/check_environment.py
+      - name: Validate CLI imports without execution
+        run: uv run --frozen --no-sync python -B scripts/run_pipeline.py --help
+      - name: Run documented public offline subset
+        run: >-
+          uv run --frozen --no-sync python -B -m pytest -q -p no:cacheprovider
+          backend/tests/test_src_rev_04_citation_association.py
+          backend/tests/test_rag_config_driven_context_packer.py
+          backend/tests/test_fpbca_bcd_source_bootstrap.py
+          backend/tests/test_multi_agent_v3_artifact_runtime.py
+          backend/tests/test_multi_agent_v3_fact_snapshot_runtime.py
+          backend/tests/test_multi_agent_v3_section_plan_runtime.py
+          backend/tests/test_multi_agent_v3_budget_runtime.py
+          backend/tests/test_document_ingestion_text_normalizer.py

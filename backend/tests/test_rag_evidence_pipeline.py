@@ -46,6 +46,28 @@ def test_full_selected_record_preserves_child_and_parent_text() -> None:
     assert chunks[0].match_text != chunks[0].context_text
 
 
+def test_evidence_mapper_prefers_governed_prompt_visible_text() -> None:
+    mapper = EvidenceMapper()
+    chunks = mapper.chunks(
+        [
+            {
+                "rank": 1,
+                "child_chunk_id": "history-child",
+                "parent_chunk_id": "history-parent",
+                "doc_id": "history-doc",
+                "child_text": "历史项目容量为324.2TB。",
+                "parent_text": "历史项目容量为324.2TB并配置8台服务器。",
+                "prompt_visible_text": "【历史案例，仅供参考】仅可概括容量测算方法。",
+                "metadata": {},
+            }
+        ]
+    )
+
+    assert chunks[0].context_text == "【历史案例，仅供参考】仅可概括容量测算方法。"
+    assert "324.2TB" not in chunks[0].context_text
+    assert chunks[0].match_text == "历史项目容量为324.2TB。"
+
+
 # 阅读注释（函数）：处理 测试 citations expand all matched 子块 证据 相关逻辑。
 def test_citations_expand_all_matched_child_evidence() -> None:
     """处理 测试 citations expand all matched 子块 证据 相关逻辑。
@@ -192,18 +214,49 @@ class _LegacyToolStub:
             未显式标注；请结合调用方和实际返回语句理解。
         """
         parent_text = "前置内容。" * 200 + "八、安全设计：JWT、权限控制、Schema验证和输出脱敏。"
+        profile = {
+            "schema_version": "document_profile_v1",
+            "document_id": "doc_1",
+            "document_type": "current_project_requirement",
+            "evidence_role": "project_fact",
+            "kb_id": "project_fact_kb",
+            "tenant_id": "default",
+            "project_relation": "current_project",
+            "project_id": "project-1",
+            "authority": {
+                "level": "authoritative",
+                "version": "v1",
+                "issuer": "test",
+                "effective_date": None,
+                "expiration_date": None,
+            },
+            "content_capabilities": {
+                "allowed_claim_types": ["current_project_fact"],
+                "forbidden_claim_types": [],
+            },
+            "profile_sha256": "a" * 64,
+            "source_sha256": "b" * 64,
+        }
         selected = {
             "rank": 1,
-            "score": 0.03,
-            "rerank_score": -1.0,
+            "score": 0.9,
+            "rerank_score": 0.9,
             "child_chunk_id": "child_finance",
             "parent_chunk_id": "parent_mixed",
             "doc_id": "doc_1",
+            "tenant_id": "default",
+            "kb_id": "project_fact_kb",
+            "document_type": "current_project_requirement",
+            "evidence_role": "project_fact",
+            "project_relation": "current_project",
+            "project_id": "project-1",
+            "authority_level": "authoritative",
             "child_text": "功能点估算。",
             "parent_text": parent_text,
             "text": parent_text,
             "title": "综合方案",
             "metadata": {
+                "document_profile": profile,
                 "retrieval_sources": ["keyword"],
                 "matched_child_chunk_ids": ["child_finance", "child_security"],
                 "matched_child_chunks": [

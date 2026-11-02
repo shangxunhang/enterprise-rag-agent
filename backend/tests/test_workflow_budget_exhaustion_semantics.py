@@ -26,8 +26,10 @@ from apps.enterprise_document.services.scheme_writer.runtime_support import (
 from apps.enterprise_document.services.scheme_writer.section_execution_coordinator import (
     SectionExecutionCoordinator,
 )
+from contracts.evidence import project_evidence_bundle
+from rag.services.rag_service import FakeRAGService
 from schemas.context import ContextBundleSchema, TaskContextSchema, UserContextSchema
-from schemas.rag import RAGContextSchema
+from schemas.rag import RAGToolInputSchema
 from schemas.status import ExecutionStatus
 
 
@@ -147,6 +149,18 @@ def _project_input() -> ProjectInputSchema:
 
 
 def _request(state: SharedStateSchema) -> SectionExecutionRequestSchema:
+    bundle = FakeRAGService().retrieve(
+        RAGToolInputSchema(
+            task_id=state.task_id,
+            run_id=state.run_id,
+            agent_name="SchemeWriterAgent",
+            query="技术方案",
+            retrieval_scope="document",
+            max_context_items=1,
+            max_context_chars=6000,
+        )
+    )
+    context, chunks, citations = project_evidence_bundle(bundle)
     return SectionExecutionRequestSchema(
         shared_state=state,
         document_id="document_run_budget",
@@ -157,15 +171,12 @@ def _request(state: SharedStateSchema) -> SectionExecutionRequestSchema:
             section_order=1,
             citation_required=False,
         ),
-        document_rag_context=RAGContextSchema(
-            context_text="已有文档级证据。",
-            used_context_chars=8,
-            context_item_count=1,
-        ),
-        document_retrieved_chunks=[],
-        document_citations=[],
-        document_evidence_assessment={"status": "sufficient"},
-        document_tool_call_ids=["rag_document"],
+        document_evidence_bundle=bundle,
+        document_rag_context=context,
+        document_retrieved_chunks=list(chunks),
+        document_citations=list(citations),
+        document_rag_output={},
+        document_tool_call_ids=[str(bundle.retrieval_trace_id or "rag_document")],
         section_retrieval_enabled=False,
         corrective_retrieval_enabled=False,
     )

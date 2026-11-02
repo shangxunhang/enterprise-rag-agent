@@ -2,7 +2,9 @@ from pathlib import Path
 
 from agent.base_agent import BaseAgent
 from apps.enterprise_document.agents.scheme_writer_agent import SchemeWriterAgent
-from apps.enterprise_document.services.scheme_writer import SchemeGenerationUseCase
+from apps.enterprise_document.services.scheme_writer.use_case import (
+    SchemeGenerationUseCase,
+)
 from apps.enterprise_document.services.scheme_writer.advisory_service import SectionAdvisoryService
 from apps.enterprise_document.services.scheme_writer.capture_service import SchemeCaptureService
 from apps.enterprise_document.services.scheme_writer.citation_service import CitationService
@@ -124,7 +126,7 @@ def test_scheme_writer_business_boundaries_expose_public_entrypoints() -> None:
         ),
         SectionPromptService: (
             "citation_catalog",
-            "target_section_chars",
+            "requested_target_section_chars",
             "section_generation_contract",
             "render_section_prompt",
         ),

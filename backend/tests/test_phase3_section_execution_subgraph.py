@@ -52,6 +52,8 @@ class _InspectingFactory(SupervisorFactory):
 
 
 def _run_fake(output_root: Path, *, run_id: str):
+    from bca014_i10_capacity_fixtures import explicit_fake_startup_policy
+    profile,default_path,original=explicit_fake_startup_policy(output_root,run_id)
     settings = replace(
         get_settings(),
         data_root=output_root,
@@ -62,6 +64,7 @@ def _run_fake(output_root: Path, *, run_id: str):
         data_capture_enabled=True,
     )
     environment = {
+        "GROUNDED_GENERATION_POLICY_FILE": str(profile),
         "USE_REAL_RAG_TOOL": "false",
         "FAKE_RAG_SCENARIO": "default",
         "FAKE_LLM_SCENARIO": "default",
@@ -106,6 +109,7 @@ def _run_fake(output_root: Path, *, run_id: str):
             allow_demo_defaults=True,
             enable_agent_self_rag=False,
         )
+    assert default_path.read_bytes()==original
     return summary, factory
 
 
@@ -115,7 +119,18 @@ def test_section_subgraph_declares_real_business_nodes_and_routes() -> None:
         "prepare_section",
         "retrieve_section_evidence",
         "evaluate_evidence_gate",
+        "evaluate_pre_write_admission",
+        "bind_pre_write_gate",
+        "evaluate_pre_write_enforcement",
+        "commit_pre_write_route",
+        "dispatch_pre_write_recovery",
+        "execute_pre_write_recovery",
+        "complete_pre_write_recovery_dispatch",
+        "invoke_pre_write_writer",
         "generate_section",
+        "prepare_paragraph_pipeline",
+        "persist_paragraph",
+        "precheck_paragraph",
         "evaluate_generation",
         "retrieve_more",
         "corrective_retrieval",
@@ -132,6 +147,8 @@ def test_production_path_uses_section_subgraph_not_legacy_coordinator(tmp_path) 
         tmp_path,
         run_id="phase3_production_section_subgraph",
     )
+    from bca014_i10_capacity_fixtures import assert_native_publication
+    assert_native_publication(summary,factory.engines[0])
     assert summary["status"] in {"success", "partial_success"}
     assert summary["deliverable_final_result"] is not None
     engine = factory.engines[0]
@@ -144,7 +161,8 @@ def test_production_path_uses_section_subgraph_not_legacy_coordinator(tmp_path) 
         nodes = section["extra"]["section_subgraph_nodes"]
         assert nodes[0] == "prepare_section"
         assert nodes[-1] == "finalize_section"
-        assert "generate_section" in nodes
+        assert "invoke_pre_write_writer" in nodes
+        assert "generate_section" not in nodes
 
 
 def test_section_checkpoints_use_independent_namespaces(tmp_path) -> None:

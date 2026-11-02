@@ -1,0 +1,541 @@
+{
+  "schema_version": "full_chain_unit_edge_catalog_v1",
+  "date": "2026-10-05",
+  "status": "STATIC_FROZEN_CATALOG",
+  "scope": "Implementation plan traceability; not a production registry or test receipt",
+  "master_sha256": "814e17efb6c46acc1401474a20f464bd5de14ff9042e1d62837be67a739d182f",
+  "effective_domain01": "docs/full_chain_evaluation_design_20261004/domain_designs_v0_2/targeted_a01_x01_revision_20261005/01_INGESTION_INDEX_DESIGN_V0_2.md",
+  "effective_edges": "docs/full_chain_evaluation_design_20261004/domain_designs_v0_2/targeted_a01_x01_revision_20261005/02_CROSS_DOMAIN_CONTRACTS_V0_2.md",
+  "domains": [
+    {
+      "id": "01",
+      "plan": "01_INGESTION_INDEX_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/domains/ingestion_index.py",
+      "test_file": "backend/tests/test_full_chain_eval_ingestion_index.py",
+      "units": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07"
+      ],
+      "owned_edges": [
+        "X01",
+        "X02"
+      ],
+      "cases": [
+        "I01",
+        "I02",
+        "I03",
+        "I04",
+        "I05",
+        "I06",
+        "I07",
+        "I08",
+        "I09",
+        "I10",
+        "I11",
+        "I12",
+        "I13",
+        "I14",
+        "I15",
+        "I16"
+      ],
+      "reference_families": [
+        "G1",
+        "G2"
+      ]
+    },
+    {
+      "id": "02",
+      "plan": "02_RETRIEVAL_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/domains/retrieval.py",
+      "test_file": "backend/tests/test_full_chain_eval_retrieval.py",
+      "units": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "C07",
+        "C08",
+        "C09",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "owned_edges": [
+        "X03",
+        "X04",
+        "X05",
+        "X06",
+        "X07"
+      ],
+      "cases": [
+        "R01",
+        "R02",
+        "R03",
+        "R04",
+        "R05",
+        "R06",
+        "R07",
+        "R08",
+        "R09",
+        "R10",
+        "R11",
+        "R12"
+      ],
+      "reference_families": [
+        "G2"
+      ]
+    },
+    {
+      "id": "03",
+      "plan": "03_PLANNING_PREWRITE_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/domains/planning_prewrite.py",
+      "test_file": "backend/tests/test_full_chain_eval_planning_prewrite.py",
+      "units": [
+        "B01",
+        "B02",
+        "B03",
+        "B04",
+        "B05",
+        "C13",
+        "D01",
+        "D02",
+        "D03",
+        "D04"
+      ],
+      "owned_edges": [
+        "X08",
+        "X09",
+        "X25",
+        "X26",
+        "X30"
+      ],
+      "cases": [
+        "P01",
+        "P02",
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07",
+        "P08",
+        "P09",
+        "P10",
+        "P11",
+        "P12"
+      ],
+      "reference_families": [
+        "G1",
+        "G2",
+        "G3",
+        "G5"
+      ]
+    },
+    {
+      "id": "04",
+      "plan": "04_GENERATION_CLAIM_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/domains/generation_claim.py",
+      "test_file": "backend/tests/test_full_chain_eval_generation_claim.py",
+      "units": [
+        "D05",
+        "D06",
+        "D07",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "F04"
+      ],
+      "owned_edges": [
+        "X10",
+        "X11",
+        "X12",
+        "X13",
+        "X14",
+        "X15"
+      ],
+      "cases": [
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "W05",
+        "W06",
+        "W07",
+        "W08",
+        "W09",
+        "W10",
+        "W11",
+        "W12",
+        "W13",
+        "W14"
+      ],
+      "reference_families": [
+        "G3",
+        "G4",
+        "G5"
+      ]
+    },
+    {
+      "id": "05",
+      "plan": "05_POSTWRITE_RELEASE_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/domains/postwrite_release.py",
+      "test_file": "backend/tests/test_full_chain_eval_postwrite_release.py",
+      "units": [
+        "E01",
+        "E02",
+        "E03",
+        "E04",
+        "E05",
+        "E06",
+        "E07",
+        "E08",
+        "E09",
+        "E10",
+        "E11",
+        "E12"
+      ],
+      "owned_edges": [
+        "X16",
+        "X17",
+        "X18",
+        "X19",
+        "X20",
+        "X21",
+        "X27"
+      ],
+      "cases": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S07",
+        "S08",
+        "S09",
+        "S10",
+        "S11",
+        "S12",
+        "S13",
+        "S14",
+        "S15",
+        "S16"
+      ],
+      "reference_families": [
+        "G3",
+        "G4",
+        "G5"
+      ]
+    },
+    {
+      "id": "06",
+      "plan": "06_RUNTIME_RELIABILITY_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/domains/runtime_reliability.py",
+      "test_file": "backend/tests/test_full_chain_eval_runtime_reliability.py",
+      "additional_test_file": "backend/tests/test_full_chain_eval_capture.py",
+      "units": [
+        "F01",
+        "F02",
+        "F03",
+        "F05",
+        "F06"
+      ],
+      "owned_edges": [
+        "X22",
+        "X23",
+        "X24",
+        "X28",
+        "X29"
+      ],
+      "cases": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15"
+      ],
+      "reference_families": [],
+      "external_case": {
+        "id": "T15",
+        "state": "PENDING_SEPARATE_RUN_AUTHORIZATION",
+        "must_not_be_replaced_by_fake": true
+      }
+    },
+    {
+      "id": "07",
+      "plan": "07_EVALUATION_CORE_IMPLEMENTATION_PLAN.md",
+      "adapter": "backend/eval/full_chain/runner.py",
+      "test_file": "backend/tests/test_full_chain_eval_core.py",
+      "units": [
+        "F07"
+      ],
+      "owned_edges": [],
+      "cases": [
+        "K01",
+        "K02",
+        "K03",
+        "K04",
+        "K05",
+        "K06",
+        "K07",
+        "K08",
+        "K09",
+        "K10",
+        "K11",
+        "K12"
+      ],
+      "reference_families": [
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ]
+    }
+  ],
+  "unit_dispositions": {
+    "KEEP_V1": [
+      "A02",
+      "A03",
+      "A05",
+      "A06",
+      "B01",
+      "B03",
+      "B04",
+      "B05",
+      "C03",
+      "C04",
+      "C05",
+      "C07",
+      "C08",
+      "C09",
+      "C10",
+      "C11",
+      "C12",
+      "D01",
+      "D03",
+      "D04",
+      "D05",
+      "D06",
+      "D07",
+      "D08",
+      "D09",
+      "D10",
+      "E01",
+      "E04",
+      "E05",
+      "E06",
+      "E08",
+      "E11",
+      "F01",
+      "F02",
+      "F04",
+      "F06"
+    ],
+    "SIMPLIFY": [
+      "A01",
+      "A04",
+      "A07",
+      "B02",
+      "C01",
+      "C02",
+      "C13",
+      "D02",
+      "E02",
+      "E03",
+      "E07",
+      "E09",
+      "F03",
+      "F05",
+      "F07"
+    ],
+    "MERGE": [
+      "C06",
+      "E10",
+      "E12"
+    ],
+    "DEFER": [
+      "D11"
+    ],
+    "REMOVE": []
+  },
+  "production_observation_file_candidates": [
+    {
+      "path": "document_ingestion/document_router.py",
+      "editor": "01",
+      "plan": "01"
+    },
+    {
+      "path": "backend/rag/offline/builder.py",
+      "editor": "01",
+      "plan": "01"
+    },
+    {
+      "path": "backend/rag/plugins/chunkers/plugin.py",
+      "editor": "01",
+      "plan": "01"
+    },
+    {
+      "path": "backend/rag/plugins/chunkers/structured_common.py",
+      "editor": "01",
+      "plan": "01"
+    },
+    {
+      "path": "backend/rag/embed/embedding_service.py",
+      "editor": "01",
+      "plan": "01"
+    },
+    {
+      "path": "backend/rag/application/parent_child_retrieval.py",
+      "editor": "02",
+      "plan": "02"
+    },
+    {
+      "path": "backend/rag/plugins/candidate_enrichers/plugin.py",
+      "editor": "02",
+      "plan": "02"
+    },
+    {
+      "path": "backend/rag/plugins/fusions/plugin.py",
+      "editor": "02",
+      "plan": "02"
+    },
+    {
+      "path": "backend/rag/reranker/parent_child_reranker.py",
+      "editor": "02",
+      "plan": "02"
+    },
+    {
+      "path": "backend/rag/rag_engine/parent_child_rag_engine.py",
+      "editor": "02",
+      "plan": "02"
+    },
+    {
+      "path": "backend/rag/mapping/result_mapper.py",
+      "editor": "02",
+      "plan": "02"
+    },
+    {
+      "path": "backend/application/mainline_service.py",
+      "editor": "INTEGRATOR",
+      "plan": "03/05/06"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/scheme_writer/stage_service.py",
+      "editor": "INTEGRATOR",
+      "plan": "03/05"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/agent_rag_v1/context_runtime.py",
+      "editor": "03",
+      "plan": "03"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/agent_rag_v1/writer_context.py",
+      "editor": "03",
+      "plan": "03"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/agent_rag_v1/post_write_composition.py",
+      "editor": "05",
+      "plan": "05"
+    },
+    {
+      "path": "backend/bootstrap/supervisor_factory.py",
+      "editor": "INTEGRATOR",
+      "plan": "06"
+    },
+    {
+      "path": "backend/agent/runtime/business_node_execution_runner.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/agent/runtime/langgraph_workflow_engine.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/agent/supervisor_agent.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/model_gateway/model_gateway.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/core/persistence/interprocess_lock.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/core/runtime/execution_control.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/post_write/persistence.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/agent_rag_v1/claim_verification_runtime.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/agent_rag_v1/claim_support_runtime.py",
+      "editor": "06",
+      "plan": "06"
+    },
+    {
+      "path": "backend/apps/enterprise_document/services/agent_rag_v1/artifact_runtime.py",
+      "editor": "06",
+      "plan": "06"
+    }
+  ],
+  "production_patch_policy": "Observation-only file candidates, not a requirement to edit every file. Reuse existing adequate evidence first. No semantic/owner/policy changes; additional files require recorded narrow necessity and scope approval.",
+  "new_integration_test": "backend/tests/test_full_chain_eval_integration.py",
+  "integration_cases": [
+    "FCI01",
+    "FCI02",
+    "FCI03",
+    "FCI04",
+    "FCI05",
+    "FCI06",
+    "FCI07",
+    "FCI08"
+  ],
+  "counts": {
+    "domains": 7,
+    "units": 55,
+    "edge_families": 30,
+    "design_cases": 97,
+    "offline_design_cases": 96,
+    "separately_authorized_real_cases": 1
+  },
+  "counts_are_not_pytest_node_counts": true,
+  "test_execution_status": "NOT_RUN",
+  "reference_review_status": "NOT_ESTABLISHED_BY_THIS_PLAN",
+  "diagnostic_readiness": "NOT_ESTABLISHED",
+  "implementation_or_run_authorized_by_this_document": false
+}
